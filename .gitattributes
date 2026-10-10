@@ -1,0 +1,28 @@
+# 行尾：文本一律以 LF 存进仓里，检出到工作区也用 LF。
+# `text=auto` 让 git 自己认出二进制，剩下的在下面显式钉死。
+# eol=lf 的理由不是「好看」：本仓有一批判据是**按字节**读文件的
+# （evidence/**/readings.txt、夹具比对），同一份文件在 Windows 与 CI 里长得不一样，
+# 那类红会教人改读数而不是改代码 —— 与 tests/common/mod.rs 顶上写的是同一条纪律。
+* text=auto eol=lf
+
+# 二进制：不参与任何行尾/文本转换。
+*.ico    binary
+*.webp   binary
+*.png    binary
+*.jpg    binary
+*.jpeg   binary
+*.gif    binary
+*.exe    binary
+*.dll    binary
+*.zip    binary
+*.pdf    binary
+
+# Windows 批处理与 PowerShell 脚本反过来用 CRLF：cmd.exe 按 LF 写出的 .cmd
+# 在某些主机上行尾解析会出问题，这两个扩展名是仓里仅有的 4 个 Windows 脚本。
+*.cmd    text eol=crlf
+*.bat    text eol=crlf
+*.ps1    text eol=crlf
+
+# 合并冲突留下的标记按二进制处理，免得有人手滑提交一个真的 <<<<<<< 文件。
+*.txt    -merge
+*.md     -merge

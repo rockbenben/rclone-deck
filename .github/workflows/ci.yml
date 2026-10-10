@@ -1,0 +1,158 @@
+# 本仓只支持 Windows（README「支持范围」里写死了），所以 runner 只有 windows-latest。
+# 别加 linux/macos：Rust 侧与 tools/*.cmd、*.ps1 里有 Windows 专属行为，
+# 在别的系统上"绿"了也证明不了任何事，只会拖慢 PR。
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  frontend:
+    name: 前端：装依赖 → 类型检查 → 构建
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          # package.json 的 engines 要求 >=24，所以这里钉 24（**不带 .x**：
+          # 意思是"24 这一支的最新版"，26 出了也不会跟着跳）。
+          node-version: 24
+          cache: npm
+
+      # 官方源：npmmirror 这类镜像不实现 audit 端点（/-/npm/v1/security/* not implemented），
+      # 拿镜像跑会得到一个假绿。CI 不用配 registry，沿用默认的 registry.npmjs.org。
+      - name: 装依赖（按 package-lock.json 精确还原）
+        run: npm ci
+
+      # typecheck 已经含在 build 里（build = typecheck && vite build），
+      # 这里只跑一次 build，不拆成两步：tauri.conf.json 的 beforeBuildCommand 走的也是 build，
+      # 拆开就会出现"CI 过了、打包却红在类型上"的那道缝。
+      - name: 类型检查 + 构建
+        run: npm run build
+
+      # 文案标点闸门：`ui-copy-scan.mjs` 在标点有违规时退 1（清单条数不算违规）。
+      # 它读 `src/**` 与 `src-tauri/src/**` 的**源码文本**，不读 dist，所以放在
+      # 构建之后、rust 那条 job 之前当独立一道 —— 跑得快，且不需要 rclone。
+      # 这条把 DESIGN.md「标点那条机械保证零违规」从"靠人读输出"变成真闸门。
+      - name: 文案标点扫描（直引号括中文 / 中文句中的半角冒号）
+        run: npm run copy:scan
+
+      - name: npm 依赖漏洞（high 及以上即红）
+        run: npm audit --audit-level=high
+
+  rust:
+    name: Rust：clippy → 全套测试（含真后台）
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      # Cargo.toml 在 src-tauri 而不是仓根，所以得指明工作区；
+      # 不指的话这份缓存永远命中不了，每轮都要从头编 tauri（十几分钟）。
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ runner.os }}-cargo
+          workspaces: src-tauri -> .
+
+      # rclone 不是 mock：tests/rcd_supervisor、runner_local、mirror_runner、
+      # browser_runner、draft_pairs 这五条目标起的是**真** rclone rcd。
+      # 没装的话它们不是"失败"，而是连不上后台后集体红，报错还看不出根因。
+      - name: 装 rclone
+        run: choco install rclone --yes --no-progress
+
+      # README「支持范围」写的是实测钉在 v1.75.1。choco 装的是当时最新，
+      # 所以这条**不**去卡版本（卡了就等于把 CI 冻在一个越旧越没人验的 rclone 上），
+      # 只把实际版本摆出来：跑挂时先看这里是不是换了 rclone，而不是先怀疑代码。
+      - name: 核对 rclone 版本（文档基准 v1.75.1，差异要人看一眼）
+        run: |
+          $v = (rclone version | Select-String '^rclone v').ToString().Trim()
+          Write-Host "实际装到：$v"
+          Write-Host "文档基准：rclone v1.75.1"
+          if ($v -ne 'rclone v1.75.1') {
+            Write-Host "::warning::CI 上的 rclone 与文档基准不一致（不阻断，见本步注释）"
+          }
+
+      # --features test-helpers 不能省：Cargo.toml 里那五条 [[test]] 都带
+      # required-features，不开这个 flag 的话 cargo 会**静默跳过**它们，
+      # clippy 看着全绿，其实最该看的那五个文件根本没被检查。
+      - name: clippy
+        run: npm run lint:rust
+
+      # 走 npm test 而不是直接 cargo test：--test-threads=1 在脚本里，
+      # 而那五条目标各要绑一个真后台端口，并发跑就是 "address already in use"。
+      - name: 测试
+        run: npm test
+
+  security:
+    name: 依赖漏洞：Rust advisory 数据库
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: taiki-e/install-action@cargo-audit
+
+      # --json 让报告落成文件，失败时作为 artifact 传上去，
+      # 省得有人为了看"到底哪条 CVE"再去本地重跑一遍。
+      - name: cargo audit
+        run: cargo audit --file src-tauri/Cargo.lock --json > audit.json
+
+      - name: 传审计报告
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cargo-audit-report
+          path: audit.json
+
+  bundle:
+    name: 打包：NSIS 安装包
+    # 只在推 main 与手动触发时跑：NSIS 要现下、release 模式重编全量 Rust，
+    # 对每个 PR 都做一遍不值当。PR 上"能编过"由 rust 那条 job 兜住。
+    if: github.event_name != 'pull_request'
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ runner.os }}-cargo-bundle
+          workspaces: src-tauri -> .
+
+      - run: npm ci
+
+      - name: 出安装包
+        run: npm run tauri build
+
+      - name: 传安装包
+        uses: actions/upload-artifact@v4
+        with:
+          name: rclone-deck-nsis
+          path: src-tauri/target/release/bundle/nsis/*.exe
+          if-no-files-found: error
+          retention-days: 30

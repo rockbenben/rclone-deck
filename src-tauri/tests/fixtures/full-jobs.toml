@@ -1,0 +1,100 @@
+# 测试夹具：**一份内容丰富但纯属虚构的任务表**。
+#
+# 它为什么存在（2026-10-09）：出厂配置 `DEFAULT_JOBS_TOML` 原来直接抄的是作者本机那套
+# —— `r2:img` / `qiniu:7zj5r8` 那些桶、`D:\vault\...` 那些目录，连
+# `rclone_bin` 都是他那台机器的绝对路径。别人装上就是一份**指向别人家**的配置：
+# 后台起不来（rclone 不在那儿），而屏上摆着 10 条任务、其中 4 条写着会删东西。
+#
+# 所以出厂那份瘦身成一条示范（见 `state.rs` 的 `DEFAULT_JOBS_TOML`），
+# 而**需要多对位置 / 多条对账 / 会删的那几档**的那些证人改读这一份。
+# 这里的内容随便改 —— 它只喂测试，不进任何用户的磁盘。
+#
+# 形状上要保住的东西（谁在读它）：
+#   * 至少 3 对位置、至少 2 条 gate（`gate_jobs_never_join_a_pair_card` 数条数）
+#   * `r2-up` 与 `r2-mirror-remote-wins` 这两个 id（`the_endpoint_types_reach_the_wire…` 按 id 找）
+#   * 至少一条 sync（会删），且名字里同时有「对齐」和「删」
+#   * 一个**本地前缀**被 gate 守着（`every_externally_referenced_prefix_has_its_own_gate_job`）
+
+[defaults]
+rclone_bin = "C:\\rclone\\rclone.exe"
+flags = ["--fast-list", "--transfers", "32", "--checkers", "64"]
+exclude = ["Thumbs.db", "*.DS_Store"]
+log_dir = "C:\\夹具\\logs"
+
+[[job]]
+id = "r2-up"
+name = "R2 图床上传"
+kind = "copy"
+src = "D:\\vault\\img-r2"
+dst = "r2:img"
+open_dir = "D:\\vault\\img-r2\\imgprompt"
+
+[[job]]
+id = "r2-down"
+name = "R2 图床下载"
+kind = "copy"
+src = "r2:img"
+dst = "D:\\vault\\img-r2"
+open_dir = "D:\\vault\\img-r2"
+
+[[job]]
+id = "qiniu-up"
+name = "七牛上传"
+kind = "copy"
+src = "D:\\vault\\imagehosting"
+dst = "qiniu:7zj5r8"
+open_dir = "D:\\vault\\imagehosting"
+
+[[job]]
+id = "qiniu-down"
+name = "七牛下载"
+kind = "copy"
+src = "qiniu:7zj5r8"
+dst = "D:\\vault\\imagehosting"
+open_dir = "D:\\vault\\imagehosting"
+
+[[job]]
+id = "ideahub-covers"
+name = "ideahub 封面对账"
+kind = "gate"
+src = "D:\\vault\\img-r2\\ideahub\\covers"
+dst = "r2:img/ideahub/covers"
+manifest = { kind = "localdir" }
+
+[[job]]
+id = "imgprompt"
+name = "imgprompt 引用对账"
+kind = "gate"
+src = "D:\\vault\\img-r2\\imgprompt"
+dst = "r2:img/imgprompt"
+manifest = { kind = "localdir" }
+
+[[job]]
+id = "r2-mirror-local-wins"
+name = "对齐 R2：以本地为主（删云端多余的）"
+kind = "sync"
+src = "D:\\vault\\img-r2"
+dst = "r2:img"
+
+[[job]]
+id = "r2-mirror-remote-wins"
+name = "对齐 R2：以云端为主（删本地多余的）"
+kind = "sync"
+src = "r2:img"
+dst = "D:\\vault\\img-r2"
+open_dir = "D:\\vault\\img-r2"
+
+[[job]]
+id = "qiniu-mirror-local-wins"
+name = "对齐七牛：以本地为主（删云端多余的）"
+kind = "sync"
+src = "D:\\vault\\imagehosting"
+dst = "qiniu:7zj5r8"
+
+[[job]]
+id = "qiniu-mirror-remote-wins"
+name = "对齐七牛：以云端为主（删本地多余的）"
+kind = "sync"
+src = "qiniu:7zj5r8"
+dst = "D:\\vault\\imagehosting"
+open_dir = "D:\\vault\\imagehosting"

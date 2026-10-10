@@ -1,0 +1,36 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "rclone-deck",
+  "version": "0.1.0",
+  "identifier": "top.aishort.rclone-deck",
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "devUrl": "http://localhost:1420",
+    "beforeBuildCommand": "npm run build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "rclone-deck",
+        "width": 1100,
+        "height": 720,
+        "minWidth": 900,
+        "minHeight": 600
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["nsis"],
+    "publisher": "top.aishort.rclone-deck",
+    "icon": ["icons/icon.ico"],
+    "windows": {
+      "nsis": { "installMode": "currentUser" }
+    }
+  }
+}

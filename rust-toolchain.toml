@@ -1,0 +1,12 @@
+# 工具链钉到 stable + clippy：CI 与本机装的是同一套。
+#
+# **为什么这里不列 rustfmt**：本仓的 Rust 代码是手排的，不是 `cargo fmt` 排的 ——
+# 大量行把相关实参或链式调用压在一条上（例如 `JobView::new(` 后面那一串四行），
+# 那是设计上的可读性取舍，让 rustfmt 展开会把它们拆成十几行。
+# 实测 `cargo fmt --check` 在改配置前有 1379 处、改了 use_small_heuristics 之后仍有 1033 处，
+# 所以 CI **不**把 fmt 当闸门（见 CONTRIBUTING.md「为什么不跑 cargo fmt」）。
+# 装 rustfmt 只是想临时看一眼某人某段会排成什么样时方便，不是义务。
+[toolchain]
+channel = "stable"
+components = ["clippy"]
+profile = "minimal"

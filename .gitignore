@@ -1,0 +1,52 @@
+node_modules/
+dist/
+.qoder-credits/
+src-tauri/target/
+src-tauri/gen/
+
+# 2026-10-10：逐轮实测读数（docs/superpowers/，6.3 MB / 220 个文件）不再随仓发布。
+# 源码里那些「坐标在 docs/superpowers/...」的注释仍留着 —— 那是**当时**的判据出处，
+# 删掉注释等于抹掉"为什么这么定"，而它们不读盘。真正要删的是下面这条历史规则。
+docs/superpowers/
+
+# 界面跑真窗口时留的图：留在盘上不入库，入库的是 readings.txt（原本只挡 png，
+# 那一整块已经不出仓了，这条跟着删，免得留着一条什么都不挡的规则骗人）
+
+.superpowers/
+
+# 下面这些一个都没在仓里（2026-10-10 逐条核过：都会盖住 0 个已跟踪文件），
+# 是给贡献者与别的机器挡的。
+
+# 编辑器 / IDE
+.vscode/
+.idea/
+.fleet/
+*.swp
+*~
+
+# 合并与临时残留
+*.orig
+*.rej
+*.bak
+*.tmp
+
+# Windows / macOS 的系统垃圾
+# Thumbs.db 特别值得单列：面板自己的 rclone exclude 里就写着它
+# （exclude = ["Thumbs.db", "*.DS_Store"]），说明这台机器上它真的会冒出来。
+Thumbs.db
+desktop.ini
+.DS_Store
+
+# 面板在本机跑起来时可能落在这儿（正常落点是 %APPDATA% 或 RCLONE_DECK_HOME，
+# 但有人把家指到仓里就会留在这）
+*.log
+*.pid
+
+# 密钥类：面板自己不放（它明令不落盘凭据），仓里出现就是事故
+.env
+.env.*
+*.pem
+*.key
+
+coverage/
+*.tsbuildinfo

@@ -1,0 +1,38 @@
+{
+  "name": "rclone-deck",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "typecheck": "tsc --noEmit",
+    "build": "npm run typecheck && vite build",
+    "preview": "vite preview",
+    "tauri": "tauri",
+    "probe:rc": "node tools/rc-contract-probe.mjs",
+    "copy:scan": "node tools/ui-copy-scan.mjs",
+    "accept:ui": "node tools/ui-acceptance.mjs",
+    "lint:rust": "cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets --features test-helpers",
+    "test": "cargo test --manifest-path src-tauri/Cargo.toml --features test-helpers -- --test-threads=1",
+    "test:fast": "cargo test --manifest-path src-tauri/Cargo.toml",
+    "contrast:rendered": "node tools/ui-rendered-contrast.mjs",
+    "contrast:palette": "node tools/ui-contrast.mjs"
+  },
+  "engines": {
+    "node": ">=24"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "^2",
+    "antd": "^6",
+    "react": "^19",
+    "react-dom": "^19"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2",
+    "@types/react": "^19",
+    "@types/react-dom": "^19",
+    "@vitejs/plugin-react": "^6",
+    "typescript": "^7.0.2",
+    "vite": "^8"
+  }
+}

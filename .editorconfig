@@ -1,0 +1,32 @@
+# 仓里的缩进是混的，但每一族内部是齐的：Rust 4 空格，其余 2 空格。
+# 这份文件只对**编辑器**生效（提交前的规范化由 .gitattributes 管），
+# 目的是让新开的编辑器别把 4 空格的 .rs 改成 2 空格。
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+indent_style = space
+
+[*.rs]
+indent_size = 4
+max_line_length = 100
+
+[*.{ts,tsx,js,mjs,cjs,css,html,json,yml,yaml}]
+indent_size = 2
+
+# 证据读数按行读，行尾空格是那一行读数的一部分，别替它「修干净」。
+[*.txt]
+trim_trailing_whitespace = false
+
+[*.md]
+trim_trailing_whitespace = false
+
+[*.{cmd,bat,ps1}]
+end_of_line = crlf
+
+[*.{ico,webp,png,jpg,jpeg,gif,exe,dll,zip,pdf}]
+insert_final_newline = unset
+trim_trailing_whitespace = unset

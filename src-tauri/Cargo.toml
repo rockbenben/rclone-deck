@@ -1,0 +1,75 @@
+[package]
+name = "rclone-deck"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "rclone_deck_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "1.1.6"
+thiserror = "2.0.21"
+dirs = "7.0.0"
+base64 = "0.23.1"
+reqwest = { version = "0.13.5", default-features = false, features = ["json"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "time", "process", "fs", "io-util", "net"] }
+sysinfo = "0.38.4"
+rand = "0.9"
+# 只要 `clock`：它经 `now -> std -> alloc` 带上 `Local::now()`/`format()`/`to_rfc3339()`，
+# 而默认的 `wasmbind` 会给这个 Windows-only crate 的依赖图加 js-sys / wasm-bindgen。
+chrono = { version = "0.4.45", default-features = false, features = ["clock"] }
+
+[dev-dependencies]
+futures = "0.3.34"
+tempfile = "3.27.0"
+tokio = { version = "1", features = ["full"] }
+wiremock = "0.6.5"
+
+[features]
+# 只给测试用的出口（如 `rcd::command_line_of`）。生产构建里它不存在，
+# 所以任何把它当常规 API 用的代码都编不过。
+test-helpers = []
+
+[[test]]
+name = "rcd_supervisor"
+path = "tests/rcd_supervisor.rs"
+required-features = ["test-helpers"]
+
+# 与 rcd_supervisor 并列的另一条起真 daemon 的目标：两边各自在跑之前现挑一个绑得上的号
+# （这条走 `tests/localdaemon` 的 `PORT`，那边走 `default_port`），单线程跑
+# （`--test-threads=1`），且每条起 daemon 的用例都带守卫，见文件顶部规则。
+[[test]]
+name = "runner_local"
+path = "tests/runner_local.rs"
+required-features = ["test-helpers"]
+
+# 与 runner_local 共用 tests/localdaemon 那份夹具，同一个 PORT：cargo test 串行跑各 test target，
+# 而 --test-threads=1 保证同 target 内也不并发。若哪天出现 `address already in use`，
+# 第一件事是确认这两条没被并行调度，不是先改端口。
+[[test]]
+name = "mirror_runner"
+path = "tests/mirror_runner.rs"
+required-features = ["test-helpers"]
+
+# 第三条起真 daemon 的目标：与前两条共用 localdaemon 与同一个 PORT，
+# 靠 cargo test 串行跑各 test target + --test-threads=1 保证不并发。
+[[test]]
+name = "browser_runner"
+path = "tests/browser_runner.rs"
+required-features = ["test-helpers"]
+
+# 临时配对卡（R93–R99）：形状证人不碰后台，行为证人共用 localdaemon 那台夹具（端口现挑）。
+# 这一条必须像前三条一样**点名登记**：靠自动发现的话它没有 `required-features`，
+# 于是一次不带 `--features test-helpers` 的 `cargo test` 会红在"找不到 `kill_pid`"
+# 那种与临时卡毫无关系的话上（那三条当初就是为了同一件事才写死的）。
+[[test]]
+name = "draft_pairs"
+path = "tests/draft_pairs.rs"
+required-features = ["test-helpers"]

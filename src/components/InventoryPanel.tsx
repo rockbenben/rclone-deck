@@ -123,7 +123,14 @@ export function InventoryPanel({
             dataIndex: undefined,
             // 这一栏的文件**本机就有**，所以看得图是零代价的（不下载、不问远端）——
             // 而一屏二十个 `IMG_2841.jpg` 谁也分不清，缩略图一眼就知道是哪几张。
-            render: (_, k) => <ThumbCell jobId={jobId} name={k} />,
+            // 名字与图**各写各的**（`ThumbCell` 只画那一格图）：这一面那句「这些名字就是要删的
+            // 那些」要在每一行读得到名字，图点开之后也不能把它换掉。
+            render: (_, k) => (
+              <Space size={4}>
+                <ThumbCell jobId={jobId} name={k} />
+                <Typography.Text code className="fs-code">{k}</Typography.Text>
+              </Space>
+            ),
           }]}
         />
       )}

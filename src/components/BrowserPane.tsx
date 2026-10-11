@@ -286,13 +286,16 @@ export function BrowserPane(v: PaneProps) {
                 title: '名字', dataIndex: 'name', key: 'name',
                 render: (name: string, row) => (
                   <Space size={4}>
-                    {/* 没有网格的形状（两栏并排、云端那一栏）在这一格里直接摆图；
+                    {/* 图与名字**同格、各写各的**：`ThumbCell` 只画那一格图（或那句状态），
+                        名字由这一行写。以前是"图加载完了就把名字换成图"，于是本地这一栏
+                        加载完的图行读不出是哪个文件 —— 而这一面头上那句明写着
+                        「要动哪个名字就点哪个」，名字不在行上就点不出那个名字。
+                        没有网格的形状（两栏并排、云端那一栏）也在同一格里直接摆图；
                         有网格时图行整批住在网格里，这一栏只剩目录与非图片，两边不重复画同一张图。 */}
-                    {(!v.isRemote && !row.isDir) ? (
+                    {!v.isRemote && !row.isDir && (
                       <ThumbCell fs={v.fs ?? undefined} prefix={v.prefix} name={name} auto />
-                    ) : (
-                      <Typography.Text code className="fs-code">{name}</Typography.Text>
                     )}
+                    <Typography.Text code className="fs-code">{name}</Typography.Text>
                     {row.isDir && <Typography.Text type="secondary">（目录）</Typography.Text>}
                     {v.pickedName === row.name && (
                       <Typography.Text type="success">已选中</Typography.Text>

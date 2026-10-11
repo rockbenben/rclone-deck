@@ -1,4 +1,4 @@
-import { Image, Space, Typography } from 'antd';
+import { Image, Typography } from 'antd';
 import { useEffect, useRef, useState } from 'react';
 
 import { previewLocalImage, previewPaneImage } from '../api';
@@ -93,22 +93,27 @@ export function ThumbCell({ jobId, name, fs, prefix = '', auto = false, box = 72
     setSeen(false);
   }, [jobId, name, fs, prefix]);
 
+  // 这些分支只画「那一格的图」或「那句状态」，**不写文件名**。
+  // 名字归每一格自己写（网格下面那行 `.thumb-name`、表格里那一行的 `{name}`、
+  // 差异面那一行的 `{k}`）：组件里再写一遍，图一加载完就会把行里那个名字**换掉**——
+  // 真窗口量到的就是这个形状：本地那一栏加载完的图行一个字都没有，而这一面自己那句是
+  // 「要动哪个名字就点哪个」，名字没了就点不出那个名字；差异面那一格更重，
+  // 「这些名字就是要删的那些」在那一行上读不到名字。两处各写一次就一定会漂。
   if (!looksLikeImage(name)) {
     // 不是图片就没有缩略图——**不摆一个占位方块**，那一格要短就短。
-    return <Typography.Text className="fs-code">{name}</Typography.Text>;
+    return null;
   }
 
   if (why !== null) {
-    // 读不出来时退回名字，而不是留一个破图：这一格的信息是名字，不是"这里有张图"。
-    // 那一句为什么**由后台说**（超上限 / 形状画不出来 / 读不出来是三种不同的处置），
-    // 界面不替它分类成"太大"那种两个字 —— 那是第二份口径。全文挂原生 title（规程 R68）。
+    // 读不出来时交回那两个字，而不是留一个破图：这一格的信息是"这张看不了"，
+    // 名字那一行由格子的外面写。那一句为什么**由后台说**（超上限 / 形状画不出来 /
+    // 读不出来是三种不同的处置），界面不替它分类成"太大"那种两个字 —— 那是第二份口径。
+    // 全文挂原生 title（规程 R68）。
     return (
-      <Space size={4}>
-        <Typography.Text type="secondary" className="fs-caption" title={why.detail === '' ? why.short : `${why.short}\n${why.detail}`}>
-          看不了
-        </Typography.Text>
-        <Typography.Text className="fs-code">{name}</Typography.Text>
-      </Space>
+      <Typography.Text type="secondary" className="fs-caption"
+        title={why.detail === '' ? why.short : `${why.short}\n${why.detail}`}>
+        看不了
+      </Typography.Text>
     );
   }
 
@@ -122,22 +127,17 @@ export function ThumbCell({ jobId, name, fs, prefix = '', auto = false, box = 72
       // 点开看大图：网格里那几格只是"有哪些图"的答案，看清全貌才是目的。
       preview={{ mask: '看大图' }}
     />
+  ) : auto ? (
+    <Typography.Text type="secondary" className="fs-caption">
+      {loading ? '读着…' : ''}
+    </Typography.Text>
   ) : (
-    <Space size={4}>
-      {auto ? (
-        <Typography.Text type="secondary" className="fs-caption">
-          {loading ? '读着…' : ''}
-        </Typography.Text>
-      ) : (
-        <Typography.Text
-          className="fs-code" role="button" style={{ cursor: loading ? 'default' : 'pointer' }}
-          onClick={() => { if (!loading) { void fetchImage(); } }}
-        >
-          {loading ? '读着…' : '看看'}
-        </Typography.Text>
-      )}
-      <Typography.Text className="fs-code" type="secondary">{name}</Typography.Text>
-    </Space>
+    <Typography.Text
+      className="fs-code" role="button" style={{ cursor: loading ? 'default' : 'pointer' }}
+      onClick={() => { if (!loading) { void fetchImage(); } }}
+    >
+      {loading ? '读着…' : '看看'}
+    </Typography.Text>
   );
 
   if (!auto) return inner;

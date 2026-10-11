@@ -463,6 +463,33 @@ fn the_local_column_shows_photos_as_a_grid() {
         "那一格点中的东西没有回到动作条上：{t}");
 }
 
+/// **摆图的那一格必须同时说得出是哪个名字**（真窗口跑出来的，2026-10-12）。
+///
+/// 症状：`ThumbCell` 在"图加载完了"那一支只交回一张 `<Image>`，把行里原本写着名字的
+/// 那句换掉了。本地那一栏一旦缩略图到位，那一行就没有一个字了 —— 而这一面头上明写着
+/// 「要动哪个名字就点哪个」，名字不在行上就点不出那个名字（验收驱动 `a.webp` /
+/// `only-local.webp` 两格因此找不到靶子）；差异面那一格更重，「这些名字就是要删的那些」
+/// 那一行读不到名字。
+///
+/// 判据落在**分工**上，不落在某一句标签上：`ThumbCell` 只画那一格图或那句状态，
+/// 名字由每一格自己写。所以两头各钉一次 —— 组件里不许再把名字当自己的输出，
+/// 三个消费方（网格 / 表格行 / 差异面行）每一处都要自己写一份。
+#[test]
+fn a_cell_that_draws_a_picture_also_says_which_name() {
+    let thumb = strip_comments(&read("src/components/ThumbCell.tsx"));
+    assert!(!thumb.contains(">{name}<"),
+        "缩略图组件又把名字当成自己的输出了：图一到手那一行的名字就被它换掉：{thumb}");
+    // 图与名字同格、各写各的：表格里那一行既摆 `ThumbCell` 也写 `{name}`。
+    let pane = strip_comments(&read("src/components/BrowserPane.tsx"));
+    assert!(pane.contains("<ThumbCell") && pane.contains(">{name}<"),
+        "浏览器那一栏摆完图就不写名字了：{pane}");
+    // 网格下面那一行 `.thumb-name` 是同一个约定的另一半（选中态那句「已选中 · 」住在那里）。
+    assert!(pane.contains("thumb-name"), "网格那一格脚下没有名字那一行：{pane}");
+    let inv = strip_comments(&read("src/components/InventoryPanel.tsx"));
+    assert!(inv.contains("<ThumbCell") && inv.contains(">{k}<"),
+        "差异面那一格摆完图就不写名字了：{inv}");
+}
+
 /// 浏览面板的两栏**联动**（2026-10-11）。
 ///
 /// 这一面开着是为了**比两边差在哪**，而"差在哪"只在「同一位置的本地 ↔ 同一位置的云端」

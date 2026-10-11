@@ -3,6 +3,7 @@ import { Alert, Descriptions, Progress, Space } from 'antd';
 import { NoteLine } from './NoteLine';
 
 import { formatBytes, formatDuration, formatEta, formatSpeed } from '../format';
+import { KIND_LABEL } from '../types';
 import type { JobKind, StatsView, TaskState } from '../types';
 
 function pct(done: number, total: number): number {
@@ -38,9 +39,12 @@ export function JobDetailPanel({
           走 `NoteLine` 而不是 `Empty` 图标：四段共用一种空态（`frontend_pairs` 的证人钉着）。 */}
       {(state === undefined || state.state === 'idle') && (
         <NoteLine tone="secondary" note={{
-          short: '这一格还没跑过。先按「看差异」。',
+          // 明面只说状态，**不指路**：「看差异」那颗在两侧同型的那一格根本不在卡上
+          // （`canInventory` 读的是端点类型），指过去就是对着空气找下一步；
+          // 而它在的那一格里，那颗就摆在左边 —— 屏上指着一颗就在眼前的话，读者要多走一步。
+          short: '这一格还没跑过。',
           detail: '「看看会动什么」只回答「要不要动」，回答不了「差在哪几个」——那一份名字在「差异」那一段，'
-            + '按卡上那颗「看差异」算一次，它只列不动，不真传。第一次跑建议就停在那一步。',
+            + '到那一段上算一次，它只列不动，不真传。第一次跑建议就停在那一步。',
         }} />
       )}
       {state?.state === 'unknown' && (
@@ -54,12 +58,15 @@ export function JobDetailPanel({
       )}
       {state?.state === 'done' && (
         <Alert type={state.dry_run ? 'info' : 'success'} showIcon
-          title={state.dry_run ? '试跑完成，没有改动任何文件' : '任务完成'}
+          // 口径表第一档：「做完了 · <动作>」。以前这一档自己造了两个说法（「任务完成」与
+          // 「试跑完成，没有改动任何文件」），而设置面与浏览器那两处早就照表写了 ——
+          // 同一个"成了"在屏上有三种词。试跑那一档说的是"没动文件"这件事，它不是另一种"完成"。
+          title={state.dry_run ? '做完了 · 这一趟没动任何文件' : `做完了 · ${KIND_LABEL[kind]}`}
           // 试跑答的是"要不要动"（计数），答不了"差在哪几个"（名字）。操作员报的那一类里
           // 点了「看看会动什么」之后找不到差异，就是因为这一句没把路指出来 —— 而"差异"那一面是**另一份数据**
           // （面板自己算的集合差），不会跟着试跑自动填上。这里指路，不代替它算。
           description={state.dry_run
-            ? '它只回答「要不要动」，回答不了「差在哪几个」。要看那几个的名字，翻上面「差异」那一面点「列一遍」——那一步只列不动。'
+            ? '它只回答「要不要动」，回答不了「差在哪几个」。要看那几个的名字，翻上面「差异」那一段点「看差异」——那一步只列不动。'
             : undefined} />
       )}
       {state?.state === 'queued' && <Alert type="info" showIcon title="排队中" />}

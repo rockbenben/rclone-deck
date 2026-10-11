@@ -109,7 +109,7 @@ export function Panel() {
       setJobs(j);
       const next: Record<string, TaskState> = {};
       await Promise.all(j.map(async (job) => {
-        // 状态**每个任务都要**：卡面那颗灰不灰、「正在跑：X」那一句都读它。
+        // 状态**每个任务都要**：卡面那颗灰不灰、「正在写这棵目录树：X」那一句都读它。
         next[job.id] = await api.jobState(job.id);
       }));
       setStates(next);

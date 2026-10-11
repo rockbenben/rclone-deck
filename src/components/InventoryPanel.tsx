@@ -46,8 +46,10 @@ export function InventoryPanel({
     <Space orientation="vertical" size="middle" style={{ width: '100%' }}>
       <Space>
         <LockHint title={lockHint}>
+          {/* 与卡上那颗同一个词：同一个动作在屏上有两个名字（「看差异」与「列一遍」），
+              学一次词就只能认一处。 */}
           <Button loading={loading} disabled={off} style={off ? HIT_OFF : undefined}
-            onClick={onRefresh}>列一遍</Button>
+            onClick={onRefresh}>看差异</Button>
         </LockHint>
         {report && (
           <Typography.Text type="secondary">
@@ -79,17 +81,19 @@ export function InventoryPanel({
       {!report && !loading && (
         <NoteLine note={{
           short: '还没算过。',
-          // 只指这一面上真有的那一颗（「列一遍」）。以前拿「先试跑」作对比，而对齐那一档卡上
-          // 已经没有那颗了 —— 指一个不存在的入口，等于让人对着空气找下一步。
-          detail: '这一面要按「列一遍」单独算一次才填得上：跑一次传输、开一次清单都不顺带把它填上。',
+          // 只指这一面上真有的那一颗。以前拿「先试跑」作对比，而对齐那一档卡上已经没有那颗了 ——
+          // 指一个不存在的入口，等于让人对着空气找下一步。名字也跟卡上统一（同一个动作一个词）。
+          detail: '这一面要按「看差异」单独算一次才填得上：跑一次传输、开一次清单都不顺带把它填上。',
         }} />
       )}
 
       {report?.emptyBasis && (
         // 后台在空基准时直接返回错误，正常路径到不了这里；这一条是"万一上游漏了，
         // UI 也不把整桶渲染成一份可信清单"的第二层闸（裁定 R29）。
+        // 标题走口径表那一档的词（「没得比」）：这一族以前在这里写「这份清单不可信」，
+        // 而卡上又写「这两个数不可信」——同一个后台布尔三种话。为什么没得比，放展开。
         <Alert type="error" showIcon
-          title="这份清单不可信"
+          title="没得比"
           description={`面板这次在本地一个文件都没扫到，而云端有 ${report.remoteCount} 个。\
 差额自然就是「全部」。这几乎一定是源目录指错了或忽略规则放宽过头了，先修好对账基准。`} />
       )}

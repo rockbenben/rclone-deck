@@ -289,7 +289,10 @@ export function SettingsPanel(props: {
         </Typography.Text>
       </Space>
       <NoteLine note={{
-        short: '',
+        // `short` 空着 = `NoteLine` 第一句就 return null，整行连同那颗「为什么？」一次都不出现。
+        // 这一行存在的理由是 DESIGN 那条「路径与配置里的原名收进「为什么？」」——
+        // 明面得有一句可点的话，展开里才是那两条路径。
+        short: '这一条动的是哪两个位置',
         detail: `${j.src} → ${j.dst}　（配置里叫「${j.name}」）`,
       }} />
       {job !== null && !job.isNew && job.id === j.id ? (
@@ -387,7 +390,7 @@ export function SettingsPanel(props: {
             onChange={(v) => patchDefaults({ flags: v })}
             decides="决定每一次跑都带上的那几项参数" ifBlank="空着就是不加任何参数"
             detail={<Typography.Text type="secondary" className="fs-caption">
-              这些参数是后台启动时读的，要生效得重开面板。能填的只有「只改怎么跑、不改什么进桶」那一族；
+              这些参数是后台启动时读的，要生效得重开面板。能填的只有「只改怎么跑、不改哪些东西进去」那一族；
               写错一项会在点保存时被拦下，并把那句为什么念给你听。
               这一族里只点名放行了一枚改比法的例外：--size-only，它让每一趟都只比大小，
               内容改了但大小没变的那些不会重传；开着它的时候，屏幕最上面那条会一直写着同一句。
@@ -619,17 +622,17 @@ function RemoteCard(props: {
         onChange={(v) => patch({ remoteType: v })}
         decides="决定这一条用哪一种存储" ifBlank="空着保存会被拦下"
         detail={<Typography.Text type="secondary" className="fs-caption">
-          换后端等于换一套说法：那几项密钥与新后端大概对不上，要用 rclone 自己的命令重新配一遍。
+          换一种存储等于换一套说法：那几项密钥与新的存储大概对不上，要用 rclone 自己的命令重新配一遍。
         </Typography.Text>} />
       <Field label={labelOf(block, 'provider', '服务商')} keyName="provider" value={draft.provider}
         onChange={(v) => patch({ provider: v })}
-        decides="决定这一条走哪一家的接口" ifBlank="空着就是不要那一行，由后端自己认" />
+        decides="决定这一条走哪一家的接口" ifBlank="空着就是不要那一行，由这一种存储自己认" />
       <Field label={labelOf(block, 'endpoint', '服务地址')} keyName="endpoint" value={draft.endpoint}
         onChange={(v) => patch({ endpoint: v })}
         decides="决定这个远端连哪台服务器" ifBlank="空着就用 rclone 自己的默认" />
       <Field label={labelOf(block, 'region', '区域')} keyName="region" value={draft.region}
         onChange={(v) => patch({ region: v })}
-        decides="决定东西存在哪一片区域" ifBlank="空着就是不要那一行，由后端自己认" />
+        decides="决定东西存在哪一片区域" ifBlank="空着就是不要那一行，由这一种存储自己认" />
       <SecretCell secrets={block.secrets} />
       <Button disabled={!dirty || busy} onClick={save}>
         保存这几项

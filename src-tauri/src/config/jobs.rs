@@ -260,7 +260,7 @@ fn is_banned(f: &str, banned: &[&str]) -> bool {
 /// 上看到的写法"都不会回退的形状。
 ///
 /// 每一列都对着钉住的 rclone **v1.75.1** `rclone help flags` + 本地到本地 `copy` 实测过（不是照文档
-/// 抄的），判据是"**只改怎么跑、不改什么进桶**"：
+/// 抄的），判据是"**只改怎么跑、不改哪些东西进去**"：
 /// - `--fast-list` 换列举路径（内存换事务）；实测同一棵 junction 夹具，带上它落地集合与默认
 ///   逐字节相同（`rootfile.webp sub/a.webp sub/deep/c.webp`，那条 `NOTICE: link: Can't follow
 ///   symlink` 照旧）。
@@ -291,7 +291,7 @@ const ALLOWED_FLAGS: &[&str] = &[
 /// `--fast-list`（bool）、`--progress`（bool，`-P` 的长写法）实测都不吃下一个 token。
 ///
 /// **`--size-only` 是这道闸门唯一一枚改判定口径的例外**（一次点名批准，不是顺手补上的）。
-/// 判据本来是"只改怎么跑、不改什么进桶"，比法不在那句话里 —— 所以这一枚不是"归进那一族"，
+/// 判据本来是"只改怎么跑、不改哪些东西进去"，比法不在那句话里 —— 所以这一枚不是"归进那一族"，
 /// 是**例外**，代价与实测数字写在这里：
 /// - 省下来的：操作员那对目录（本地 6,107 个对象 / 391 MiB → `r2:img`）实测默认比法一趟
 ///   **52~57 秒**，只比大小 **12~15 秒**；差的正是"逐对象向远端要修改时间"那 6,107 次请求
@@ -404,13 +404,13 @@ impl JobsFile {
             // 判定含长写法与**合并短 flag**（`-Lv` 实测真的生效）。白名单本就不含它们，这里仍单独点名。
             if is_banned_link_flag(f) {
                 return Err(ConfigError::Invalid(format!(
-                    "defaults.flags 里不允许出现 {f}：它会改变哪些对象会被推进桶\
+                    "defaults.flags 里不允许出现 {f}：它会改变哪些对象会被传到云端\
                      （链接会被跟随，或者链接本身被当成一个对象推上去，实测的拼写是\
                      `<链接名>.rclonelink`），而 gate/盘点的期望集合按 rclone \
-                     的默认策略算——不跟随链接。两边不一致时，桶里多出来的那条拼写就成了对齐任务的\
+                     的默认策略算——不跟随链接。两边不一致时，云端多出来的那条拼写就成了对齐任务的\
                      删除候选，删掉的是真实存在的文件，而人在清单里抓不住它——那条拼写读起来和\
                      一张真该删的孤儿一模一样。合并写法的一个 `-` 后面只要含 `L` 或 `l` 也算，\
-                     rclone 认那种写法。要让某个目录不进桶，请用 exclude 的\
+                     rclone 认那种写法。要让某个目录不传上去，请用 exclude 的\
                      `目录名/` 写法（实测与 rclone 剪整棵子树的行为一致），不要加链接类 flag。")));
             }
             // 第 4 步：白名单。
@@ -425,17 +425,17 @@ impl JobsFile {
                              rclone 的 `--exclude` 启动参数和面板自己的匹配器（`normalize_expected`）。\
                              从 flags 再开第二条过滤路径，两侧就会悄悄不再同一次匹配：`--include` 实测\
                              与 `--exclude` 并写时 exit=0、只留一边、rclone 只打一行 order indeterminate\
-                             ERROR。要让某个目录进/不进桶，请用 exclude（剪整棵子树写 `目录名/`）。")));
+                             ERROR。要让某个目录传/不传上去，请用 exclude（剪整棵子树写 `目录名/`）。")));
                     }
                     return Err(ConfigError::Invalid(format!(
                         "defaults.flags 里的 {f}：不在面板允许的 flag 白名单里。\
-                         白名单只收**只改怎么跑、不改什么进桶**的吞吐/并发/重试/限流/超时\
+                         白名单只收**只改怎么跑、不改哪些东西进去**的吞吐/并发/重试/限流/超时\
                          （--transfers、--checkers、--fast-list、--bwlimit、--timeout、--retries、\
                          --multi-thread-streams、--tpslimit）与进度/啰嗦（-P、--progress、--stats、\
                          -v、-q）参数；比法那一族只**点名**收了一枚 --size-only（改成只比大小，\
                          代价是内容变了而大小没变的那些不会重传，所以开着它时界面上要一直写着这一句），\
                          其余任何会改变\
-                         哪些对象会被推进桶、或什么算「变了」的写法都不在其中。\
+                         哪些对象会被传到云端、或什么算「变了」的写法都不在其中。\
                          这不是前缀/子串匹配（`--list-cutoff`、`--links-follow-template` 那种只是\
                          长得像的一律拒），是正面点名放行——rclone 有几百个 flag，逐个证明它们不改\
                          落地的东西做不到，所以未点名的默认拒绝（安全侧）。要排除目录请用 exclude 字段。")));
@@ -917,7 +917,7 @@ dst = "r2:img"
     #[test]
     fn rejects_short_copy_links_flag() {
         let err = flag_error("-L");
-        assert!(err.contains("桶"), "报错要说清它改了桶里的东西，实际是：{err}");
+        assert!(err.contains("云端"), "报错要说清它改了哪一侧的东西，实际是：{err}");
     }
 
     /// `-l` 就是 `--links` 的短写法，钉住的 v1.75.1 原样（`rclone help flags`）：
@@ -926,7 +926,7 @@ dst = "r2:img"
     #[test]
     fn rejects_short_links_flag_lowercase_l() {
         let err = flag_error("-l");
-        assert!(err.contains("桶"), "报错要说清它改了桶里的东西，实际是：{err}");
+        assert!(err.contains("云端"), "报错要说清它改了哪一侧的东西，实际是：{err}");
     }
 
     /// 合并短 flag 是 rclone **认**的写法，实测（同一棵 junction 夹具，
@@ -1064,7 +1064,7 @@ dst = "r2:img"
 
     // ---- 比法那一族：整闸门只点名放行 `--size-only` 这一枚 ----
     //
-    // 这道闸门的判据本来是"只改怎么跑、不改什么进桶"，而比法**不在**那句里：改比法改的是
+    // 这道闸门的判据本来是"只改怎么跑、不改哪些东西进去"，而比法**不在**那句里：改比法改的是
     // "什么算变了"。这一枚是点名批准开进来的（实测：同一对目录、6,107 个对象，
     // 默认比法 52~57 秒、只比大小 12~15 秒，差的就是那 6,107 次逐对象问远端要修改时间）。
     // 这一枚是**唯一**的例外，代价写在 [`ALLOWED_BOOL_FLAGS`] 的注释上，界面上两处要说话。

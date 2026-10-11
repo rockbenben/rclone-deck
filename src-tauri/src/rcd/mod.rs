@@ -48,7 +48,7 @@ const PROBE_TIMEOUT: Duration = Duration::from_millis(300);
 
 #[derive(Debug, Error)]
 pub enum RcdError {
-    #[error("端口 {port} 被别的进程占着：PID {pid}（{name}）。面板不静默换端口，请先关掉它")]
+    #[error("端口 {port} 被别的进程占着：进程号 {pid}（{name}）。面板不静默换端口，请先关掉它")]
     PortBusyByForeignProcess { port: u16, pid: u32, name: String },
     #[error("端口 {port} 上是残留的 rcd（PID {pid}），但回收失败：{reason}")]
     OrphanNotReapable { port: u16, pid: u32, reason: String },

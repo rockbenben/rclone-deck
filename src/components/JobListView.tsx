@@ -83,6 +83,10 @@ interface CardAction {
   icon?: ReactNode;
 }
 
+/** 上一件事还没跑完时挂在灰钮上的那一句。它不算"备用文案"：忙碌态是这一面自己的判据
+ *  （后台从没说过"别按"），所以按 DESIGN 的分工，句子也归界面这一层。 */
+const BUSY_NOTE = '上一件事还没跑完';
+
 const act = (key: string, label: string, run: () => void, off: boolean, strong = false,
   hint?: ReactNode, icon?: ReactNode): CardAction => ({ key, label, run, off, strong, hint, icon });
 
@@ -292,7 +296,6 @@ export function PairCell(props: Props & { choice: Choice }) {
    *  正在跑的时候是**后台**拒的，那句"等它跑完再收"要人听得见，而不是点不动又没人说话。 */
   const cellButtons = (job: JobView, primary: CardAction[], foldable = false) => {
     const locked = job.lockedBy !== null;
-    const hit = locked ? HIT_OFF : undefined;
     const lockedHint = runningHint(job);
     // 「看差异」从收纳口提到卡面上：它是这一格**唯一只读**的动作，也是动手之前该先按的那一颗
     // （README 第 4 步「第一次跑建议就停在这儿」）。收在「更多」里的那一次，格上那句
@@ -328,15 +331,28 @@ export function PairCell(props: Props & { choice: Choice }) {
     ];
     return (
       <Space wrap size={4}>
-        {face.map((a) => (
-          <LockHint key={a.key} title={a.hint ?? lockedHint}>
+        {face.map((a) => {
+          // 灰着的那颗必须说得出为什么（R54），而"为什么"有三个来源，优先级是：
+          // ① 被别的任务占着（后台那句，它比这颗自己的说明更要紧——人此刻问的是"为什么点不动"）；
+          // ② 这颗自己的功能说明（`a.hint`，常驻）；
+          // ③ 只是上一件事还没跑完（这一面自己的判据，所以句子也在这一面，见 `plainNote`）。
+          // 以前 ③ 那一档什么都没有：一次传输在跑，屏上同时灰五颗，只有正在跑的那张卡说了一句。
+          const why = (a.off && locked && lockedHint !== null)
+            ? lockedHint
+            : (a.hint ?? (a.off ? BUSY_NOTE : null));
+          // `HIT_OFF` 的条件是"这一颗挂着 Tooltip"，不是"它没有自己的说明"：
+          // Chromium 不给 disabled 控件派发 hover，少了那层让位，真鼠标悬停永远弹不出来。
+          const btn = (
             <Button size="small" type={a.strong ? 'primary' : 'default'}
-              style={a.hint !== undefined ? undefined : hit} disabled={a.off} onClick={a.run}>
+              style={why !== null ? HIT_OFF : undefined} disabled={a.off} onClick={a.run}>
               {a.icon !== undefined && <span className="act-icon">{a.icon}</span>}
               {a.label}
             </Button>
-          </LockHint>
-        ))}
+          );
+          return why === null
+            ? <span key={a.key}>{btn}</span>
+            : <LockHint key={a.key} title={why}>{btn}</LockHint>;
+        })}
         {rest.length > 0 && (
           <Dropdown
             trigger={['click']}

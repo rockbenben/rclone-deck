@@ -1199,7 +1199,7 @@ fn plan_conf(intent: &Intent, files: &Files) -> Result<Prepared, EditError> {
             && block_value(&old, span, key.conf_name()).as_deref() != Some(value);
         set_key(&old, &mut plan, span, key.conf_name(), want, key.label(), &mut changes);
         if was_type_change {
-            notes.push(ShortNote::plain("换后端等于换一套说法：那几项密钥与新后端大概对不上，\
+            notes.push(ShortNote::plain("换一种存储等于换一套说法：那几项密钥与新的存储大概对不上，\
                                          要用 rclone 自己的命令重新配一遍。"));
         }
     }

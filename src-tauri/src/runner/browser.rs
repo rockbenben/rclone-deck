@@ -129,17 +129,17 @@ pub fn filtered_note(rules: &[String]) -> ShortNote {
 pub fn feature_note(info: &FsInfo) -> ShortNote {
     let mut parts: Vec<String> = Vec::new();
     if info.features.get("Copy") == Some(&false) {
-        parts.push("这个后端没报服务端复制的能力，复制会走下载再上传".to_string());
+        parts.push("这一处没报服务端复制这一项，复制会走下载再上传".to_string());
     }
     if info.features.get("Purge") == Some(&false) {
-        parts.push("这个后端没报整棵清空的能力（能不能清空由面板按实测形状判断）".to_string());
+        parts.push("这一处没报整层清空这一项".to_string());
     }
     if info.features.get("FilterAware") == Some(&true) {
-        parts.push("这个后端会按排除规则过滤列表".to_string());
+        parts.push("这一处会按排除规则过滤列表".to_string());
     }
     if parts.is_empty() { return ShortNote::none(); }
     ShortNote {
-        short: "这个后端报的能力不全，面板按实测判断".to_string(),
+        short: "这一处有些做法没报上来".to_string(),
         detail: parts.join("；"),
     }
 }

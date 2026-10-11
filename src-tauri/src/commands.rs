@@ -47,7 +47,7 @@ pub async fn get_jobs(state: tauri::State<'_, AppState>) -> Result<Vec<JobView>,
     // 问的是"**谁正挡着这条任务要写的那两棵树**"（`Runner::blocking_owner`，裁定 R92），不是"这组键里
     // 有没有一条**等号**登记"。锁早在 R90 就改成按 `Scope` 的包含关系拒绝，读侧若还按等号查，
     // "占着父目录的那次写"底下那一层就会显示成没锁——按钮亮着、点下去拿到 `Busy`，
-    // 界面那句「正在跑：谁」与拒绝的理由从此两说一套。判据与拒绝侧同一个（`mutex::conflicts_with`）。
+    // 界面那句「正在写这棵目录树：谁」与拒绝的理由从此两说一套。判据与拒绝侧同一个（`mutex::conflicts_with`）。
     // 同一趟还带上**上一次盘点**的那两个数与时刻（`Runner::last_summary`，spec §3）：
     // 界面只显示它，绝不因为"没有"就自己发起一次列举 —— 那正是"每次开窗几十次计费 LIST"的来路。
     Ok(runner.jobs().iter().map(|j| JobView::new(
@@ -454,7 +454,7 @@ pub async fn settings_apply(
 
 /// 有几件事正占着锁。后台没起来 = 这台面板上什么都没跑 ⇒ 空表（那句话由 `refuse_while_running` 说）。
 ///
-/// 交的是**持有者的名字**（`Runner::locks()` 的值），与对齐那一句「正在跑：谁」同一个来源；
+/// 交的是**持有者的名字**（`Runner::locks()` 的值），与对齐那一句「正在写这棵目录树：谁」同一个来源；
 /// 去重排序后交给设置面点名用。
 async fn running_names(state: &tauri::State<'_, AppState>) -> Vec<String> {
     let Ok(runner) = state.runner() else { return Vec::new() };

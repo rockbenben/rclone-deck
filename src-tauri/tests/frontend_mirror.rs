@@ -137,8 +137,14 @@ fn the_layer_restates_both_positions_and_which_side_gets_trimmed() {
     assert!(t.contains("job.src") && t.contains("job.dst"), "层里没把那两条完整位置摆出来：{t}");
     assert!(s.contains("把 ${job.dst} 修剪成 ${job.src} 那样"),
         "那一句的顺序不是「删 dst 多出来的」（镜像里 src 才是全集）：{s}");
-    assert!(s.contains("多出来的删掉") && s.contains("缺的补上"),
-        "那一句只说了删、没说这一趟同时补：{s}");
+    // 「这一趟同时会补/会拿」与「删的是哪一侧」必须都在 —— 以前它们挤在同一句里
+    // （「…那样：多出来的删掉，缺的补上」），而下面两句各说了一遍，同一层里说了三遍。
+    // 现在各归一处：全集那一句说删谁，`alsoMoves` 那一句说同时补谁。判据按**两件事都在层上**，
+    // 不按某一句的字面（钉字面就会为了改文案而拆担保）。
+    assert!(s.contains("本地是全集") || s.contains("云端是全集"),
+        "那一句只说了修剪，没说删的是哪一侧多出来的：{s}");
+    assert!(s.contains("也会把") && (s.contains("补上去") || s.contains("拿下来")),
+        "这一层只说得了删、没说这一趟同时补/拿：{s}");
 }
 
 /// 详情面板只**并列摆出**这两个数，不在 TypeScript 里算判定（裁定 R66）。
@@ -229,10 +235,14 @@ fn the_recheck_sentence_is_one_prefix_and_two_truths() {
     }
     assert!(mirror.contains("逐条比对"), "镜像那侧的集合比对被写成看了一眼：{mirror}");
     assert!(!layer.contains("再看一次那个位置"), "浏览器那侧的复核又退回「看一眼」：{layer}");
-    // 「那条线是假设值」要留着：它告诉人"这一档被拒不是我的东西真的危险"，是可行动的；
-    // 后面那半句"量到真实分布之前会一直偏保守"说的是我们还没量——操作员对它做不了任何事，
-    // 而 `DESIGN.md` 把这一类推理点名留在日志和文档里（那一条举的例子就是这句原话）。
-    assert!(mirror.contains("假设值"), "阈值是假设值这件事不许被说成量出来的：{mirror}");
+    // 「挡住一半的那条线是假设值（偏保守）」这一句**撤了**。这里以前反过来钉着它
+    // （理由：它告诉人"被拒不是我的东西真的危险"），而 `DESIGN.md` 的 Do's/Don'ts 把
+    // 同一句原话点名为"不许上屏的那类推理"——两条直接打架。裁给契约：
+    // 可行动的那半句（挡下时会说原因）留下，"我们还没量"那半句回到日志与文档。
+    assert!(!mirror.contains("假设值"),
+        "那条线还没标定这件事又回到删除确认层上了（DESIGN 的 Don'ts 点名不上屏）：{mirror}");
+    assert!(mirror.contains("会说原因") || mirror.contains("说出为什么"),
+        "撤推理的时候把「挡下会解释」这半句担保也一起弄丢了：{mirror}");
     assert!(!mirror.contains("量到真实分布"),
         "那条线还没标定这件事又回到删除确认层上了：{mirror}");
 }

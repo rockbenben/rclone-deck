@@ -920,10 +920,10 @@ async fn inventory_refuses_an_empty_local_basis_instead_of_offering_the_whole_re
         fx.root(), Some(fx.conf()), vec![inventory_job(&fx, &fx.src(), &fx.remote(""))],
     ).await;
     match r.run_inventory("p").await {
-        // 认**话术**，不认"有个 Invariant"："这不是「整桶都该删」"这半句在 `run_inventory`
+        // 认**话术**，不认"有个 Invariant"："这不是「整个位置都该删」"这半句在 `run_inventory`
         // 里只出现在空基准那一段。
         Err(RunError::Invariant(msg)) => assert!(
-            msg.contains("这不是「整桶都该删」"),
+            msg.contains("这不是「整个位置都该删」"),
             "拒绝的理由不是空基准，而是另一道闸的话术：{msg}"),
         Ok(report) => panic!("空基准被当成盘点清单交出去了：{:?}", report.orphans),
         Err(_) => panic!("期望空基准的 Invariant 拒绝，实际是另一种失败"),

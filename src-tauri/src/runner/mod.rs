@@ -765,8 +765,8 @@ impl Runner {
                 ("list_secs", list_secs.to_string()),
             ]).map_err(|e| RunError::Io(e.to_string()))?;
             return Err(RunError::Invariant(format!(
-                "job {} 的本地清单一个对象都没有，而桶里有 {} 个。\
-                 这不是「整桶都该删」，这几乎一定是 src 指错了或 exclude 放宽过头了。\
+                "job {} 的本地清单一个对象都没有，而云端有 {} 个。\
+                 这不是「整个位置都该删」，这几乎一定是 src 指错了或 exclude 放宽过头了。\
                  先确认 src 与 exclude，再来盘点。", job.id, report.remote_count)));
         }
 

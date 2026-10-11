@@ -336,7 +336,7 @@ async function hover(text, side = 'any', nth = 0, inRow) {
   return pt;
 }
 /** 等卡上那颗按钮从"灭"变成"亮"。灭着按下去是什么都不发生（层不会开），而**为什么**灭写在卡上那句
- *  「正在跑：X」里 —— 所以这里把那句话一起带回去当读数，而不是让人只看到一句"正文为空"。
+ *  「正在写这棵目录树：X」里 —— 所以这里把那句话一起带回去当读数，而不是让人只看到一句"正文为空"。
  *  实测到的形状：上一格（`settings-save-while-running`）故意留了一次 6000 个文件的传输在跑，
  *  整遍跑到这一格时那颗还是灭的；单独跑这两格则一直是亮的。界面按设计拒绝"同一棵树上有事在跑再起一个"，
  *
@@ -363,7 +363,7 @@ async function waitEnabled(text, timeoutMs = 300000, inRow) {
   }
 }
 /** 等**没有任务在跑**。判据就是界面自己那道闸：卡上任何一颗亮着的按钮都表示没在跑（灭 = `busy || locked || running`），
- *  再加一句「正在跑：X」必须不在屏上。
+ *  再加一句「正在写这棵目录树：X」必须不在屏上。
  *  为什么要有这一条：`busy-while-transfer` 起的那一次传输（夹具是两万个文件）跑不跑得完，取决于当时机器多忙，
  *  不取决于界面。有一遍它没跑完，设置面从第一次保存起连红几步，每条写的都是
  *  「现在有事正在跑：图床批量上传（夹具）」—— 那**是**闸门按设计工作，红的是驱动没等。 */
@@ -373,7 +373,7 @@ async function waitIdle(timeoutMs = 600000) {
   for (;;) {
     const now = JSON.parse(String(await ev('(() => { const btns = [...document.querySelectorAll(".pairs-cell button, .ant-listy-item button")]'
       + '.filter((b) => b.getBoundingClientRect().width);'
-      + 'const m = document.body.innerText.replace(/\\s+/g, " ").match(/正在跑：\\S{1,30}/g);'
+      + 'const m = document.body.innerText.replace(/\\s+/g, " ").match(/正在写这棵目录树：\\S{1,30}/g);'
       + 'return JSON.stringify({ off: btns.filter((b) => b.disabled).length, total: btns.length,'
       + ' hint: m ? m.join(",") : "" }); })()')));
     if (now.off === 0 && now.hint === '') return { ms: Date.now() - t0, now };
@@ -709,7 +709,7 @@ async function cardShape(rowKey) {
     + ' note: txt.includes("只告诉你会动哪些") ? 1 : 0,'
     // 这一格**不再有名字那一行**（撤的：它在两行之内复述「模式」与「方向」两枚框）。
     // 它交出来的是那两条完整路径，读这一枚 `.fs-code` 而不是整格文字：整格里还有那颗
-    // 「正在跑：…」的红标，它带着别的任务的名字（同一族教训见这里的历史版本）。
+    // 「正在写这棵目录树：…」的红标，它带着别的任务的名字（同一族教训见这里的历史版本）。
     + ' paths: (() => { const p=r.querySelector(".fs-code"); return p ? p.textContent.trim() : ""; })(),'
     + ' warm: t ? getComputedStyle(t).color : "" }); })()')));
 }

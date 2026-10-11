@@ -73,16 +73,16 @@ impl GateReport {
     pub fn summary(&self) -> String {
         match self.verdict {
             GateVerdict::Pass => format!(
-                "闸门通过：应有 {} 个对象，桶内 {} 个，全部就位",
+                "闸门通过：应有 {} 个对象，云端有 {} 个，全部就位",
                 self.expected_count, self.actual_count),
             GateVerdict::Missing => format!(
-                "闸门未通过：应有 {} 个对象，桶内 {} 个，缺失 {} 个",
+                "闸门未通过：应有 {} 个对象，云端有 {} 个，缺失 {} 个",
                 self.expected_count, self.actual_count, self.missing.len()),
             // "全部就位"在这种输入下是假话：一个都没扫到，所以什么都不知道。
-            // 这一句因此把 `actual_count` 照实报出来，两边都空时就写着"桶内 0 个"——
+            // 这一句因此把 `actual_count` 照实报出来，两边都空时就写着"云端有 0 个"——
             // 不许为了好看把它省掉或换成别的数（裁定 R56 item 1）。
             GateVerdict::EmptyBasis => format!(
-                "闸门无从对账：本地一个对象都没有（应有 0 个），桶内 {} 个。\
+                "闸门无从对账：本地一个对象都没有（应有 0 个），云端有 {} 个。\
                  这不是「都齐了」，先检查 src 指向与 exclude 是否过宽",
                 self.actual_count),
         }

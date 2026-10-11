@@ -277,7 +277,7 @@ impl RcClient {
         if remote == "." {
             return Err(ListError::Other(RcError::Rc {
                 method: "operations/list".into(),
-                message: "remote 不能是 \".\"：rclone 会返回 404 directory not found；桶根用 \"\"".into(),
+                message: "remote 不能是 \".\"：rclone 会返回 404 directory not found；云端根用 \"\"".into(),
             }));
         }
         let remote = remote.trim_matches('/');

@@ -98,7 +98,10 @@ export function MirrorConfirm(props: {
         <Alert type="warning" showIcon title="这一步不可撤销"
           description={<Space orientation="vertical" size={2} style={{ width: '100%' }}>
             <Typography.Text>
-              {`这一趟把 ${job.dst} 修剪成 ${job.src} 那样：多出来的删掉，缺的补上。`}
+              {/* 这一句只报**动的哪两棵树**。它原来尾巴上还挂着「多出来的删掉，缺的补上」，
+                  而那正是下面两句各说一遍的事 —— 同一层里同一件话说三遍，
+                  读者只会怀疑这三遍说的是三件不同的事（DESIGN 文案第 1 条）。 */}
+              {`这一趟把 ${job.dst} 修剪成 ${job.src} 那样。`}
             </Typography.Text>
             <Typography.Text>{premise}</Typography.Text>
             <Typography.Text>{alsoMoves}</Typography.Text>
@@ -106,24 +109,24 @@ export function MirrorConfirm(props: {
         <Alert type="info" showIcon
           title={preview
             // 占比原样带着后台给的那一串（"3/4"）：这里一除，判据就变成界面解释的了（R29 同一条口径）。
-            // 「那条线是假设值」留着——它是可行动的（被挡住时知道那不是自己的东西真的危险）；
-            // 原来跟在后面的那半句"量到真实分布之前会一直偏保守"删了：那说的是我们还没量，
-            // 操作员对它做不了任何事，而 `DESIGN.md` 的时间/口径那一节把这一类推理点名留在日志和文档里。
+            // 「那条线是假设值（偏保守）」这一句整段撤了：DESIGN 的 Do's/Don'ts 点名的就是这一类
+            // ——它说的是"我们还没量"，操作员对它做不了任何事。留下来的那半句是可行动的：
+            // 挡不挡由那一趟自己说，而不是让人去猜那条线画得准不准。
             // 同一族的另一层（`LayerConfirm`）早就只说"照实报，它不是放行或挡住的依据"。
-            ? `还可能删掉若干空目录——清单只列文件。这次要删的占比 ${preview.doomedRatio}；挡住一半的那条线是假设值（偏保守），它挡住的时候会说出来。`
-            : '还可能删掉若干空目录——清单只列文件。挡住一半的那条线是假设值（偏保守），它挡住的时候会说出来。'} />
+            ? `还可能删掉若干空目录——清单只列文件。这次要删的占比 ${preview.doomedRatio}；要删的占到一半以上会被挡下，挡下的时候会说原因。`
+            : '还可能删掉若干空目录——清单只列文件。要删的占到一半以上会被挡下，挡下的时候会说原因。'} />
         {error && <Alert type="error" showIcon title="没改成" description={<NoteLine note={error} />} />}
         {!preview && (
           // 这一档必须自己把"你批的是什么"说完：没有名单不等于没有担保 ——
           // 动手前那两道拒绝（占比过半 / 这一侧空着）照旧在，而想看逐条名字有一条现成的路。
-          // 那两个数**不在这里现算**：读的是后台摘要那一份（`summaryNumbers` 只有一处说法）。
+          // 「会传 N 个 · 会删 M 个」那两个数读的是后台摘要那一份（界面不自己减）。
           // 但措辞是**后果口径**而不是统计口径 —— 这一层是全app最要紧的一刻（"按下去就要删东西"），
           // 而「云端多余」在这个位置上恰恰是**要删掉的那些**，用中性词说它等于把最重的那件事说轻了。
           // 卡面上那一格（`JobListView` 的 `summaryLine`）已经是这个口径，两处说同一件事用同一个词。
           <Alert type="info" showIcon title="这一趟还没列逐条名单"
             description={<Space orientation="vertical" size={2} style={{ width: '100%' }}>
               <Typography.Text>
-                按下去之后，后台先把这两个位置各列一遍：多出来的删掉、缺的补上。
+                按下去之后，后台先把这两个位置各列一遍。
                 要删的占到一半以上，或者这一侧一个对象都没有，它就拒绝并说出为什么。
               </Typography.Text>
               <Typography.Text type="secondary">
@@ -131,7 +134,7 @@ export function MirrorConfirm(props: {
                   ? `上次核对：会传 ${job.lastSummary.pendingUpload} 个 · 会删
                     ${job.lastSummary.dstIsLocal ? job.lastSummary.pendingUpload : job.lastSummary.orphans} 个`
                     + ` · ${job.lastSummary.measuredAt} 算的`
-                  : '这两个位置还没核对过。要先看逐条名字，点「重新预览」。'}
+                  : '要先看逐条名字，点「重新预览」。'}
               </Typography.Text>
             </Space>} />
         )}
@@ -154,18 +157,15 @@ export function MirrorConfirm(props: {
             }]}
           />
         )}
-        {/* 这一句对两个分支都成立：清单为空时「照它跑一次」同样要先过后台的重列比对，
-            所以复核的话要说在分支外面，不能只在有东西可删时才出现。
-            前半句「重新列一遍并逐条比对」是这一层做的事（两侧各列一次，集合不等就不动），
-            与浏览器那层共用的只有开头那半句——那一层核对的是"那个位置现在有什么"，
-            不是同一件事，硬写成同一句就是在其中一层骗人。
-            没有清单那一支**不再复述算法**（2026-10-09）：它原写「先列一遍这两个位置」，
-            而正上方那条「这一趟还没列逐条名单」已经逐字说了同一件事 —— 同一层里说两遍，
-            第二遍只会被读成另一件事。这一支只留**担保**：你按下去之后才列，那两条拒绝照样生效。 */}
-        <Typography.Text type="secondary">
-          {preview ? '确认之后后台会重新列一遍并逐条比对，跟这份对不上就不会动手。'
-                   : '按下去之后才开始列；上面那两条拒绝照样生效。'}
-        </Typography.Text>
+        {/* 「动手前会再核对一次」这一句两个分支都要说，但**各说一次**：
+            有名单那一支说的是"跟眼前这份逐条比对，对不上就不动"（这一层之外没人知道那份清单长什么样）；
+            没名单那一支说的"按下去之后先各列一遍 + 那两道拒绝"已经在上那条 alert 里逐字说过了，
+            这里再复述一遍就是同一层里说两遍（DESIGN 文案第 1 条）。所以这一支不再摆第二句。 */}
+        {preview && (
+          <Typography.Text type="secondary">
+            确认之后后台会重新列一遍并逐条比对，跟这份对不上就不会动手。
+          </Typography.Text>
+        )}
       </Space>
     </Modal>
   );

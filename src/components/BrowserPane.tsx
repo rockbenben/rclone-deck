@@ -189,7 +189,9 @@ export function BrowserPane(v: PaneProps) {
         <Crumbs root={v.rootLabel} prefix={v.prefix} onJump={a.onJump} />
       </div>
       <Space wrap size={4}>
-        <Select popupMatchSelectWidth={false} style={{ minWidth: 170 }} placeholder="选一个位置" value={v.fs ?? undefined}
+        {/* 没有占位句：框下面那一句「选一个位置，这一栏会列出那里有什么。」已经说了同一件事，
+            而框本身空着就是"没选"的样子（DESIGN 文案第 1 条：同一屏幕同一件事只说一遍）。 */}
+        <Select popupMatchSelectWidth={false} style={{ minWidth: 170 }} value={v.fs ?? undefined}
           onChange={(next: string) => a.onSelectPosition(next)}
           options={v.choices.map((r) => ({ label: r.label, value: r.value }))} />
         {listing && <PanePath path={listing.path} />}

@@ -35,7 +35,7 @@ export function canInventory(job: JobView): boolean {
  *  卡面与右列四段共用这一个函数——那句"为什么点不动"以前在卡面里现编，
  *  右列那两颗按钮因此完全没受锁约束（点下去才吃到后台的拒绝）。 */
 export function runningHint(job: JobView): string | null {
-  return job.lockedBy === null ? null : `正在跑：${job.lockedBy}`;
+  return job.lockedBy === null ? null : `正在写这棵目录树：${job.lockedBy}`;
 }
 
 /** 与 Rust 的 StatsView 逐字段对齐。rclone 那个「扫到了多少条」的计数不在这里，

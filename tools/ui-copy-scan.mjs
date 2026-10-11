@@ -179,8 +179,31 @@ const punctuationCheck = (rel, line, text) => {
   }
 };
 
-lines.push('# 界面文案清单（待改清单）');
-lines.push('');
+/** 行话名单：这些词在**界面上**不许出现（`DESIGN.md` 的「文案」第 2 条与词表那几条定的）。
+ *  每一条都有过一次"标签与说明两套词"或"内部词上屏"的事故：
+ *   - 桶：S3 行话，操作员说的是"网盘/云端里那些东西"；
+ *   - 后端：中文里默认指 web 后端，这里说的是存储种类 → 「用哪种存储」；
+ *   - 能力：rclone `fsinfo` 的 feature flags 的中文化，操作员不从这个词说话；
+ *   - PID：顶栏与拒绝话术里说「进程号」，`DESIGN.md` 自己举的也是那个。
+ *  反引号里照抄的真字符与 `${…}` 插值不参与（同标点那条的豁免）。
+ *  这一族**只报不拦**：闸门那一条（标点退 1）是批准过的口径，扩闸门要单独请批。 */
+const JARGON = ['桶', '后端', '能力', 'PID'];
+const jargon = [];
+const jargonCheck = (rel, line, text) => {
+  const prose = text.replace(/`[^`]*`/g, '\u0002').replace(/\$\{[^}]*\}/g, '\u0003').replace(/\{[^}]*\}/g, '\u0003');
+  for (const w of JARGON) {
+    let i = prose.indexOf(w);
+    while (i >= 0) {
+      // 「后端口」是「后 + 端口」，不是「后端」那个名词：substring 判据要挡这一族，
+      // 否则一把乱报的尺子最后没人读它。
+      if (w === '后端' && prose[i + 2] === '口') { i = prose.indexOf(w, i + w.length); continue; }
+      jargon.push(`${rel}:${line}  「${w}」  …${prose.slice(Math.max(0, i - 12), i + w.length + 12).replace(/\s+/g, ' ')}…`);
+      i = prose.indexOf(w, i + w.length);
+    }
+  }
+};
+
+lines.push('# 界面文案清单（待改清单）');lines.push('');
 lines.push('生成：`node tools/ui-copy-scan.mjs`。改一条就在 `ui-copy-diff.md` 里记一条（旧句 → 新句 → 撞哪条裁定）。');
 lines.push('口径：只收**界面会说的话** —— 字符串字面量与 JSX 文本里的中文；注释（含跨行的块注释与 JSX 注释）、测试、日志行不算。');
 lines.push('用 `+` 拼起来的一句话合成一条（拼接是行宽的事，不是句子的事）；行号取那一句开头那一行。');
@@ -251,6 +274,7 @@ for (const group of [
       total++;
       const shown = h.text.replace(/\s+/g, ' ');
       punctuationCheck(f.replace(/\\/g, '/'), h.line, shown);
+      jargonCheck(f.replace(/\\/g, '/'), h.line, shown);
       lines.push('    ' + String(h.line).padStart(4) + '  ' + shown);
     }
     lines.push('');
@@ -265,6 +289,14 @@ lines.push('');
 lines.push(punct.length
   ? punct.map((p) => '- ' + p).join('\n')
   : '（零条。出现新条目就按那条改：引用一个说法用「」，中文句子中的冒号用全角。）');
+lines.push('');
+lines.push('## 行话（桶 / 后端 / 能力 / PID）');
+lines.push('');
+lines.push('判据见 `DESIGN.md` 的「文案」第 2 条与词表那几条。这一族**只报不拦**（退出码闸门目前只盖标点）。');
+lines.push('');
+lines.push(jargon.length
+  ? jargon.map((p) => '- ' + p).join('\n')
+  : '（零条。）');
 process.stdout.write(lines.join('\n') + '\n');
 
 // 闸门：标点有违规就退 1（清单条数不算，那不是违规，是活儿还没干完）。

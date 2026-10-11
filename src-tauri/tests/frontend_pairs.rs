@@ -155,16 +155,23 @@ fn the_gate_section_takes_its_name_from_the_shared_word_list() {
 #[test]
 fn the_dry_run_points_at_the_diff_instead_of_pretending_to_answer_it() {
     let detail = strip_comments(&read("src/components/JobDetailPanel.tsx"));
-    assert!(detail.contains("翻上面「差异」那一面点「列一遍」"),
+    assert!(detail.contains("翻上面「差异」那一段点「看差异」"),
         "试跑那句没把路指出来（报的就是找不到差异）：{detail}");
-    assert!(detail.contains("试跑完成，没有改动任何文件"), "试跑那句标题丢了：{detail}");
+    // 「做完了 · …」是口径表第一档的词。以前这一档自己造了两个说法（「任务完成」与
+    // 「试跑完成，没有改动任何文件」），而设置面与浏览器那两处一直照表写 —— 同一个"成了"
+    // 在屏上三种词。指路那半句仍然要在（上面那条钉的就是它不许丢）。
+    assert!(detail.contains("这一趟没动任何文件"), "试跑那一档的标题丢了：{detail}");
+    assert!(!detail.contains("任务完成") && !detail.contains("试跑完成"),
+        "「做完了」之外又长出一个说法：{detail}");
     // 不许出现"自动跑一次盘点"这种联动：那是每次试跑多打一次远端列举（钱与等待），
     // 而且会把两份独立读数混成一份。判据落在"有没有在这里调用盘点"。
     assert!(!detail.contains("runInventory"), "试跑那一面自己发起了盘点：{detail}");
     let inv = strip_comments(&read("src/components/InventoryPanel.tsx"));
-    // 空态那句只指**这一面上真有**的那一颗（「列一遍」）。以前它拿「先试跑」作对比 —— 那颗后来
+    // 空态那句只指**这一面上真有**的那一颗。以前它拿「先试跑」作对比 —— 那颗后来
     // 改名「看看会动什么」，而对齐那一格 2026-10-05 起只剩一颗，指过去就是对着空气找下一步。
-    assert!(inv.contains("「列一遍」单独算一次"), "差异那一面的空态没把路指在自己这一面上：{inv}");
+    // 那颗自己的名字现在与卡上统一（都叫「看差异」），所以这一句指的也是它。
+    assert!(inv.contains("「看差异」单独算一次"), "差异那一面的空态没把路指在自己这一面上：{inv}");
+    assert!(!inv.contains("列一遍"), "同一个动作在屏上又有第二个名字：{inv}");
     assert!(!inv.contains("看看会动什么") && !inv.contains("先看一遍") && !inv.contains("先试跑"),
         "空态那句又去指那颗可能不在卡上的按钮：{inv}");
     assert!(inv.contains("顺带"), "没点出'别的动作不会替它算'：{inv}");
@@ -276,9 +283,12 @@ fn the_rail_buttons_obey_the_same_lock_as_the_card() {
         assert!(t.contains("<LockHint"), "{file}：那颗按钮灰着却说不出为什么：{t}");
         assert!(t.contains("disabled={off}"), "{file}：那颗按钮没受锁约束：{t}");
     }
-    // 「正在跑：X」全仓只拼一处（`types.ts` 的 `runningHint`）：两处现编就是两处会各自漂的话术。
+    // 那句锁的话全仓只拼一处（`types.ts` 的 `runningHint`）：两处现编就是两处会各自漂的话术。
+    // 词本身跟着口径表那一档走（「另一条任务正在写这棵目录树」）——以前卡上写「正在跑：X」、
+    // 后台拒绝写「另一条任务正在写同一棵目录树」、文档写第三种，同一件事三个说法。
     let types = strip_comments(&read("src/types.ts"));
-    assert_eq!(count_in(&types, "正在跑："), 1, "那句锁的文案有两处拼装：{types}");
+    assert_eq!(count_in(&types, "正在写这棵目录树："), 1, "那句锁的文案有两处拼装：{types}");
+    assert_eq!(count_in(&types, "正在跑："), 0, "「正在跑」那个两义的说法回来了：{types}");
 }
 
 /// 那一句"还没算过"的空态之外，卡上那颗入口的名字要跟**段名**一致。

@@ -93,10 +93,10 @@ export function PairDraftLayer(props: {
         {row('这一侧', left, setLeft)}
         {row('那一侧', right, setRight)}
         {refsError && (
-          <Alert type="error" showIcon title="那些位置没取到" description={<NoteLine note={refsError} />} />
+          <Alert type="error" showIcon title="取那些位置失败" description={<NoteLine note={refsError} />} />
         )}
         {error && (
-          <Alert type="error" showIcon title="这张卡没立起来" description={<NoteLine note={error} />} />
+          <Alert type="error" showIcon title="没改成" description={<NoteLine note={error} />} />
         )}
         {/* 这句必须在这里说：这一张卡不写得进那两份文件，而"关掉就没了"是它与设计语言里
             那几张配好的卡唯一的区别（R96/R97：格上那句「这张卡上有没写进配置的格子」）。 */}

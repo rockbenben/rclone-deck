@@ -54,7 +54,7 @@ fn summary_names_the_missing_count() {
     let report = gate::diff(&set(&["a", "b", "c"]), &set(&["a"]), vec![]);
     let s = report.summary();
     assert!(s.contains("应有 3 个对象"), "{s}");
-    assert!(s.contains("桶内 1 个"), "{s}");
+    assert!(s.contains("云端有 1 个"), "{s}");
     assert!(s.contains("缺失 2 个"), "{s}");
 }
 
@@ -66,7 +66,7 @@ fn summary_reports_both_counts_when_it_passes() {
     let s = gate::diff(&keys, &keys, vec![]).summary();
     assert!(s.starts_with("闸门通过："), "{s}");
     assert!(s.contains("应有 2 个对象"), "{s}");
-    assert!(s.contains("桶内 2 个"), "{s}");
+    assert!(s.contains("云端有 2 个"), "{s}");
 }
 
 /// R29 的核心一条：本地什么都没扫到**绝不是绿信号**。
@@ -91,10 +91,10 @@ fn both_sides_empty_is_still_not_a_passing_gate() {
     let report = gate::diff(&set(&[]), &set(&[]), vec![]);
     assert_eq!(report.verdict, gate::GateVerdict::EmptyBasis, "{report:?}");
     assert!(!report.passed(), "两边都空同样什么都没确证，不许放行：{report:?}");
-    // 那句"桶内 0 个"是照实说出来的，不是省略出来的。
+    // 那句"云端有 0 个"是照实说出来的，不是省略出来的。
     let s = report.summary();
     assert!(s.contains("无从对账"), "{s}");
-    assert!(s.contains("桶内 0 个"), "{s}");
+    assert!(s.contains("云端有 0 个"), "{s}");
     assert!(!s.contains("全部就位"), "{s}");
 }
 

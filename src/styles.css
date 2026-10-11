@@ -136,15 +136,24 @@ body { background: var(--canvas); color: var(--ink); font-family: "Segoe UI", "M
 /* 一切数字走等宽：数量跳动时列不抖，也让人一眼扫得完（DESIGN.md 的 metric-md）。 */
 .num { font-variant-numeric: tabular-nums; font-size: 13px; line-height: 20px; }
 
-/* 三档文字类，值取自 DESIGN.md 的字阶——组件里只引用类名，不再各写各的字号。 */
+/* 三档文字类，值取自 DESIGN.md 的字阶——组件里只引用类名，不再各写各的字号。
+   `caption` 那一档**不带字距**：它实际承担的是整句说明（设置面每一格脚下那两句最典型），
+   而中文加字距会散；DESIGN 原先给它的 0.2px 是"标签间距"，可屏上那一档几乎没有标签。 */
 .fs-note { font-size: 12.5px; line-height: 19px; }      /* body-sm：次要说明句 */
-.fs-caption { font-size: 11px; line-height: 17px; letter-spacing: .2px; }  /* caption：短注 / 标签 / 时间 */
+.fs-caption { font-size: 11px; line-height: 17px; }     /* caption：短注 / 标签 / 时间 */
 .fs-code, .log-tail { font-size: 12px; line-height: 18px; }  /* code-md：路径与名字 */
+
+/* antd 给"代码体那段"自己乘了个 85%（`Typography` 的 code 档），于是 `<code>` 落到 10.2px ——
+   低于 DESIGN 的地板（字号最小 11px，不再小），而那一档摆的是路径与文件名，正是最该看清的。
+   两条都要压：`&[code]` 那种"自己就是 code"的形状与"嵌在 typography 里"的形状。 */
+code.ant-typography, .ant-typography code { font-size: 12px; line-height: 18px; }
 
 /* 「为什么？」那一类可点的小字：颜色取色板那一档（`--link`），不吃算法派生的链接色。
    选择器带上类名是有意的：CSS-in-JS 注入的那条 `a { color }` 与裸写的同特异度，
-   谁后写谁赢 —— 一格的色不该由注入顺序决定。 */
-.fs-caption a { color: var(--link); }
+   谁后写谁赢 —— 一格的色不该由注入顺序决定。
+   那枚 `::after` 只补命中框（15px 高的一行字太薄，指尖点不准），不改任何视觉。 */
+.fs-caption a { color: var(--link); position: relative; }
+.fs-caption a::after { content: ''; position: absolute; inset: -4px -2px; }
 
 /* 白卡片：面板、栏、内容区共用同一层厚度。 */
 .surface { background: var(--surface); border: 1px solid var(--hairline); border-radius: var(--r-card); box-shadow: var(--shadow-card); }
@@ -154,6 +163,9 @@ body { background: var(--canvas); color: var(--ink); font-family: "Segoe UI", "M
 .bar { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; padding: 7px 12px; }
 /* 右边那一组放"可改的东西"（主题切换口 + 日志目录），左边只说后台现在的状态。 */
 .bar-right { margin-left: auto; min-width: 0; display: flex; align-items: center; gap: 10px; }
+/* 那枚复制图标只有 15px 高（一行字的高度），指尖点不准。补一圈命中区，视觉一点不动。 */
+.bar-right .ant-typography-copy { position: relative; }
+.bar-right .ant-typography-copy::after { content: ''; position: absolute; inset: -5px -4px; }
 
 /* 那一对路径：三段式**截中段**。头可缩可省略，箭头与尾钉住 —— 认家靠的正是尾巴那个目录名，
    尾部截断（antd 默认那个 `ellipsis`）会把它换成 `…\Local\Temp\d…`，这一行就白摆了。 */
@@ -199,7 +211,7 @@ body { background: var(--canvas); color: var(--ink); font-family: "Segoe UI", "M
   border-radius: var(--r-ctl);
 }
 
-/* 浏览本地那一栏的图片网格（满宽时才有）。
+/* 图片网格（只有满宽且本地那一栏摆，判据在 `BrowserPane` 的 `grid` 那一行）。
    `auto-fill` + `minmax` 是关键：格子数随窗口自己算，而不是写死一个列数 ——
    窗口窄时自动少摆几列，不会把图挤到看不出是什么。 */
 .thumb-grid {
@@ -223,11 +235,15 @@ body { background: var(--canvas); color: var(--ink); font-family: "Segoe UI", "M
 .thumb-cell:hover { background: var(--surface-muted); }
 .thumb-cell.picked { border-color: var(--link); background: var(--sel-bg); }
 
-/* 名字截中段而不是尾部：图片库的文件夹里同一批文件常常共享同一个前缀
-   （`2026/08/IMG_1234.webp`），尾部才是彼此不同的那部分。 */
+/* 名字那一行：**尾部保住**（图片库里同一批文件常常共享同一个前缀，
+   `2026/08/IMG_1234.webp` 里彼此不同的正是尾巴），所以省略号落在开头。
+   字号与字族走 `.fs-code`（名字属 code-md 那一族，与表格里那一列同一枚），
+   这里只管截断。`unicode-bidi: plaintext` 不是装饰：整格是 RTL 方向，
+   没有它的话中英数字混排的名字会被重排（括号与连字符翻到错的一边），
+   屏上那串就不是文件名本身了。 */
 .thumb-name {
   max-width: 100%;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-  font-size: 12px; color: var(--ink-3);
-  direction: rtl; text-align: center;   /* rtl 让省略号落在开头（也就是尾部被截） */
+  direction: rtl; text-align: center; unicode-bidi: plaintext;
+  color: var(--ink-3);
 }

@@ -121,14 +121,17 @@ export function antdTheme(name: ThemeName): ThemeConfig {
       // 白字压派生的浅红 `rgb(207,112,120)` 是 **3.36**、hover 那档 `rgb(229,159,162)` 是 **2.14**
       //（这一格要把确认层也量起来才露得出来 —— 那颗按钮平时不在屏上）。浅色这一档 `onPrimary` 本来就是白，两行对浅色都是空操作。
       Button: { controlHeight: 30, controlHeightSM: 24, contentFontSize: 13, fontWeight: 500, primaryShadow: 'none', primaryColor: p.onPrimary, dangerColor: p.onPrimary },
-      Card: { paddingLG: 12 },
+      // 卡片标题与结果条/提示条的标题都吃 antd 的 `fontSizeLG`（默认 16），那是契约外的**第六档**：
+      // 字阶只有 18/15/13.5/12.5/11 五档（DESIGN 的 Typography 那条），16 谁都不是。
+      // 两枚都在**组件级**压回 15（heading-md），不动全局 `fontSizeLG` —— 全局那一枚还管着别的派生。
+      Card: { paddingLG: 12, headerFontSize: 15 },
+      Alert: { borderRadiusLG: 12, fontSizeLG: 15 },
       Segmented: { trackBg: p.surfaceMuted, itemSelectedBg: p.surface, borderRadiusSM: 4 },
       Table: { cellPaddingBlockSM: 5, cellPaddingInlineSM: 8, cellFontSizeSM: 12.5, headerBg: p.surface, rowHoverBg: p.surfaceMuted },
       // Sider 自己带底色（antd 的 token，不是类名）：让它跟卡片同值，`.surface` 只管边框/圆角/厚度。
       Layout: { siderBg: p.surface, lightSiderBg: p.surface, bodyBg: p.canvas },
       // 层的底由种子里那条 `colorBgElevated` 管（那里写着派生值与实测数），这里只留圆角。
       Modal: { borderRadiusLG: 16 },
-      Alert: { borderRadiusLG: 12 },
     },
   };
 }

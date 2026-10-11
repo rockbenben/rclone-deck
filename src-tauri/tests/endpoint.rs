@@ -6,7 +6,6 @@ use std::path::Path;
 
 use rclone_deck_lib::config::jobs::{Job, JobKind, JobsFile};
 use rclone_deck_lib::endpoint::{endpoint_of, remote_split, Endpoint};
-use rclone_deck_lib::state::DEFAULT_JOBS_TOML;
 
 /// 夹具：内容丰富但纯属虚构的任务表。**为什么不由出厂配置喂**——出厂那份 2026-10-09 起
 /// 瘦身成一条示范（见 `state.rs` 的 `DEFAULT_JOBS_TOML` 顶上那段），而这几条证人要的是

@@ -41,7 +41,9 @@ function LogDir({ status }: { status: RcdStatus }) {
 function ThemeSwitch() {
   const [, chosen, setChosen] = useTheme();
   return (
-    <Segmented size="small" value={chosen} onChange={(v) => setChosen(v as ThemeMode)}
+    // 不带 `size="small"`：那一档只有 20px 高（真窗口量的），而同一排上的「详情」是 30px、
+    // 视图切换那排是 28px。顶栏是"这一台面板的状态"，它自己不该成为最难点的一行。
+    <Segmented value={chosen} onChange={(v) => setChosen(v as ThemeMode)}
       options={[{ label: '自动', value: 'auto' }, { label: '浅色', value: 'light' }, { label: '深色', value: 'dark' }]} />
   );
 }

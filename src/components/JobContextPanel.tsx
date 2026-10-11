@@ -78,7 +78,7 @@ export function JobContextPanel({
       </div>
       <div style={{ display: tab === 'diff' ? 'block' : 'none' }}>
         <InventoryPanel report={inventory} loading={busy} off={locked} lockHint={lockedHint}
-          deletesLocal={job.dstIsLocal}
+          deletesLocal={job.dstIsLocal} jobId={job.id}
           onRefresh={onRunInventory} />
       </div>
       <div style={{ display: tab === 'check' ? 'block' : 'none' }}>

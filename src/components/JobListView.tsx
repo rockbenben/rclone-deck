@@ -322,7 +322,9 @@ export function PairCell(props: Props & { choice: Choice }) {
         : []),
       // 「存成常用」摊在面上而不是收进「更多」：它是这一格唯一那条"以后还能这么跑"的路，
       // 而它读的是**当前这一格**（配置格本来就常用着，不需要这一颗）。
-      ...(job.isDraft ? [act('save', '存成常用', () => props.onSaveDraft(job), busy)] : []),
+      // 按钮名说**结果**不说动作：「存成常用」这四个字要人自己推一步才知道它会写进配置，
+      // 而这一颗按下去正是要把临时格写进 `jobs.toml`（R97）。短了不行，长到读不成一句也不行。
+      ...(job.isDraft ? [act('save', '存成常用（写进配置）', () => props.onSaveDraft(job), busy)] : []),
     ];
     return (
       <Space wrap size={4}>

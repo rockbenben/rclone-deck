@@ -192,6 +192,25 @@ export interface PruneReport {
   /** 这一次顺手落的那份名单文件在哪（`runner::lists`）。空串 = 没落盘（被拒绝的那一次就是空串）。
    *  路径由后台定：界面不许自己拼一个（那等于猜日志目录与文件名两处口径）。 */
   listFile: string;
+  /**
+   * 「两边都有、但不是同一份」的那一批。**它不在上面那两个差集里** —— 两边都有的名字在两个差集中
+   * 同时消失，所以这一类是集合差看不见的（`prune.rs` 的注释与 `tests/gate.rs` 里那条证人钉着）。
+   * 它也是唯一一类跑一次 `sync` 就会被静默冲掉的，所以单独上线。
+   *
+   * `verdict` 只有 `differs` / `unknown` 两个值，**没有 `same`**：相同的那些根本不该占一行。
+   * `newer` 为 `null` 时与 `verdict: 'unknown'` 同时出现 —— **看不出谁新就不许给方向**。
+   */
+  diverged: DivergedEntry[];
+}
+
+/** 一条「两边都在、但不是同一份」。 */
+export interface DivergedEntry {
+  /** 相对**本地**根的名字（与 `orphans` 同一坐标系）。 */
+  name: string;
+  /** `differs` = 对得上不上且说得出谁新；`unknown` = 对不上但说不出（时间戳缺或相等）。 */
+  verdict: 'differs' | 'unknown';
+  /** `remote` = 云端那份更新 —— **按上传会冲掉它**，最要紧的一格；`null` = 说不出。 */
+  newer: 'remote' | 'local' | null;
 }
 
 /** 一次对齐预览（Rust 侧 `runner::PreviewView`）。`doomed` 是逐条、**相对目标端自己的根**的名字，

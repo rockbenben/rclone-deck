@@ -2,6 +2,7 @@ import { Alert, Button, Space, Table, Typography } from 'antd';
 
 import { HIT_OFF, LockHint } from './LockHint';
 import { NoteLine } from './NoteLine';
+import { ThumbCell } from './ThumbCell';
 
 import type { PruneReport } from '../types';
 
@@ -18,7 +19,7 @@ import type { PruneReport } from '../types';
  * 它是第六档。段控件上已经写着「差异」，这一面不再自带标题。
  */
 export function InventoryPanel({
-  report, loading, off, lockHint, onRefresh, deletesLocal,
+  report, loading, off, lockHint, onRefresh, deletesLocal, jobId,
 }: {
   report: PruneReport | null;
   loading: boolean;
@@ -34,7 +35,13 @@ export function InventoryPanel({
    *  判据读后台已经判好的 `dstIsLocal`（`JobView` 的两枚 is-local 标志，裁定 R69），
    *  这一面不拿路径再认一遍端点类型。 */
   deletesLocal: boolean;
+  /** 预览要用：后台靠它反查这一对位置的本地根（**前端不传路径**，见 `api.ts::previewLocalImage`）。 */
+  jobId: string;
 }) {
+  // `?? []` 而不是直接 `.length`：这一份是后端新加的字段，万一界面比后台新（或反过来），
+  // 缺席会读成 `undefined.length` —— TypeError，不是"没有差异"。空数组那一档才是安全的那一档。
+  const diverged = report?.diverged ?? [];
+
   return (
     <Space orientation="vertical" size="middle" style={{ width: '100%' }}>
       <Space>
@@ -110,7 +117,9 @@ export function InventoryPanel({
             // 暖色是全屏唯一那枚 `--kind-warm`，不是新颜色；只在这一格要删本机的那一栏出现。
             title: <span style={deletesLocal ? { color: 'var(--kind-warm)' } : undefined}>本地有、云端没有</span>,
             dataIndex: undefined,
-            render: (_, k) => k,
+            // 这一栏的文件**本机就有**，所以看得图是零代价的（不下载、不问远端）——
+            // 而一屏二十个 `IMG_2841.jpg` 谁也分不清，缩略图一眼就知道是哪几张。
+            render: (_, k) => <ThumbCell jobId={jobId} name={k} />,
           }]}
         />
       )}
@@ -126,9 +135,53 @@ export function InventoryPanel({
             // 标错方向比不标更坏 —— 所以两种情况都要显式给值，不靠"没有 style 就是默认"。
             title: <span style={deletesLocal ? undefined : { color: 'var(--kind-warm)' }}>云端有、本地没有</span>,
             dataIndex: undefined,
+            // 这一栏的文件**本机没有**，看得见它得先去云端拉一份 —— 与上面那栏的"零代价"不是一回事。
+            // 所以这里**只给名字，不假装能看**：摆一个点得动却十有八九拉不动的预览入口，
+            // 是在承诺一件这一版做不到的事（拉图那条路还没做，见 DESIGN.md 定位那节）。
             render: (_, k) => k,
           }]}
         />
+      )}
+    {report && !report.emptyBasis && diverged.length > 0 && (
+        <Table
+          size="small"
+          rowKey={(k) => k.name}
+          pagination={{ pageSize: 20, showSizeChanger: false, hideOnSinglePage: true }}
+          dataSource={report.diverged}
+          // 三列：名字 + 哪边不一样 + **哪边比较新**。第三列才是人做决定要的那一半 ——
+          // 只说"这两个不一样"没用，得知道按上传会把哪一边冲掉。
+          // `unknown` 那格写"看不出"而不是留空：留空会被读成"没这一行信息"，
+          // 而它其实是"两边都不足以判断"——那是本面板最该说清的一种形状。
+          columns={[
+            { title: '两边都有、但不是同一份', dataIndex: 'name', render: (n: string) => n },
+            {
+              title: '哪边比较新', dataIndex: 'newer',
+              render: (n: string | null, row) => (
+                // 暖色是全屏唯一那枚 `--kind-warm`，与上面两栏同源：
+                // 它标的是"这一格的后果落在危险的那一侧"，不是"这一格坏了"。
+                <span style={n === 'remote' ? { color: 'var(--kind-warm)' } : undefined}>
+                  {/* 这一格说**后果**，而后果是**有条件的**：开着「只比大小」时，
+                      大小没变的那一半根本不会重传（`config::jobs::compares_by_size`，
+                      代价写在那边注释里）。所以这里**不写死一个绝对的后果**——
+                      一句在某些设置下为假的承诺，比不说更坏；顶栏那一枚 `sizeOnly`
+                      才是在跑的那一份比法的权威说法。 */}
+                  {n === 'remote' ? '云端那份更新'
+                    : n === 'local' ? '本地那份更新'
+                    : row.verdict === 'unknown' ? '看不出（时间读不出或两边一样）' : '—'}
+                </span>
+              ),
+            },
+          ]}
+        />
+      )}
+
+      {report && !report.emptyBasis && diverged.length > 0 && (
+        <NoteLine note={{
+          short: '两边都有、却不是同一份',
+          detail: '上面这批不在前两张表里——两张表说的是「谁在谁不在」，而两边都有的东西在两个差集里都会消失，'
+            + '所以「云端那份已经被换过、本地还是旧的」这一类在别处常常看不见，跑一次就被冲掉。'
+            + '这里单独列出来并说得出哪边比较新；时间读不出来的那几条写「看不出」，不猜。',
+        }} tone="warning" />
       )}
     </Space>
   );

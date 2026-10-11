@@ -881,7 +881,17 @@ async fn stat_reads_the_measured_wire_fields_including_mod_time() {
         "ModTime": "2026-10-01T18:10:48.4796855+08:00", "IsDir": false }})).await;
     let st = client(&s).operations_stat("deckb:", "a.webp").await.unwrap().expect("item 在那里");
     assert_eq!((st.name.as_str(), st.size, st.is_dir), ("a.webp", 4242, false));
-    assert!(st.mod_time.contains("2026-10-01"), "撞名拒绝的话术要说'改于何时'：{}", st.mod_time);
+    // `mod_time` 现在是 Option（键缺就是 `Unknown` 那一档，见 `prune::Verdict`），
+    // 所以这里读的是"拿到的那个值里有没有这一天"，而不是"字段在不在"。
+    assert!(st.mod_time.as_deref().unwrap_or_default().contains("2026-10-01"),
+        "撞名拒绝的话术要说'改于何时'：{:?}", st.mod_time);
+    // 键整个缺掉时必须是 None，绝不能被读成空串——空串会让 `newer_of` 以为"时间是空字符串"，
+    // 于是每一对都被判成"云端更新"，交出一份全错的清单。
+    let no_time = MockServer::start().await;
+    mount_json(&no_time, "/operations/stat", serde_json::json!({"item": {
+        "Path": "a.webp", "Name": "a.webp", "Size": 4242, "IsDir": false }})).await;
+    let st2 = client(&no_time).operations_stat("deckb:", "a.webp").await.unwrap().expect("item 在那里");
+    assert!(st2.mod_time.is_none(), "没有 ModTime 这一键时是 None，不是空串：{:?}", st2.mod_time);
 }
 
 #[tokio::test]

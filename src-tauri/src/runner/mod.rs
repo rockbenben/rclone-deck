@@ -5,6 +5,9 @@ pub mod lists;
 pub mod tasklog;
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
+// `Read` 只被本地预览那个「限量读」用（`f.take(上限+1).read_to_end`）：`take` 返回的是
+// `std::io::Take`，不把 trait 引进来就没有 `read_to_end` 可调。
+use std::io::Read as _;
 use std::path::PathBuf;
 // `abandoned` 用的是 std 的锁（不是下面 tokio 那个同名 `Mutex`）：R48 之后往里头存 guard 的
 // 是 `Inflight::Drop`，而 `Drop` 里不能 await。别名只给这一个字段用，其余表锁照旧。
@@ -185,6 +188,161 @@ pub fn transport_kind_gate(kind: &JobKind, name: &str, dry_run: bool) -> Result<
 /// 抽成函数不是为了复用，是为了让 `tests/commands_surface.rs` 那份"操作员看到的句子里不许有
 /// 内部名词"的扫描够得着：这四句都长在流程中间，测试构造不到那个位置，扫不到就等于这几句
 /// 从没被这条规矩管过（那道闸另外两句本来就是纯函数，天然扫得到）。
+/// `operations/check` 要的是 `(fs, remote)` 两个字符串，而它手上那两个端点是
+/// `Endpoint` 枚举 —— 得把它们拆成 rc 认的那两个字段。
+///
+/// **本地那一侧必须走 `runner::browser::local_fs_id`**（2026-10-11 改，之前是错的）：
+/// 早先这里发的是 `("/", "D:\\pics")` —— `fs` 传 `/`、盘符路径塞在 `remote` 里。
+/// 那正是 `local_fs_id` 上面那条注释实测过**不能当读数用**的形状：
+/// 「`/D:/x` 那一种 list 与 size 都 404、fsinfo 却回 200 并且介绍的是插进了另一个盘符的根」。
+/// 换句话说开着 `check_by_hash` 时，它多半交回空 `differ`，而汇总照样打一行「跑了」——
+/// 一个报成功而什么都没做的开关。
+///
+/// 复用那一个函数而不是再实现一次转换：它是这个仓对「本地目录怎么交给 rc」的**唯一**
+/// 量过的口径，另写一份就是第二套（`local_fs_id` 的 F16 说的正是这件事）。
+/// `None` = 这个形状没量过（UNC、盘符相对写法）⇒ **不出这一级的结果**，交 `Unknown`
+/// 那条保守路径，而不是硬拼一个 rc 不认的 `fs`。
+///
+/// **顺序是判据**：src 交本地、dst 交云端，反了就等于反过来比。
+fn check_pair<'a>(
+    a: &'a Endpoint, b: &'a Endpoint,
+) -> Option<((std::borrow::Cow<'a, str>, std::borrow::Cow<'a, str>),
+             (std::borrow::Cow<'a, str>, std::borrow::Cow<'a, str>))> {
+    let local = |p: &std::path::Path| -> Option<std::borrow::Cow<'a, str>> {
+        browser::local_fs_id(p).map(std::borrow::Cow::Owned)
+    };
+    match (a, b) {
+        (Endpoint::Local(l), Endpoint::Remote { fs, remote }) => Some((
+            (local(l)?, std::borrow::Cow::Borrowed("")),
+            (std::borrow::Cow::Borrowed(fs.as_str()), std::borrow::Cow::Borrowed(remote.as_str())),
+        )),
+        (Endpoint::Remote { fs, remote }, Endpoint::Local(l)) => Some((
+            (std::borrow::Cow::Borrowed(fs.as_str()), std::borrow::Cow::Borrowed(remote.as_str())),
+            (local(l)?, std::borrow::Cow::Borrowed("")),
+        )),
+        _ => None,
+    }
+}
+
+/// `operations/check` 的 `differ` 交的是**桶全 key**（带 `remote=` 那一段前缀），
+/// 而 `report.diverged` 与 `orphans` 用的是「相对各自根」—— 不剥掉前缀就是两套坐标系，
+/// 而这一份是给人对着列表找文件的，名字对不上就等于没有。
+///
+/// 剥不掉时**交原串**而不是报错：那一条随后会以一个"对不上任何键"的名字进名单，
+/// 用户看得见一��多出来的条目、可以自己判断；反过来把它静默丢掉才是真的看不见。
+fn relative_to_root(full: &str, root: &str) -> String {
+    let root = root.trim_matches('/');
+    if root.is_empty() { return full.trim_start_matches('/').to_string(); }
+    match full.strip_prefix(&format!("{root}/")) {
+        Some(rest) => rest.to_string(),
+        None => full.to_string(),
+    }
+}
+
+/// 预览只认这一族扩展名。**白名单而不是黑名单**：放行"不是图片就拒"的那一族要靠维护，
+/// 而漏一个 `exe` 就是一次任意文件读取。
+pub const IMAGE_EXTS: &[&str] = &[
+    ".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".avif",
+];
+
+/// 单张预览的上限：**8 MB**。
+///
+/// 判据是「缩略图用不着这么大」：一张手机原图常见 3–8 MB，够看了；而 `data:` URL 是
+/// 整份进内存的字符串，一屏 20 张就是几十 MB 常驻。超限报错而不是截断——半张图比没有图更骗人。
+pub const IMAGE_PREVIEW_MAX_BYTES: usize = 8 * 1024 * 1024;
+
+/// 这是一个**相对名**吗？三样都不许有：`..`、绝对路径的开头、盘符。
+///
+/// 为什么在 Rust 侧判而不是前端：`commands_surface.rs` 那条证人扫的是 TSX 字面量，
+/// 而这一条是**安全边界**——前端拦的是"手滑"，后端拦的是"任何调用点"。两者都要有，
+/// 但真正兜底的是这里。
+pub fn safe_relative_name(name: &str) -> bool {
+    if name.is_empty() { return false; }
+    // `..` 作为一个**路径分量**（`a/../b` 也一样要挡，字符串里有就够保守）
+    if name.contains("..") { return false; }
+    if name.starts_with('/') || name.starts_with('\\') { return false; }
+    // 盘符（`C:`）与 UNC（`\\host\share`）
+    if name.contains(':') { return false; }
+    if name.contains('\0') { return false; }
+    true
+}
+
+/// 读 `root` 之下的 `rel`（相对名）并交成 `data:` URL。
+///
+/// **两个调用点共用这一份**（任务的本地根、浏览面板当前那一栏）：安全判据只写一次，
+/// 而它们必须是同一套——两处各写一遍就是两套口径，哪天改一处忘了另一处，
+/// 就是一个"这边挡住了那边没挡"的洞。
+///
+/// 三道闸与体积上限的理由写在 [`Runner::local_image_data_url`] 上（那里是完整叙述）。
+pub fn read_local_image_data_url(root: &std::path::Path, rel: &str) -> Result<String, RunError> {
+    if !safe_relative_name(rel) {
+        return Err(RunError::Invariant(format!(
+            "「{rel}」不是一个可以读的图片名（路径、分隔符或盘符都不接受）。")));
+    }
+    let lower = rel.to_ascii_lowercase();
+    if !IMAGE_EXTS.iter().any(|e| lower.ends_with(e)) {
+        return Err(RunError::Invariant(format!("{rel} 不是图片，没有可预览的东西。")));
+    }
+    // 规范化之后必须仍在根之下：第 1 道闸挡的是明面上的 `..`，这一道挡的是
+    // 重解析点（junction / 符号链接）——它们在字符串上完全正常，点下去却能走到别处。
+    let canon_root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    let canon = root.join(rel).canonicalize().map_err(|_| {
+        RunError::Invariant(format!("{rel} 读不出来（可能已经被移走或没有权限）。"))
+    })?;
+    if !canon.starts_with(&canon_root) {
+        return Err(RunError::Invariant(format!("{rel} 不在这个位置里，不读。")));
+    }
+    // **体积上限是真的上限，不是"读完再拒"**：`std::fs::read` 按文件长度分配并整份读进来，
+    // 一个 2 GB 的 `.png` 会被完整驻留内存之后才被拒掉 —— 那不是保护，是事后诸葛。
+    // 所以先 `metadata().len()` 判掉，**再**限量读。
+    let meta = std::fs::metadata(&canon).map_err(|e| RunError::Io(e.to_string()))?;
+    if meta.len() > IMAGE_PREVIEW_MAX_BYTES as u64 {
+        return Err(RunError::Invariant(format!(
+            "这张图 {:.1} MB，超过预览上限 {:.0} MB——缩略图用不着这么大。",
+            meta.len() as f64 / 1_048_576.0, IMAGE_PREVIEW_MAX_BYTES as f64 / 1_048_576.0)));
+    }
+    // `take(上限 + 1)`：多读一个字节是为了兜住"检查之后文件又长大了"（TOCTOU），
+    // 读到的比上限多就说明它变了，那一次直接拒——半个文件比没有文件更骗人。
+    let f = std::fs::File::open(&canon).map_err(|e| RunError::Io(e.to_string()))?;
+    let mut bytes = Vec::with_capacity(meta.len() as usize + 1);
+    let read = f.take(IMAGE_PREVIEW_MAX_BYTES as u64 + 1)
+        .read_to_end(&mut bytes).map_err(|e| RunError::Io(e.to_string()))?;
+    if read as usize > IMAGE_PREVIEW_MAX_BYTES {
+        return Err(RunError::Invariant(format!(
+            "这张图超过预览上限 {:.0} MB（读的过程中还在变大）。",
+            IMAGE_PREVIEW_MAX_BYTES as f64 / 1_048_576.0)));
+    }
+    let mime = match lower.rsplit('.').next().unwrap_or_default() {
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        "bmp" => "image/bmp",
+        // avif 在 `IMAGE_EXTS` 里（白名单与前端的 `looksLikeImage` 同一张表），
+        // 那它就必须有 MIME 分支：落 `application/octet-stream` 的话浏览器不认，
+        // 界面上就是一格破图 —— 白名单与 MIME 表对不上是**能看见的失败**，不是无害的遗漏。
+        "avif" => "image/avif",
+        _ => "application/octet-stream",
+    };
+    Ok(format!("data:{mime};base64,{}", base64_encode(&bytes)))
+}
+
+/// 标准 base64（RFC 4648，带 `=` 补位）。手写而不引依赖：这个 crate 的依赖表是
+/// 逐条挑过的（见 `Cargo.toml` 里那段注释），为一段 20 行的编码器加一个 crate 不划算。
+pub fn base64_encode(data: &[u8]) -> String {
+    const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(data.len().div_ceil(3) * 4);
+    for chunk in data.chunks(3) {
+        let b = [chunk[0], *chunk.get(1).unwrap_or(&0), *chunk.get(2).unwrap_or(&0)];
+        let n = ((b[0] as u32) << 16) | ((b[1] as u32) << 8) | b[2] as u32;
+        out.push(T[(n >> 18) as usize & 63] as char);
+        out.push(T[(n >> 12) as usize & 63] as char);
+        out.push(if chunk.len() > 1 { T[(n >> 6) as usize & 63] as char } else { '=' });
+        out.push(if chunk.len() > 2 { T[n as usize & 63] as char } else { '=' });
+    }
+    out
+}
+
 pub fn mirror_wrong_kind_refusal(name: &str, word: &str) -> String {
     format!("「{name}」是{word}任务，不能按对齐跑")
 }
@@ -616,11 +774,146 @@ impl Runner {
         for k in &report.orphans {
             log.line(Level::Warn, &format!("孤儿 {k}")).map_err(|e| RunError::Io(e.to_string()))?;
         }
+
+        // ── 「两边都有、但不是同一份」（2026-10-11）────────────────────────────────
+        //
+        // 上面那份集合差**看不见这一类**：两边都有的名字在两个差集里同时消失，而
+        // "同一张图两边都在、只是云端那份被换过了"正是这一类。跑一次 sync 就被静默覆盖。
+        //
+        // 只对**交集**付 stat 的代价：真实图库里绝大多数文件两边一样，整棵树逐个问
+        // ModTime 就是 `ListShape::Tree` 注释里记的那次 90 秒超时。差集那两半不归这里。
+        let shared: BTreeSet<String> = local.intersection(remote).cloned().collect();
+        let mut diverged_count = 0usize;
+        let mut unknown_count = 0usize;
+        // 这两个提到 `if` 外面：汇总那几行在块外也要读它们（"哈希那一级跑没跑、用哪种哈希"）。
+        let mut hash_checked = false;
+        let mut hash_type = String::new();
+        if !shared.is_empty() {
+            let local_ep = job.endpoint_src();
+            let remote_ep = job.endpoint_dst();
+            // 方向那一面已经判过了（上面那个 match）：这里要的是"本地 vs 云端"，
+            // 而不是 src vs dst —— 拿反了会把"云端更新"说成"本地更新"。
+            let (le, re) = match (&local_ep, &remote_ep) {
+                (Endpoint::Local(_), Endpoint::Remote { .. }) => (&local_ep, &remote_ep),
+                (Endpoint::Remote { .. }, Endpoint::Local(_)) => (&remote_ep, &local_ep),
+                _ => (&local_ep, &remote_ep),
+            };
+            let lm = checks::side_meta(&self.rcd.client, le, &shared).await?;
+            let rm = checks::side_meta(&self.rcd.client, re, &shared).await?;
+            // 第二级（哈希）走 rclone 自己的 `operations/check`：它按两侧后端都支持的那一种哈希比对，
+            // 并交出 `hashType`。
+            //
+            // **代价要说清**：`check` 是**全树**比对（rc 侧没有"只查这批"的入口），后端不支持
+            // 该哈希时它要下载每一个文件。所以它默认**不跑**，由 `[defaults] check_by_hash`
+            // 显式打开（见下面那一句）；`suspects` 那一份只用来判"有没有必要跑"，
+            // **不是**用来缩小检查范围的 —— 结果回来之后只并入交集内的那些（见下面）。
+            //
+            // 为什么不是自己算：`hashsumfile` 是**逐个文件**一次调用，那等于把候选数乘上一轮往返；
+            // 而 `check` 一次调用交出整份 `differ`，是 rclone 为这件事准备的那把尺子。
+            // 自己拼哈希比对就是第二套口径——而这一层的产物要给人当"往哪边合"看，
+            // 两套口径不一致时更难查。
+            let suspects: Vec<String> = lm
+                .iter()
+                .filter_map(|(name, l)| {
+                    let r = rm.get(name)?;
+                    match crate::prune::verdict_of(l, r, None) {
+                        crate::prune::Verdict::Same => Some(name.clone()),
+                        _ => None,
+                    }
+                })
+                .collect();
+            let mut differ_by_hash: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+            if self.defaults.check_by_hash && !suspects.is_empty() {
+                if let Some((a, b)) = check_pair(le, re) {
+                    match self.rcd.client
+                        .operations_check((a.0.as_ref(), a.1.as_ref()), (b.0.as_ref(), b.1.as_ref()))
+                        .await
+                    {
+                        Ok(outcome) => {
+                            // 这一位**只在真的拿到结果时**置位：早先是在 await 之前就置 true，
+                            // 于是失败那一次日志里一句"没跑成"、汇总里一句"跑了"，自己跟自己打架。
+                            hash_checked = true;
+                            hash_type = outcome.hash_type.unwrap_or_default();
+                            for d in &outcome.differ {
+                                // **只在交集之内才收**：`operations/check` 是全树比对，
+                                // 我们没有把 `defaults.exclude` 传给它（那要在 rc 侧再实现一遍
+                                // 排除语义 = 第二套匹配器，`checks.rs` 那条注释正是在说这个）。
+                                // 所以它可能报出被排除规则挡掉的名字 —— 那一档整个盘点别处都不列，
+                                // 唯独这里冒出来一行就是自相矛盾。不收，比"收下再解释"干净。
+                                let rel = relative_to_root(d, b.1.as_ref());
+                                if shared.contains(&rel) {
+                                    differ_by_hash.insert(rel);
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            // 哈希那一级跑不成**不**把整次盘点报成失败：它是精确认认，
+                            // 而第一级的结论（大小/时间对不上的那些）仍然是真的。
+                            // 说实话：交一个数 + 一句原因，别静默降级。
+                            log.line(Level::Warn, &format!(
+                                "哈希那一级没跑成（{e}）：第一级的结论仍然作数，只是不给哈希确认"))
+                                .map_err(|e| RunError::Io(e.to_string()))?;
+                        }
+                    }
+                }
+            }
+
+            for (name, v) in crate::prune::diverged(&lm, &rm, None) {
+                let entry = match v {
+                    crate::prune::Verdict::Differs { newer } => {
+                        diverged_count += 1;
+                        let side = match newer {
+                            // 与界面上那一格同一条纪律：这里也**不写死后果**——开着「只比大小」时，
+                            // 大小没变的那一半不会重传，那句话就成了假承诺（见 `compares_by_size`）。
+                            crate::prune::Newer::Remote => "云端那份更新",
+                            crate::prune::Newer::Local => "本地那份更新",
+                        };
+                        log.line(Level::Warn, &format!("两边不是同一份 {name} · {side}"))
+                            .map_err(|e| RunError::Io(e.to_string()))?;
+                        crate::prune::DivergedEntry {
+                            name, verdict: "differs",
+                            newer: Some(match newer {
+                                crate::prune::Newer::Remote => "remote",
+                                crate::prune::Newer::Local => "local",
+                            }),
+                        }
+                    }
+                    crate::prune::Verdict::Unknown => {
+                        unknown_count += 1;
+                        log.line(Level::Warn, &format!(
+                            "两边对不上但说不出谁新 {name} · 时间戳读不出或相等，不猜"))
+                            .map_err(|e| RunError::Io(e.to_string()))?;
+                        crate::prune::DivergedEntry { name, verdict: "unknown", newer: None }
+                    }
+                    crate::prune::Verdict::Same => unreachable!("diverged 不交 Same"),
+                };
+                report.diverged.push(entry);
+            }
+
+            // 第二级的结论要并进同一份名单。`differ` 里的那些在第一级是 Same，
+            // 而它们**仍然说不出谁新**（哈希没有次序，见 `prune::Verdict::Unknown`），
+            // 所以落 Unknown —— 不替它们编一个方向。
+            for name in differ_by_hash {
+                if !report.diverged.iter().any(|e| e.name == name) {
+                    unknown_count += 1;
+                    log.line(Level::Warn, &format!(
+                        "哈希发现两边不是同一份 {name} · 内容对不上，但说不出哪边更新（时间戳相同）"))
+                        .map_err(|e| RunError::Io(e.to_string()))?;
+                    report.diverged.push(crate::prune::DivergedEntry {
+                        name, verdict: "unknown", newer: None,
+                    });
+                }
+            }
+        }
+
         log.kv(Level::Info, "盘点结束", &[
             ("orphans", report.orphans.len().to_string()),
             // 另一半（还没上传的）只记数不记名：一次"云端只装了几个"的盘点能交出六千行，
             // 而这一侧从来不是删除理由——上面那些孤儿逐条落盘是因为它们曾经会是删除候选。
             ("pending_upload", report.pending_upload.len().to_string()),
+            ("两边都有但不是同一份", diverged_count.to_string()),
+            ("其中说不出谁新", unknown_count.to_string()),
+            ("哈希那一级", format!("{}（{hash_type}）", if hash_checked { "跑了" } else { "没跑" })),
             ("local", report.local_count.to_string()),
             ("remote", report.remote_count.to_string()),
             ("list_requests", list_requests.to_string()),
@@ -962,6 +1255,42 @@ impl Runner {
     }
 
     // ---------------------------------------------------------- 共用部件
+
+    /// 读一张本地图，交成 `data:` URL（2026-10-11，为「待上传」那一批的预览）。
+    ///
+    /// **为什么走 base64 而不是 Tauri 的 `convertFileSrc`**：CSP 写着
+    /// `img-src 'self' data:`（`tauri.conf.json`），`asset:` 那条协议**不在允许列表里**，
+    /// 而改 CSP 去开它等于给整个界面开一条新的资源来源——为一张缩略图不值得。
+    ///
+    /// **安全边界（本函数存在的全部理由）**：前端交上来的是 `id` + **相对名**，
+    /// 绝不接受绝对路径。根由 `lookup(id)` 里那条任务的本地端点决定，**目录外一律拒绝**：
+    /// 一个能读任意路径的命令，配合将来任何一个拼错路径的调用点，就是任意文件读取。
+    /// 三道闸：
+    /// 1. 名字里有 `..` / 盘符 / 开头斜杠 → 直接拒（`safe_relative_name`）；
+    /// 2. 拼出来的路径必须**仍在根之下**（`starts_with` + 规范化）；
+    /// 3. 扩展名必须在图片那一档里 —— 不是图片就没什么可预览的，而放行任意扩展名
+    ///    等于让这一条命令变成通用文件读取器。
+    ///
+    /// **体积上限**：CSP 的 `data:` 是内存里的字符串，而一张原图可能几十 MB。
+    /// 超限**报错**而不是截断——截断出来的半张图比没有图更骗人。
+    pub fn local_image_data_url(&self, id: &str, name: &str) -> Result<String, RunError> {
+        let job = self.lookup(id)?;
+        // 取**本地那一侧**：src 优先，取不到再看 dst（这一对位置里只有一侧是本地目录，
+        // 而任务的方向可以反过来配）。两侧都是远端的那种在盘点上早就硬拒绝了，这里同样拒。
+        let (src_ep, dst_ep) = (job.endpoint_src(), job.endpoint_dst());
+        let root = match (&src_ep, &dst_ep) {
+            (Endpoint::Local(r), _) => r.clone(),
+            (_, Endpoint::Local(r)) => r.clone(),
+            _ => {
+                return Err(RunError::Invariant("这条任务没有本地那一侧，没有可预览的图。".into()));
+            }
+        };
+        if !safe_relative_name(name) {
+            return Err(RunError::Invariant(format!(
+                "「{name}」不是一个可以读的图片名（路径、分隔符或盘符都不接受）。")));
+        }
+        read_local_image_data_url(&root, name)
+    }
 
     fn lookup(&self, id: &str) -> Result<Job, RunError> {
         self.job(id).ok_or_else(|| RunError::Invariant(format!("没有叫 {id} 的任务")))

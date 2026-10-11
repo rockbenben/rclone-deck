@@ -18,6 +18,26 @@ export const runJob = (id: string, dryRun: boolean) => invoke<TaskState>('run_jo
 export const runGate = (id: string) => invoke<GateReport>('run_gate', { id });
 // R58：盘点只有这一个入口（只读）。执行命令 `run_prune_execute` 已随删除路径一起移除。
 export const runInventory = (id: string) => invoke<PruneReport>('run_inventory', { id });
+
+/**
+ * 读一张**本地**图片，交成 `data:` URL。
+ *
+ * 注意签名里只有 `id` 与 `name`——**没有路径**。根由后台按 `id` 反查任务自己定，
+ * 越权的形状（`..`、盘符、目录外）一律在 Rust 侧拒（见 `runner::local_image_data_url` 上那三道闸）。
+ * 前端要是能传路径，这一条就变成任意文件读取器了。
+ */
+export const previewLocalImage = (id: string, name: string) =>
+  invoke<string>('preview_local_image', { id, name });
+
+/**
+ * 读浏览面板**当前那一栏**里的一张本地图。
+ *
+ * `fs` 是后台交出来的位置坐标（`local_fs_id` 编出的 `D:/pics` 那种形状），`prefix` 是
+ * 这一栏的导航状态，两者都由界面持有但都不是用户可以乱填的路径 —— 后台把它们反解回
+ * `Path` 再过那三道闸。**不传绝对路径**，理由同 `previewLocalImage`。
+ */
+export const previewPaneImage = (fs: string, prefix: string, name: string) =>
+  invoke<string>('preview_pane_image', { fs, prefix, name });
 // 删除只有这一对入口：`runJob(id, false)` 对对齐任务会被后台拒绝（那句话术在 runner 里）。
 // `runMirror` 的 token 必须来自**刚刚那一次**登记：带着逐条名单的那份出自 `previewMirror`，
 // 没看名单的那份出自 `confirmMirror`。它单次消费，后台还会重列一遍（看过的那份逐条比对），

@@ -1,0 +1,22 @@
+2026/10/11 10:25:43 NOTICE: Serving remote control on http://127.0.0.1:15739/
+2026/10/11 10:25:56 ERROR : rc: "rc/operations/list": error: couldn't find method "rc/operations/list"
+2026/10/11 10:25:56 ERROR : rc: "rc/operations/list": error: couldn't find method "rc/operations/list"
+2026/10/11 10:25:56 ERROR : rc: "rc/operations/list": error: couldn't find method "rc/operations/list"
+2026/10/11 10:26:04 ERROR : rc: "rc/operations/list": error: couldn't find method "rc/operations/list"
+2026/10/11 10:26:12 ERROR : D:\Backup\Libraries\Documents\GitHub\Projects\365\041-rclone-deck\tmp-checkprobe\local: error listing: directory not found
+2026/10/11 10:26:12 ERROR : rc: "operations/list": error: error in ListJSON: directory not found
+2026/10/11 10:26:12 ERROR : D:/Backup/Libraries/Documents/GitHub/Projects/365/041-rclone-deck/tmp-checkprobe/local: error listing: directory not found
+2026/10/11 10:26:12 ERROR : rc: "operations/list": error: error in ListJSON: directory not found
+2026/10/11 10:26:41 ERROR : b.txt: file not in Local file system at //?/D:/Backup/Libraries/Documents/GitHub/Projects/365/041-rclone-deck/tmp-checkprobe/remote
+2026/10/11 10:26:41 ERROR : c.txt: file not in Local file system at //?/D:/Backup/Libraries/Documents/GitHub/Projects/365/041-rclone-deck/tmp-checkprobe/local
+2026/10/11 10:26:41 NOTICE: Local file system at //?/D:/Backup/Libraries/Documents/GitHub/Projects/365/041-rclone-deck/tmp-checkprobe/remote: 1 files missing
+2026/10/11 10:26:41 NOTICE: Local file system at //?/D:/Backup/Libraries/Documents/GitHub/Projects/365/041-rclone-deck/tmp-checkprobe/local: 1 files missing
+2026/10/11 10:26:41 NOTICE: Local file system at //?/D:/Backup/Libraries/Documents/GitHub/Projects/365/041-rclone-deck/tmp-checkprobe/remote: 2 differences found
+2026/10/11 10:26:41 NOTICE: Local file system at //?/D:/Backup/Libraries/Documents/GitHub/Projects/365/041-rclone-deck/tmp-checkprobe/remote: 2 errors while checking
+2026/10/11 10:26:41 NOTICE: Local file system at //?/D:/Backup/Libraries/Documents/GitHub/Projects/365/041-rclone-deck/tmp-checkprobe/remote: 1 matching files
+2026/10/11 10:26:56 ERROR : c.txt: file not in Local file system at //?/D:/Backup/Libraries/Documents/GitHub/Projects/365/041-rclone-deck/tmp-checkprobe/local
+2026/10/11 10:26:56 ERROR : b.txt: sizes differ
+2026/10/11 10:26:56 NOTICE: Local file system at //?/D:/Backup/Libraries/Documents/GitHub/Projects/365/041-rclone-deck/tmp-checkprobe/local: 1 files missing
+2026/10/11 10:26:56 NOTICE: Local file system at //?/D:/Backup/Libraries/Documents/GitHub/Projects/365/041-rclone-deck/tmp-checkprobe/remote: 2 differences found
+2026/10/11 10:26:56 NOTICE: Local file system at //?/D:/Backup/Libraries/Documents/GitHub/Projects/365/041-rclone-deck/tmp-checkprobe/remote: 2 errors while checking
+2026/10/11 10:26:56 NOTICE: Local file system at //?/D:/Backup/Libraries/Documents/GitHub/Projects/365/041-rclone-deck/tmp-checkprobe/remote: 1 matching files

@@ -208,6 +208,32 @@ pub async fn run_inventory(
     Ok(state.runner()?.run_inventory(&id).await?)
 }
 
+/// 读一张本地图，交成 `data:` URL（预览用）。
+///
+/// **交出去的只有那一句 data URL**，路径由后台按 `id` 反查任务自己定——前端**不传路径**。
+/// 这一条是安全边界而不只是便利：见 `Runner::local_image_data_url` 上那三道闸。
+#[tauri::command]
+pub async fn preview_local_image(
+    state: tauri::State<'_, AppState>,
+    id: String,
+    name: String,
+) -> Result<String, AppError> {
+    Ok(state.runner()?.local_image_data_url(&id, &name)?)
+}
+
+/// 浏览器那一栏读一张本地图。与上面那条的区别只在**根**：这里传的是那一栏当前所在的
+/// 位置（`fs` 是 `local_fs_id` 编出来的形状 + `prefix` 导航状态），后台自己反解回路径。
+///
+/// **同样不传绝对路径** —— `fs` 是后台交出来的坐标，`name` 是清单行上的名字。
+#[tauri::command]
+pub async fn preview_pane_image(
+    fs: String,
+    prefix: String,
+    name: String,
+) -> Result<String, AppError> {
+    Ok(crate::runner::browser::preview_pane_image(&fs, &prefix, &name)?)
+}
+
 #[tauri::command]
 pub async fn tail_log(
     state: tauri::State<'_, AppState>,

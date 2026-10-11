@@ -58,6 +58,13 @@ pub struct Defaults {
     pub flags: Vec<String>,
     pub exclude: Vec<String>,
     pub log_dir: String,
+    /// 盘点时**要不要跑哈希那一级**（2026-10-11 新增，默认关）。
+    ///
+    /// 默认关是硬理由，不是保守：第一级（大小 + 修改时间）已经能抓到绝大多数，
+    /// 而第二级是 `operations/check` —— 后端不支持该哈希时它要**下载每一个文件**。
+    /// 一个几千张图的库开着它就是分钟级的等待，而绝大多数时候第一级已经说清了。
+    /// 所以它必须由人显式打开，而不是默认承担那份代价。
+    pub check_by_hash: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -95,6 +102,10 @@ struct RawDefaults {
     /// 出厂那份写死谁的路径都不是别人的家（见 `config::AppConfig::from_defaults`）。
     #[serde(default)]
     log_dir: String,
+    /// 哈希那一级的开关（2026-10-11 新增）。**`default` = false**：旧配置文件里没有这一项，
+    /// 而"没有"读成"不开"才是安全的默认 —— 这一级可能要下载每一个文件（见 `Defaults::check_by_hash`）。
+    #[serde(default)]
+    check_by_hash: bool,
 }
 
 #[derive(Deserialize)]
@@ -362,6 +373,7 @@ impl JobsFile {
             flags: raw.defaults.flags,
             exclude: raw.defaults.exclude,
             log_dir: raw.defaults.log_dir,
+            check_by_hash: raw.defaults.check_by_hash,
         };
         if !PathBuf::from(&defaults.rclone_bin).is_absolute() {
             return Err(ConfigError::Invalid(format!(
@@ -1159,6 +1171,7 @@ dst = "r2:img"
             rclone_bin: "C:\\rclone\\rclone.exe".into(),
             flags: vec![], exclude: vec![],
             log_dir: "D:\\Sync\\logs\\rclone-deck".into(),
+            check_by_hash: false,
         }).unwrap();
         assert!(cfg.pid_path.is_absolute());
         // 2026-10-10：这一条原来是 `== AppConfig::PORT`。默认端口改成现挑之后它就该钉
@@ -1284,6 +1297,7 @@ dst = "r2:img"
             rclone_bin: "C:\\rclone\\rclone.exe".into(),
             flags: vec![], exclude: vec![],
             log_dir: "D:\\Sync\\logs\\rclone-deck".into(),
+            check_by_hash: false,
         }
     }
 

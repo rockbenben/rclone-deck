@@ -46,6 +46,31 @@ pub struct PruneReport {
     /// 空串，由 `run_inventory` 写完之后填上——界面上那一行"名单存成了 …"读的就是它，
     /// 空串那一档说"这一份没落盘"（拒绝的那一次就是空串，见 `runner_local` 那三条证人）。
     pub list_file: String,
+    /// 「两边都有、但不是同一份」的那一批（2026-10-11 新增，详见 [`diverged`]）。
+    ///
+    /// 它**不在**上面那两个差集里：两边都有的名字在两个差集中同时消失。这是第三类，
+    /// 也是唯一一类跑一次 `sync` 就会被**静默覆盖**的——所以它必须单独上线。
+    ///
+    /// 序列化形状是 `Vec<DivergedEntry>`，而那一族在界面上是**一格一格看**的（`verdict`
+    /// 与 `newer` 各占一列），不是两列名字。`empty` 时是空数组而不是缺席。
+    pub diverged: Vec<DivergedEntry>,
+}
+
+/// 一条「两边都在、但不是同一份」。**这两枚字段缺一不可**：
+/// `verdict` 说"是不是同一份"，`newer` 说"哪边比较新" —— 而后者才是人做决定要的那一半。
+///
+/// `verdict` 上线是 `differs` / `unknown` 两个值。**没有 `same`**：相同的那些根本不该
+/// 占一行（真实图库里绝大多数文件两边一样，全列出来这一屏就没法看了）。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DivergedEntry {
+    /// 相对**本地**根的名字（`side_meta` 两边都退到各自的根，与 `orphans` 同一坐标系）。
+    pub name: String,
+    /// `differs` = 对不上且说得出谁新；`unknown` = 对不上但说不出（时间戳缺或相等）。
+    pub verdict: &'static str,
+    /// `remote` = 云端那份更新（**按上传会覆盖它**，最要紧的那一格）；
+    /// `local` = 本地更新；`null` = 说不出（与 `verdict: unknown` 同时出现）。
+    pub newer: Option<&'static str>,
 }
 
 /// 比例守卫的分母：`doomed` 达到 `dst` 侧的 `1 / RATIO_DEN` 就拒绝（阈值只在这一处定义）。
@@ -129,5 +154,169 @@ pub fn orphans(local: &BTreeSet<String>, remote: &BTreeSet<String>) -> PruneRepo
         // 那一档长什么样归 `moment::label`（今天/昨天/带月-日），与对账报告同一处定义。
         measured_at: crate::moment::now_label(),
         list_file: String::new(),
+        // 这一份是**盘点时的值**，而 `orphans()` 这个内核只看得到两堆名字、算不出它
+        // （算它要 stat，见 `runner::run_inventory`）。所以这里交空数组，由调用方填 ——
+        // 与 `list_file` / `dst_is_local` 同一族：谁有信息谁填。
+        // 空数组而不是缺席：前端 `report.diverged.length` 在缺席时会读到 undefined。
+        diverged: Vec::new(),
     }
+}
+
+// ───────────────────────── 同一个文件，两边是不是同一份 ─────────────────────────
+
+/// 一个文件在**两侧的元数据**。名字是坐标，别的字段是判据 —— 这就是与上面
+/// `BTreeSet<String>` 那几行的全部差别：集合差只认"在不在"，而本类型回答"是不是同一份"。
+///
+/// 只喂**两边都有名字**的那批（见 [`diverged`] 的入参口径）。`mod_time` 是 `Option`，
+/// 拿不到就是拿不到，不拿"相同"顶替 —— 见 [`Verdict`] 里 `Unknown` 那一档。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FileMeta {
+    pub name: String,
+    pub size: u64,
+    pub mod_time: Option<String>,
+}
+
+/// 一个"两边都在、但不是同一份"的文件，**以及哪一边比较新**。
+///
+/// `who` 是这一份存在的理由：光说"这两个不一样"没用，界面上要能说"云端那份比你本地新，
+/// 按上传会把云端的改动冲掉"。而没有 `who` 的话，界面只能让人自己去比时间戳 ——
+/// 那是把判断推回给人，而这一层存在的意义就是不推。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Newer {
+    /// 云端那份更新 —— **按上传会覆盖它**，这是最危险的一格。
+    Remote,
+    /// 本地那份更新 —— 按上传是对的。
+    Local,
+}
+
+/// 三档判定，不是两档。
+///
+/// `Unknown` 单独立一档是有意的：时间戳读不到（某些后端不给、或 stat 失败）时，
+/// 把它读成"相同"就是放行一次覆盖，读成"不同"则是无中生有一份要人看的清单。
+/// 唯一不撒谎的位置是第三档：既不放过，也不假装看得见。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Verdict {
+    /// 大小与修改时间都对得上 —— 这一份**不**进名单。
+    Same,
+    /// 对不上，且比得出哪边新。
+    Differs { newer: Newer },
+    /// 比不出（时间戳缺一边）：**要人知道**，但说不出谁新。
+    Unknown,
+}
+
+/// 两级判定（2026-10-11）。
+///
+/// 第一级：大小或修改时间对不上，就已经不是同一份，**不必**再比哈希。
+/// 第二级：只有第一级判成"一样"、而用户要求确认的那批，才去算哈希 —— 全量哈希要下载
+/// 每一个对象，真实图片库动辄几千张，那是分钟级的代价，而绝大多数文件在第一级就被放行了。
+///
+/// **为什么先比时间而不是先比哈希**：改动一次内容，mtime 几乎必然变；而"内容变了但
+/// mtime 没变"要同时踩两个坑（时钟精度、或复制保留了时间戳），在真实图库里远少于
+/// "两边都是老照片、mtime 被 touch 过"的噪声。粗筛宁可多送几个去比哈希，也不能漏。
+///
+/// 哈希这一级是**留给调用方的钩子**：`hash_of` 传 `None` 就只跑第一级（默认），
+/// 传 `Some(闭包)` 才在"第一级说一样、但你要求确认"的那一批上调用它。
+/// 内核不自己算哈希：那是 IO 与后端相关的事，属于 `runner` 那一层。
+/// 哈希钩子的形状：给一个名字，问"本地那份与云端那份的哈希各是什么"。
+///
+/// 返回 `(None, _)` / `(_, None)` = 拿不到，`None` 整体 = 这个名字没问成。
+/// 三种都**不是**"两边一样" —— 判据在 [`Verdict`] 的注释里。
+pub type HashOf<'a> = &'a dyn Fn(&str) -> Option<(Option<String>, Option<String>)>;
+
+pub fn verdict_of(
+    local: &FileMeta,
+    remote: &FileMeta,
+    hash_of: Option<HashOf<'_>>,
+) -> Verdict {
+    // 第一级：任一能拿到的对不上，就是它。真不同了，哈希只会再确认一遍，付那份代价不划算。
+    // 注意大小对不上时**仍然要比时间**：大小变了、方向却说不出来，是 `Unknown` 而不是 `Differs`。
+    if local.size != remote.size {
+        return match newer_of(local, remote) {
+            Some(n) => Verdict::Differs { newer: n },
+            None => Verdict::Unknown,
+        };
+    }
+    match (&local.mod_time, &remote.mod_time) {
+        (Some(l), Some(r)) if l != r => {
+            return match newer_of(local, remote) {
+                Some(n) => Verdict::Differs { newer: n },
+                None => Verdict::Unknown,
+            }
+        }
+        // 一边缺时间戳：大小相同，时间未知 —— 这一档**不许**判成 Same。
+        (None, _) | (_, None) => return Verdict::Unknown,
+        _ => {}
+    }
+    // 第二级：大小与时间都一致。要不要花代价去确认，由调用方决定。
+    //
+    // 哈希确认出来的"不一样"**落 `Unknown` 而不是 `Differs`**：哈希没有次序，它能证明
+    // 两份内容不同，证明不了哪一份更晚。而 mtime 恰好相等恰恰是"无法判断方向"的那一档 ——
+    // 给一个 `Newer` 就是把推断当实测，而这一份是要给人当"往哪边合"看的，编错方向比不判更坏。
+    //
+    // **拿不到哈希的那几种形状一律落 `Unknown`，不落 `Same`**（2026-10-11 修）：
+    // 本函数这一段的契约是"判据不足就不给结论"，而早先写的 `_ => {}` 会让下面那句
+    // `Verdict::Same` 接住它——于是"问了两边都没问出来"被读成"两边一样"，那是一次放行，
+    // 正是三档设计要关掉的那扇门。三种形状：`(None, None)` / `(None, Some)` /
+    // `(Some, None)` / 整体 `None`（这个名字没问成）。
+    if let Some(f) = hash_of {
+        match (f(&local.name), f(&remote.name)) {
+            // 两边都问到且不同 → 内容确实不是同一份，但方向给不出。
+            (Some((Some(lh), Some(rh))), _) if lh != rh => return Verdict::Unknown,
+            // 两边都问到且相同 → 这才是真的 Same。
+            (Some((Some(_), Some(_))), _) => return Verdict::Same,
+            // 其余全是"问不出来"，与 Same 无关。
+            _ => return Verdict::Unknown,
+        }
+    }
+    Verdict::Same
+}
+
+/// 哪一边更新。**拿不出就是拿不出** —— 返回 `None` 的那一档由调用方落成 `Unknown`。
+///
+/// 时间戳按字符串比较：rc 给的是 RFC3339（`2026-10-11T07:36:23.000000000+08:00` 那一族），
+/// 同一时区下字典序与时间序一致。**跨时区或精度不同则不可比**，那种情况宁可交 `Unknown`：
+/// 这一份的产物是要给人当"往哪边合"的依据的，方向错比方向缺更坏。
+fn newer_of(local: &FileMeta, remote: &FileMeta) -> Option<Newer> {
+    match (&local.mod_time, &remote.mod_time) {
+        (Some(l), Some(r)) => {
+            if l == r {
+                // 时间戳完全相等：方向真的分不出来。哈希也不提供次序。
+                None
+            } else if r > l {
+                Some(Newer::Remote)
+            } else {
+                Some(Newer::Local)
+            }
+        }
+        _ => None,
+    }
+}
+
+/// 「两边都在、但不是同一份」的名单。第一版是**纯 Rust 的纯名单**，界面上没有它的位置
+/// （`PruneReport` 那两张表摆的是"谁在谁不在"，而这一份是"谁在谁也在但内容变了"）。
+///
+/// 为什么这一份不能由上面那个 `plan` 推出来：集合差里"两边都有"的名字会**在两个
+/// 差集里同时消失**。也就是说，一个被云端改过、本地还是旧版的文件，在 `plan` 眼里
+/// 完全不存在——它既不是"待上传"，也不是"会被删"，跑一次 `sync` 就被静默覆盖了。
+/// 这不是漏报，这是那套口径**看不见这一类**。
+///
+/// 入参是两个 `FileMeta` 的映射，**只含两边都有名字的交集**（差集那两半由 `plan` 负责）。
+pub fn diverged(
+    local: &std::collections::BTreeMap<String, FileMeta>,
+    remote: &std::collections::BTreeMap<String, FileMeta>,
+    hash_of: Option<HashOf<'_>>,
+) -> Vec<(String, Verdict)> {
+    let mut out: Vec<(String, Verdict)> = local
+        .iter()
+        .filter_map(|(name, l)| {
+            let r = remote.get(name)?;
+            match verdict_of(l, r, hash_of) {
+                Verdict::Same => None,
+                v => Some((name.clone(), v)),
+            }
+        })
+        .collect();
+    // 名字升序：这一份是给人读的（"先看这几个"），顺序必须稳定，否则两次盘点对不上。
+    out.sort_by(|a, b| a.0.cmp(&b.0));
+    out
 }

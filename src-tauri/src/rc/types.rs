@@ -103,15 +103,36 @@ pub struct ListEntry {
     pub is_dir: bool,
 }
 
-/// `operations/stat` 的 `item`。实测这个对象带 Path/Name/Size/MimeType/ModTime/IsDir，
-/// 这里只收本面板要读的四个（Name/Size/IsDir/ModTime）。
-/// `MimeType` 与 `Path` 今天没人读，所以不预先存——存了就成了没人验证、又没人删的字段。
+/// `ListEntry` 那一族的**加料版**：多带一个 `ModTime`，只给"两边都有、想比是不是同一份"那一档用。
+///
+/// 为什么不给 [`ListEntry`] 加字段：那一份是 gate 与浏览器两条链路的输入，`tests/gate.rs`
+/// 与 `tests/frontend_browser.rs` 各自钉着它的形状，而 `ListShape::Tree` 明确不发 ModTime
+/// （关掉它才不逐对象 HeadObject，见 `ListShape::Tree` 的注释里那次 90 秒超时）。
+/// 这里另起一个类型，让"要不要付那份钱"成为调用点的选择，而不是全局改动。
+///
+/// `ModTime` 是 Option：这一档只对**两边都有名字**的那批对象发 stat，而 rc 在 stat 失败时
+/// 会把键整个省掉（`operations/stat` 对不存在/读不到的对象 200 + 无 `item`）。拿不到不是"相同"，
+/// 上层把它当成"无法判定"，绝不当成一致（见 `prune::diverged` 的口径）。
+/// `operations/stat` 的 `item`，以及**同样形状**的 `EntryMeta`。
+///
+/// `Name` / `IsDir` 是撞名拒绝那句必需的（`browser_target_exists_refusal` 要说"改于何时"、
+/// 而 `Name` 是那句里点的名），所以这两个字段留着，不因为"新内核只用 Path/Size/ModTime"
+/// 就砍掉——砍掉会让 `rc_client.rs` 那两个证人（钉的是**线上字段名**）失去意义。
 #[derive(Debug, Deserialize, Clone)]
-pub struct StatObject {
-    #[serde(rename = "Name")] pub name: String,
-    #[serde(rename = "Size")] pub size: u64,
-    #[serde(rename = "IsDir")] pub is_dir: bool,
-    #[serde(rename = "ModTime")] pub mod_time: String,
+pub struct EntryMeta {
+    #[serde(rename = "Path")]
+    pub path: String,
+    #[serde(rename = "Name")]
+    pub name: String,
+    #[serde(rename = "Size")]
+    pub size: u64,
+    #[serde(rename = "IsDir")]
+    pub is_dir: bool,
+    /// Option 是**新加**的那一半：`operations/stat` 对读不到的对象会 200 且不带 `ModTime`
+    /// 这一键，而那一格必须落 `prune::Verdict::Unknown`（既不放过、也不指控），
+    /// 不能因为"键缺了"就当成时间相同。
+    #[serde(rename = "ModTime")]
+    pub mod_time: Option<String>,
 }
 
 /// `operations/size`。实测 `{"bytes":3,"count":3,"sizeless":0}`；`sizeless` 今天没人读。
@@ -130,6 +151,10 @@ pub struct CheckOutcome {
     #[serde(default, rename = "missingOnSrc")] pub missing_on_src: Vec<String>,
     #[serde(default, rename = "missingOnDst")] pub missing_on_dst: Vec<String>,
     #[serde(default, rename = "differ")] pub differ: Vec<String>,
+    /// 用了哪一种哈希算出来的（rclone 自己挑两侧都支持的那一种，见 `fs.HashSet.Overlap().GetOne()`）。
+    /// **可能整个键缺失** —— 那就是说"没报"，不是"没有哈希可用"，两种要分得开
+    /// （`Option` 而不是 `String::new()`：空串会被读成"用的是空哈希"）。
+    #[serde(default, rename = "hashType")] pub hash_type: Option<String>,
 }
 
 /// `operations/fsinfo`。能力位整张表收下来按需读。

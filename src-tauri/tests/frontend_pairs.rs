@@ -389,6 +389,48 @@ fn the_trial_button_says_out_loud_that_it_transfers_nothing() {
     assert!(!arm.contains("只会告诉你会动哪些"), "镜像那一档自己带着这句：{arm}");
 }
 
+/// 设置里的「任务」那一栏**不许拿任务名当标题**（2026-10-11）。
+///
+/// 出厂那十条的名字里烘焙着方向（「镜像 R2：以本地为主（删云端多余的）」），而卡上
+/// 早已把方向收成「要做什么」那一格。于是同一个东西：卡上是「位置 + 要做什么」，
+/// 设置里是「一句裹着方向的名字」—— 人在设置里改一条，眼前那句话和卡上那一格对不上，
+/// 就以为改的不是同一件事。
+///
+/// 这一条钉的是"设置那一行读的是**卡上那一句**"：它必须走 `intentOptions`（同一份），
+/// 而不是把 `j.name` 或 `KIND_LABEL[j.jobKind]` 拼一遍。
+#[test]
+fn the_settings_task_row_speaks_the_same_language_as_the_card() {
+    let raw = read("src/components/SettingsPanel.tsx");
+    let t = strip_comments(&raw);
+    assert!(t.contains("intentPhraseFor(groups, j)"),
+        "任务那一行没有读卡上那一句（intentPhraseFor）：两处界面会各说一套：{t}");
+    // 与卡上同一份，不是另写一遍
+    assert!(t.contains("intentOptions(g)"),
+        "它自己另写了一套说法：应该调 `pairs.ts` 那一份：{t}");
+    // 旧写法不许回来：任务名回到第一行大字，等于把烘焙着方向的名字又摆回明面。
+    assert!(!t.contains("<Typography.Text strong>{j.name}</Typography.Text>"),
+        "任务名又成了标题：那正是方向被烘焙进字符串的那一格：{t}");
+    // 会删的那一档吃暖色 —— 与卡上那一枚框同一枚色
+    assert!(t.contains("j.jobKind === 'sync' ? { color: 'var(--kind-warm)' }"),
+        "会删那一档没吃暖色：两处说同一件事，颜色却不是同一枚：{t}");
+}
+
+/// 临时卡那颗按钮**要说结果**（2026-10-11）。
+///
+/// 「存成常用」这四个字是人话，可它要人自己推一步才知道按下去会写进配置 ——
+/// 而这一颗按下去正是 R97 那条路。这条钉住"结果写在按钮上"。
+#[test]
+fn the_draft_button_says_what_it_will_do() {
+    let raw = read("src/components/JobListView.tsx");
+    let t = strip_comments(&raw);
+    assert!(t.contains("存成常用（写进配置）"),
+        "那颗按钮没说自己会写进配置：{t}");
+    // 临时卡那一层也要把"关掉就没了"与"怎么常用"说全
+    let layer = strip_comments(&read("src/components/PairDraftLayer.tsx"));
+    assert!(layer.contains("写进配置"),
+        "临时卡那一层没说清常用它要经过哪一步：{layer}");
+}
+
 /// 盘点顺手落的那份名单，路径要在「差异」那一面露出来（可复制）。
 /// 藏在日志里等于没给：操作员要的就是"拉一次存成文件，之后自己比对"，
 /// 而这条通路唯一的入口就是这一行字。
@@ -400,6 +442,37 @@ fn the_difference_face_shows_where_the_name_list_was_written() {
         "路径没读后台交出来的那一个（界面自己拼一个就等于猜）：{raw}");
     assert!(t.contains("名单存成了"), "屏上没说这一份落在哪儿：{t}");
     assert!(raw.contains("copyable"), "那一串不能复制：拿去比对还得手抄：{raw}");
+}
+
+/// 「两边都有、但不是同一份」这一类必须在界面上**露出来**，而且要带方向（2026-10-11）。
+///
+/// 这一类是集合差看不见的：两边都有的名字在 `local \ remote` 与 `remote \ local` 里同时消失，
+/// 于是「云端那份被换过、你本地还是旧的」在盘点里一个字都不提，跑一次 `sync` 就被静默覆盖
+/// （后台那条线是 `prune::diverged`，判据见 `tests/gate.rs` 里那几条证人）。
+///
+/// 所以这一条钉的是三件事：
+/// 1. 读的是**后台交上来的那份**（界面自己重算就是第二套口径，R69 同一条禁令）；
+/// 2. **有方向那一列** —— 只说"这两个不一样"没法做决定，得知道按上传会覆盖哪一边；
+/// 3. `newer` 为空那一格写的是「看不出」而不是留空 —— 留空会被读成"没这一行信息"，
+///    而它其实是"两边都不足以判断"，那恰恰是最该说清的一种形状。
+#[test]
+fn the_difference_face_lists_files_that_exist_on_both_sides_with_their_direction() {
+    let raw = read("src/components/InventoryPanel.tsx");
+    let t = surface_text(&strip_comments(&raw));
+
+    assert!(raw.contains("report") && raw.contains("diverged"),
+        "没读后台交上来的那一份：{raw}");
+    // 方向那一列，且 `remote` 那一格点了出来 —— 它是「按上传会覆盖它」的那一格，
+    // 界面上必须与 `local` 视觉上分得开。
+    assert!(t.contains("哪边比较新"), "没说要人决定哪边留：{t}");
+    assert!(t.contains("云端那份"), "云端更新的那一格没在屏上说出后果：{t}");
+    assert!(t.contains("看不出"), "说不出方向的那一格得说「看不出」，不能留空：{t}");
+    // 缺席防御：这一份是后端新加的字段，`undefined.length` 是 TypeError 而不是"没有差异"。
+    assert!(raw.contains("?? []"),
+        "直接读 `.length` 而不兜底：字段缺席时是崩溃，不是空清单：{raw}");
+    // 而且它必须**常驻一句话解释**——这一类为什么不在前两张表里，是最反直觉的一处。
+    assert!(t.contains("两边都有"),
+        "这一类为什么单列一句都没说：{t}");
 }
 
 // ---- 一张卡 = 一对位置，方向与模式是卡上的两个选择框 ----

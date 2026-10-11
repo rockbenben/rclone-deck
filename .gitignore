@@ -9,8 +9,17 @@ src-tauri/gen/
 # 删掉注释等于抹掉"为什么这么定"，而它们不读盘。真正要删的是下面这条历史规则。
 docs/superpowers/
 
-# 界面跑真窗口时留的图：留在盘上不入库，入库的是 readings.txt（原本只挡 png，
-# 那一整块已经不出仓了，这条跟着删，免得留着一条什么都不挡的规则骗人）
+# 界面跑真窗口时留的图与读数：留在盘上不入库。
+# tools/ui-acceptance.mjs 会往 --out= 的落点写 png 截图（见该文件 :844），
+# 默认落在 docs/superpowers/evidence/ui/ 下（上面那条已挡），但 --out= 能改落点，
+# 所以这里同时钉住"证据目录"和"png 本体"两种可能，避免漏在规则外。
+# 仓里现有的图片是 docs/images/*.webp 与 src-tauri/icons/icon.ico，都不在这两条里。
+docs/**/evidence/ui/
+*.png
+
+# 界面打磨稿：设计阶段反复改出来的工作稿，逐轮重写，不是结论。
+# 定下来的那份在 DESIGN.md；这里的稿子不入库（同 docs/superpowers/ 的道理）。
+design-preview/
 
 .superpowers/
 

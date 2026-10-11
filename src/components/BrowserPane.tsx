@@ -6,6 +6,7 @@ import { NoteLine, noteTip } from './NoteLine';
 import { HIT_OFF, LockHint } from './LockHint';
 import { ResultDock } from './ResultDock';
 import type { DockTone } from './ResultDock';
+import { ThumbCell } from './ThumbCell';
 import { formatBytes } from '../format';
 import type { BrowserEntry, BrowserListing, ShortNote } from '../types';
 
@@ -157,8 +158,17 @@ export function BrowserPane(v: PaneProps) {
             title: '名字', dataIndex: 'name', key: 'name',
             render: (name: string, row) => (
               <Space size={4}>
-                <Typography.Text code className="fs-code">{name}</Typography.Text>
-                {row.isDir && <Typography.Text type="secondary">（目录）</Typography.Text>}
+                {/* 本地那一栏**直接摆图**，不等点击（`auto`）：翻文件夹的目的就是看，
+                    而本地文件在磁盘上，读它不花钱。云端那一栏保持只给名字 —— 那些文件
+                    本机没有，看它得先下载，那条路还没做（README「限制」里写着）。 */}
+                {!v.isRemote && !row.isDir
+                  ? <ThumbCell fs={v.fs ?? undefined} prefix={v.prefix} name={name} auto />
+                  : (
+                    <Space size={4}>
+                      <Typography.Text code className="fs-code">{name}</Typography.Text>
+                      {row.isDir && <Typography.Text type="secondary">（目录）</Typography.Text>}
+                    </Space>
+                  )}
                 {v.pickedName === row.name && (
                   <Typography.Text type="success">已选中</Typography.Text>
                 )}

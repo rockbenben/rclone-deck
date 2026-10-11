@@ -342,6 +342,7 @@ async fn setup_full(
         flags,
         exclude,
         log_dir: fwd(&root.join("logs")),
+        check_by_hash: false,
     };
     (Runner::new(handle, app, defaults, jobs), guard)
 }

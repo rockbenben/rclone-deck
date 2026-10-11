@@ -1,0 +1,99 @@
+<!doctype html>
+<!--
+  rclone-deck 的社交预览图（GitHub Social preview，1280×640）。
+
+  视觉方向：深色底 + 产品自己的色板（src/theme.ts 的 dark 那一档）。
+  抄产品色板而不是另配一套，是为了卡片和界面看着像同一个东西。
+
+  钩子取的是这个项目**最大的那块价值**，不是最好写的那个点：
+  README 通篇在讲「会删东西的地方只有两处，两处都先让你看清」——
+  「删除前的确认」才是它替用户扛住的那件事，「配 rclone」只是入口。
+  信息流里读者只看得到大色块和大字，所以截图细节一律不进这张卡。
+
+  渲染：
+    node {SKILL_DIR}/render.mjs social-card.html social-card.png --palette
+-->
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<style>
+  * { margin: 0; box-sizing: border-box; }
+  body {
+    /* position:relative：让 .foot 锚在卡片上，而不是视口上 —— 少了它，
+       footer 会从任何比视口矮的卡片上漂走。 */
+    position: relative;
+    width: 1280px; height: 640px; overflow: hidden;
+    display: flex; flex-direction: column; justify-content: center;
+    padding: 0 88px; gap: 30px;
+    /* 色板逐个抄自 src/theme.ts 的 dark 一档，不是另配的 */
+    background: #14161A; color: #E6E9EF;
+    font-family: system-ui, "Segoe UI", "PingFang SC", "Microsoft YaHei",
+                 "Noto Sans CJK SC", "Noto Sans SC", sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  /* 右后侧一块极淡的青色光晕，暗示"两边对起来"，不抢大字 */
+  body::after {
+    content: ""; position: absolute; right: -140px; top: -180px;
+    width: 620px; height: 620px; border-radius: 50%;
+    background: radial-gradient(circle, rgba(49,169,154,0.16) 0%, rgba(49,169,154,0) 70%);
+  }
+
+  .eyebrow {
+    display: flex; align-items: center; gap: 16px;
+    font-size: 25px; font-weight: 600; letter-spacing: 0.06em;
+    color: #8A93A5;
+  }
+  /* 主色的小圆点：一眼认出这是哪个产品的卡 */
+  .eyebrow::before {
+    content: ""; width: 15px; height: 15px; border-radius: 50%;
+    background: #31A99A; flex: none;
+  }
+
+  h1 {
+    position: relative;
+    /* 缩略图尺寸下信息流里只看得清大色块和大字：84px 时标题吃掉近半屏，
+       缩小后仍是最显眼的元素，但给下面的标和页脚留出了呼吸的位置。 */
+    font-size: 72px; line-height: 1.18; font-weight: 800;
+    letter-spacing: -0.01em; max-width: 1010px;
+  }
+  h1 .hl { color: #31A99A; }
+
+  /* 三枚能力标：三小句，不是一句话（那张脸在缩略图里全糊）。
+     放不下就换行，不靠缩小字号硬塞一行——缩略图里本来就看不清小字。 */
+  .pills { position: relative; display: flex; gap: 13px; flex-wrap: wrap; max-width: 1010px; }
+  .pill {
+    font-size: 24px; font-weight: 600; line-height: 1;
+    padding: 14px 24px; border-radius: 999px;
+    background: #1B1E24; color: #A2AAB8;
+    border: 1px solid #333A45;
+  }
+  .pill.safe { color: #31A99A; border-color: rgba(49,169,154,0.42); }
+
+  .foot {
+    position: absolute; left: 88px; bottom: 52px;
+    display: flex; align-items: center; gap: 15px;
+    font-size: 22px; color: #8A93A5;
+  }
+  .foot .sep { color: #60697D; }
+  .foot .num { font-weight: 700; color: #31A99A; }
+</style>
+</head>
+<body>
+  <div class="eyebrow">rclone-deck</div>
+
+  <h1>本地改了、云端也改了，<br /><span class="hl">哪边留你说</span></h1>
+
+  <div class="pills">
+    <span class="pill safe">哪边不一样直接列</span>
+    <span class="pill">两边都在的也查得出</span>
+    <span class="pill">待上传的能看图</span>
+    <span class="pill">后台替你起好</span>
+  </div>
+
+  <div class="foot">
+    <span class="num">365 #041</span>
+    <span class="sep">·</span>
+    <span>S3 / R2 / WebDAV · 本地目录</span>
+  </div>
+</body>
+</html>

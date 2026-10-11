@@ -408,13 +408,13 @@ impl RcClient {
     /// 问一个名字在不在——覆盖拒绝（I2c）唯一的依据，所以三种回答必须分得开：
     /// 200 + `item` 对象 = 在；200 + `item: null` = 不在；非 2xx = **不知道**（当错误抛出）。
     /// 把"不知道"读成"不在"，就等于在最关键的那一步上放行了一次写入。
-    pub async fn operations_stat(&self, fs: &str, remote: &str) -> Result<Option<StatObject>, ListError> {
+    pub async fn operations_stat(&self, fs: &str, remote: &str) -> Result<Option<EntryMeta>, ListError> {
         let params = object_params(fs, remote);
         let res = self.send("operations/stat", &params).await.map_err(ListError::Other)?;
         let json = res.into_value("operations/stat").map_err(ListError::Other)?;
         match json.get("item") {
             None | Some(Value::Null) => Ok(None),
-            Some(v) => serde_json::from_value::<StatObject>(v.clone()).map(Some).map_err(|e| {
+            Some(v) => serde_json::from_value::<EntryMeta>(v.clone()).map(Some).map_err(|e| {
                 ListError::Other(RcError::Rc {
                     method: "operations/stat".into(),
                     message: format!("解析 stat 的 item 失败：{e}（不能当成「没有这个对象」）"),

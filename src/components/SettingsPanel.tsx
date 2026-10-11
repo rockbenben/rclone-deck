@@ -3,7 +3,8 @@ import { useCallback, useEffect, useState } from 'react';
 import type { ReactNode } from 'react';
 
 import * as api from '../api';
-import { groupDraftJobs } from '../pairs';
+import { groupDraftJobs, intentOptions } from '../pairs';
+import type { PairGroup } from '../pairs';
 import { errNote } from '../errors';
 import { NoteLine } from './NoteLine';
 
@@ -11,6 +12,36 @@ import type {
   Applied, ConfigChange, ConfigIntent, JobDraft, JobRow, RemoteBlock, SecretState, SettingsPlan, SettingsView, ShortNote,
 } from '../types';
 import { KIND_LABEL } from '../types';
+
+/**
+ * 这一条在卡上那一格里说的是哪一句 —— **与 `JobListView` 同一份**。
+ *
+ * 做法是把这一条填进它所属那一对的 `PairGroup`（后台带来的四个槽位只填它自己那一格，
+ * 与 `groupJobs` 的填法一样），再调 `intentOptions`。所以设置这一面读到的
+ * 就是卡上那一格的那句原话，不存在「设置一套说法、卡上另一套」。
+ *
+ * `group` 里其余三格留 `null` 是有意的：`intentOptions` 只用它算**这一条**的标签，
+ * 而 `availableSlots` 会因此只列出这一条占的那一格 —— 列出来的正是这一条自己，
+ * 不是那一对位置上所有能做的事（那几件在卡上是同一个选择框里的兄弟选项）。
+ */
+function intentPhraseFor(
+  groups: { pairs: { group: PairGroup; jobs: JobRow[] }[] },
+  j: JobRow,
+): string {
+  const entry = groups.pairs.find((p) => p.jobs.some((x) => x.id === j.id));
+  if (entry === undefined) return j.name;   // 找不到所属那一对：交原名，不编一句
+  const g: PairGroup = { ...entry.group };
+  // 槽位类型是 `JobView`，而 `intentOptions` 只判它是不是 `null`（`slotJob` 返回
+  // `JobView | null`，用的是 `=== null` 不是读字段）。这里放一个**空壳**占位：
+  // 这一段要算的是「这一条属于哪一格、那一格怎么说」，不需要那条任务的任何字段。
+  const placeholder = { id: j.id } as unknown as import('../types').JobView;
+  // `mode` 由后台那一列判（copy=不删、sync=会删），槽位是这一条自己在配置里的那一格。
+  if (j.jobKind === 'sync') {
+    if (j.pairSlot === 'a') { g.mirrorA = placeholder; } else { g.mirrorB = placeholder; }
+  } else if (j.pairSlot === 'a') { g.addA = placeholder; } else { g.addB = placeholder; }
+  const opts = intentOptions(g);
+  return opts.length > 0 ? opts[0].label : j.name;
+}
 
 /** 卡片一的那四项（一行一项的两个数组按数组交）。 */
 type DefaultsDraft = { rcloneBin: string; logDir: string; flags: string[]; exclude: string[] };
@@ -238,13 +269,29 @@ export function SettingsPanel(props: {
   const groups = groupDraftJobs(view.jobs);
 
   // 一行还是那一条：两颗按钮、那张表单、写出去的那几项，全都照旧。
+  //
+  // **2026-10-11：任务名不再当标题**（这一条改的是「两处界面说了两种话」）。
+  // 以前第一行大字是 `j.name`，而出厂那十条的名字里**烘焙着方向**
+  // （「镜像 R2：以本地为主（删云端多余的）」）—— 可卡上早已把方向收成「要做什么」
+  // 那一格了。于是同一个东西：卡上是「位置 + 要做什么」，这里是「一句裹着方向的名字」。
+  // 人对着设置改一条，眼前那句话和卡上那一格对不上，就以为改的不是同一件事。
+  //
+  // 现在第一行读的是**卡上那一句本身**（`intentPhraseFor`，与卡上同一份 `intentOptions`），
+  // 路径与配置里的原名收进「为什么？」—— 明面只说「要做什么」。
   const renderJobRow = (j: JobRow) => (
     <Space orientation="vertical" size={4} style={{ width: '100%' }}>
       <Space size={6} wrap>
-        <Typography.Text type="secondary">{KIND_LABEL[j.jobKind]}</Typography.Text>
-        <Typography.Text strong>{j.name}</Typography.Text>
+        {/* 会删的那一档吃暖色 —— 与卡上「要做什么」那一枚框同一枚色、同一件事。
+            这里不是新加一层危险提示，是**那一格颜色的回声**：两处说同一件事，
+            颜色得是同一枚，否则读者要自己判断"这两处是不是一回事"。 */}
+        <Typography.Text style={j.jobKind === 'sync' ? { color: 'var(--kind-warm)' } : undefined}>
+          {intentPhraseFor(groups, j)}
+        </Typography.Text>
       </Space>
-      <Typography.Text type="secondary" className="fs-code">{j.src} → {j.dst}</Typography.Text>
+      <NoteLine note={{
+        short: '',
+        detail: `${j.src} → ${j.dst}　（配置里叫「${j.name}」）`,
+      }} />
       {job !== null && !job.isNew && job.id === j.id ? (
         <JobFields job={job} patch={patchJob} busy={busy}
           onSave={askJob} onCancel={() => setJob(null)} />

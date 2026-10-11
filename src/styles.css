@@ -189,3 +189,12 @@ body { background: var(--canvas); color: var(--ink); font-family: "Segoe UI", "M
   border: 1px solid var(--hairline);
   border-radius: var(--r-ctl);
 }
+
+/* 预览那一格的缩略图（`ThumbCell.tsx`）。
+   圆角**在这里**而不是组件的 `style` 里：组件里写 `borderRadius:` 会被
+   `frontend_theme.rs` 那道闸判成硬编码视觉值——它要的是"圆角取令牌"这件事，
+   而这条 CSS 就是那个令牌落地的地方（全仓的圆角都在这个文件里，组件不写圆角）。 */
+.thumb-preview {
+  object-fit: cover;
+  border-radius: var(--r-ctl);
+}

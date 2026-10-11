@@ -74,6 +74,7 @@ fn an_empty_log_dir_resolves_to_an_absolute_path_beside_the_pid_file() {
         flags: vec![],
         exclude: vec![],
         log_dir: "".into(),
+        check_by_hash: false,
     }).unwrap();
     assert!(cfg.log_dir.is_absolute(), "空 log_dir 算出来的不是绝对路径：{:?}", cfg.log_dir);
     assert!(cfg.pid_path.is_absolute());
@@ -331,6 +332,7 @@ fn the_rcd_and_the_runner_get_their_exclude_from_one_and_the_same_defaults() {
         flags: vec!["--fast-list".into()],
         exclude: vec![marker.clone()],
         log_dir: "C:\\绝对路径\\logs".into(),
+        check_by_hash: false,
     };
     // 出厂默认必须和夹具不同，否则这条证人就退化成"两个常量相等"，抓不到"解析了两次"。
     let shipped = JobsFile::parse(DEFAULT_JOBS_TOML).unwrap();

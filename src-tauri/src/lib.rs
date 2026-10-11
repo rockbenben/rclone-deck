@@ -86,6 +86,8 @@ pub fn run() {
             commands::run_mirror,
             commands::run_gate,
             commands::run_inventory,
+            commands::preview_local_image,
+            commands::preview_pane_image,
             commands::tail_log,
             commands::open_dir,
             // 浏览器读侧那一对：只列东西、不动东西，命令表里"能删的那一条"的形状一个字没变

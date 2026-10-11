@@ -22,6 +22,10 @@ const SURFACE_FILES: &[&str] = &[
     // 第三面（设置）：上面那三条文案判据要连着它一起扫，否则"改了词表但只查了几个面"
     // 那个洞就在这里重开。
     "src/components/SettingsPanel.tsx",
+    // 预览那一格（2026-10-11）：名单是**写死的**，新组件不在上面就是免检——
+    // 那道闸的判据（内部名词 / 称呼 / 硬编码视觉值）对一个没登记的文件一律失明。
+    // 登记它比在组件里写一句"我是安全的"便宜。
+    "src/components/ThumbCell.tsx",
 ];
 
 /// 组件与页面里不许出现写死的字号 / 颜色 / 圆角：它们必须来自 `theme.ts` 或 CSS 变量。
@@ -35,7 +39,7 @@ fn components_carry_no_hard_coded_visual_values() {
                 "src/components/GatePanel.tsx",
                 "src/components/InventoryPanel.tsx", "src/components/MirrorConfirm.tsx",
                 "src/components/RcdStatusBar.tsx", "src/components/LockHint.tsx",
-                "src/components/SettingsPanel.tsx"] {
+                "src/components/SettingsPanel.tsx", "src/components/ThumbCell.tsx"] {
         let t = strip_comments(&read(rel));
         let tight: String = t.split_whitespace().collect();
         for banned in ["fontSize:", "color:\"#", "background:\"#", "borderRadius:"] {

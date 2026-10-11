@@ -104,7 +104,8 @@ function pairLabels(groups: PairGroup[]) {
  *
  *  一处诚实的边界：短名的撞名升级是按**这一份清单里的对**算的。运行那一面多一张临时卡时，
  *  卡上那枚可能比这里深一层 —— 那是同一对位置的两种深度，不是两种说法，临时卡重开就没了。 */
-export function groupDraftJobs(jobs: JobRow[]): { pairs: { key: string; label: string; jobs: JobRow[] }[]; gates: JobRow[] } {
+export function groupDraftJobs(jobs: JobRow[]):
+  { pairs: { key: string; label: string; group: PairGroup; jobs: JobRow[] }[]; gates: JobRow[] } {
   const gates: JobRow[] = [];
   const order: string[] = [];
   const byKey = new Map<string, JobRow[]>();
@@ -129,7 +130,10 @@ export function groupDraftJobs(jobs: JobRow[]): { pairs: { key: string; label: s
   });
   pairLabels(groups);
   return {
-    pairs: groups.map((g) => ({ key: g.key, label: `${g.aLabel} ↔ ${g.bLabel}`, jobs: byKey.get(g.key)! })),
+    // `group` 一并交出去：设置面要拿 `intentOptions` 算出与卡上**同一句**「要做什么」，
+    // 而那一句是从 `PairGroup` 算的（短名 + 哪一侧是全集）。这里已经把它造好了，
+    // 外面再拼一遍就是第二套口径 —— 而这一句是操作员做决定时读的那一行。
+    pairs: groups.map((g) => ({ key: g.key, label: `${g.aLabel} ↔ ${g.bLabel}`, group: g, jobs: byKey.get(g.key)! })),
     gates,
   };
 }

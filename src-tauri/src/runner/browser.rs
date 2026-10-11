@@ -157,6 +157,45 @@ pub fn parent_of(remote: &str) -> String {
 /// 交正斜杠那一档：与 `scope::norm` 的仓库内部规范同向，也让 `describe()` 那句回显不混分隔符。
 /// `None` = 这个形状没量过（UNC `\\srv\share`、相对路径、`D:tree` 这种盘符相对写法、
 /// 只有一个盘符的整块盘）⇒ 左列不发这一行。**这里不说"rclone 会拒绝它们"**：没量过就不说。
+/// 浏览器那一栏读一张本地图，交成 `data:` URL（2026-10-11）。
+///
+/// 与 [`super::local_image_data_url`] 分成两个命令，是因为**根不一样**：
+/// 那一处是"这条任务的本地根"，而这里一栏能自由导航（`prefix` 随面包屑变），
+/// 且 `fs` 是 `local_fs_id` 编出来的那种字符串（`D:/pics`）。所以这里要把 `fs`
+/// **反解**回 `Path` 再拼 `prefix` —— 复用同一个 `local_fs_id` 既是唯一口径，
+/// 也顺带保证了"解不出来的形状（UNC 等）根本不会发到界面上"。
+///
+/// 三道安全闸与那一处逐条相同（理由见那儿）：相对名、规范化后仍在根下、扩展名白名单。
+/// **根是这一栏当前所在的位置**——它由操作员导航到哪就封到哪，不是任务配置里那个。
+pub fn preview_pane_image(fs: &str, prefix: &str, name: &str) -> Result<String, RunError> {
+    let Some(root) = local_fs_id_to_path(fs) else {
+        return Err(RunError::Invariant(
+            "这一栏的位置是界面画不出来的形状，看不了图。".into()));
+    };
+    // prefix 是这一栏的导航状态，它的每一段都来自清单行的 `name`（`BrowserPanel` 的
+    // `under()` 是唯一一处拼接）。但它仍然来自**界面**，所以与 `name` 一道过闸。
+    let mut rel = String::new();
+    if !prefix.is_empty() { rel.push_str(prefix); rel.push('/'); }
+    rel.push_str(name);
+    if !super::safe_relative_name(&rel) {
+        return Err(RunError::Invariant(format!("「{rel}」不是一个可以读的图片名。")));
+    }
+    super::read_local_image_data_url(&root, &rel)
+}
+
+/// `local_fs_id` 的反函数：`D:/pics` → `Path("D:\\pics")`。**只放行那一个量过的形状**，
+/// 解不出来交 `None`（UNC、盘符相对写法、整块盘——`local_fs_id` 本来就不发它们）。
+fn local_fs_id_to_path(id: &str) -> Option<std::path::PathBuf> {
+    let flat = id.replace('\\', "/");
+    let (head, tail) = flat.split_once(':')?;
+    if head.len() != 1 || !head.as_bytes()[0].is_ascii_alphabetic() || !tail.starts_with('/') {
+        return None;
+    }
+    let rest: Vec<&str> = tail.split('/').filter(|s| !s.is_empty()).collect();
+    if rest.is_empty() { return None; }
+    Some(std::path::PathBuf::from(format!("{head}:\\{}", rest.join("\\"))))
+}
+
 pub fn local_fs_id(path: &Path) -> Option<String> {
     let flat = path.to_string_lossy().replace('\\', "/");
     let (head, tail) = flat.split_once(':')?;
@@ -374,7 +413,9 @@ impl Runner {
     pub async fn refuse_if_target_exists(&self, fs: &str, remote: &str) -> Result<(), RunError> {
         let target = browser_target_label(fs, remote);
         match self.rcd.client.operations_stat(fs, remote).await? {
-            Some(obj) => Err(RunError::Invariant(browser_target_exists_refusal(&target, obj.size, &obj.mod_time))),
+            Some(obj) => Err(RunError::Invariant(browser_target_exists_refusal(
+                &target, obj.size, obj.mod_time.as_deref().unwrap_or_default(),
+            ))),
             None => Ok(()),
         }
     }
@@ -893,8 +934,16 @@ impl Runner {
 /// 旧版这里印的是 `2026-10-02T21:05:09.6642251+08:00` 与 `30 字节`，
 /// 秒与纳秒是日志的事（DESIGN.md 的时间那条口径）。
 pub fn browser_target_exists_refusal(target: &str, size: u64, mod_time: &str) -> String {
-    format!("那里已经有一个同名文件，一个字节都没写。{target} · {} · 改于 {}。换个名字再来一次。",
-        human_bytes(size), human_time(mod_time))
+    // `mod_time` 是空串时**不说**"改于 。"——那是这一句最难看的一种残缺，而它出现的时刻
+    // 恰好是信息最少的那一刻（后端没给 ModTime 那一键）。空串在这里的含义是"没拿到"，
+    // 于是那一段整个不出现，而不是留下一个空的顿号。
+    let when = if mod_time.trim().is_empty() {
+        String::new()
+    } else {
+        format!(" · 改于 {}", human_time(mod_time))
+    };
+    format!("那里已经有一个同名文件，一个字节都没写。{target} · {}{when}。换个名字再来一次。",
+        human_bytes(size))
 }
 
 /// 字节数的人类读法。口径与前端 `format.ts` 一致（1024 进制），但**这里到 GiB 为止**：

@@ -21,6 +21,24 @@ fn both(pane: &str, panel: &str) -> String {
     format!("{}{}", read(pane), read(panel))
 }
 
+/// 把 JSX 标签摘掉，只留下屏上那句话的形状。
+/// 等宽只给数字那一小块之后（DESIGN 的 Known Gaps 那条：整句走等宽会把中文一起拖进去），
+/// 读数那一句在源码里是 `这一层 <span className="num">{n}</span> 个文件`；
+/// 判据要钉的是**那句话挨在一起**，不是它被几层 span 切开，所以先摘标签再比。
+fn strip_tags(src: &str) -> String {
+    let mut out = String::with_capacity(src.len());
+    let mut depth = 0usize;
+    for c in src.chars() {
+        match c {
+            '<' => depth += 1,
+            '>' => depth = depth.saturating_sub(1),
+            _ if depth == 0 => out.push(c),
+            _ => {}
+        }
+    }
+    out
+}
+
 #[test]
 fn the_browser_shows_the_backend_note_and_never_recomputes_a_verdict() {
     let pane = read("src/components/BrowserPane.tsx");
@@ -59,11 +77,14 @@ fn the_visible_count_on_the_button_is_the_backends_number_not_a_row_count() {
 /// R54 + R74 那一格：`清空这一层` 点不动时，那句原因必须是**后台那一句**，而且它要挂在
 /// disabled 按钮收得到悬停的那个形状上（Chromium 不给 disabled 控件派发 hover，见 `LockHint`）。
 ///
-/// 这一条是评审轮补的：把 `<LockHint title={clearHint}>` 换成裸按钮、或把禁用条件从 `clearHint`
-/// 换成 `busy`，前面几条**一条都不红** —— 那两个字段仍在别处各被读一次，够第一条绿。
+/// 这一条是评审轮补的：把那颗的 Tooltip 摘掉、或把禁用条件从 `clearNote` 换成 `busy`，
+/// 前面几条**一条都不红** —— 那两个字段仍在别处各被读一次，够第一条绿。
 /// "置灰 + Tooltip 里那句后台的话"这半条设计当时只写在证据文件里，没有闸门。
-/// ④片拆成两份之后仍然两头各钉一半：布尔与句子都在编排层从后台字段读出来，
-/// 而挂 Tooltip 与 `disabled` 的那个形状在栏里。
+///
+/// 动作条改成"一份定义、两档形状共用"之后（折叠内外不许长出两种说法），钉的不再是
+/// `<LockHint title={noteTip(clearNote)}>` 那一句字面，而是这条链的每一环：
+/// 那颗的 `why` 交的是后台那一份 → 渲染时 `why` 变成 `noteTip` 的输出 → 输出挂进 `LockHint`。
+/// 任何一环断掉（换成裸按钮、换成 `busy`、或句子在界面里另拼一份）都会红。
 #[test]
 fn the_greyed_clear_button_carries_the_backends_own_reason() {
     let panel = read("src/components/BrowserPanel.tsx");
@@ -72,8 +93,15 @@ fn the_greyed_clear_button_carries_the_backends_own_reason() {
     assert!(panel.contains("!listing.canClearPrefix"), "点不动与否必须由后台那个布尔决定：{panel}");
     assert!(panel.contains("listing.clearNote"), "点不动那一句必须由后台交出，不在这里拼：{panel}");
     let pane = read("src/components/BrowserPane.tsx");
-    assert!(pane.contains("<LockHint title={noteTip(clearNote)}>"), "灰掉的那颗没挂上共用那只 Tooltip：{pane}");
-    assert!(pane.contains("disabled={v.busy || v.clearBlocked}"), "那颗按钮的禁用不是由后台的判定决定的：{pane}");
+    assert!(pane.contains("why: clearNote"),
+        "「清空这一层」那颗的原因不是后台那一份：{pane}");
+    assert!(pane.contains("v.busy || v.clearBlocked"),
+        "那颗按钮的禁用不是由后台的判定决定的：{pane}");
+    // 钉的是**动作条那一份渲染器**把句子挂进了 LockHint。整份文件里还有别处用 `<LockHint`
+    //（表格行里的「下载」），所以只 `contains("<LockHint")` 不够：实测把动作条那层壳摘掉、
+    // 这一条照样绿 —— 那正是它要拦的那一格。
+    assert!(pane.contains("noteTip(why)") && pane.contains("<LockHint key={r.key} title={tip}>"),
+        "动作条上灰掉的那颗没挂上共用那只 antd Tooltip（裸按钮收不到真悬停）：{pane}");
     // 反面：把后台那个布尔再解释一遍（数它的长度、比它的真假、或拿句子当判定）。
     let t = both("src/components/BrowserPane.tsx", "src/components/BrowserPanel.tsx");
     let tight = t.split_whitespace().collect::<Vec<_>>().join("");
@@ -91,7 +119,10 @@ fn the_destructive_confirm_layer_and_the_view_switch_use_antd_components() {
     let layer = read("src/components/LayerConfirm.tsx");
     assert!(layer.contains("<Modal"), "确认层不是 antd 的 Modal：{layer}");
     let pane = read("src/components/BrowserPane.tsx");
-    for want in ["<Table", "<Tooltip"] {
+    // 那一栏用的必须是 antd 的表格与下拉；它**不再直接持有 Tooltip** —— 位置读数那格的
+    // 全文按规程 R68 挂原生 `title`（不许收进浮层），而所有"点不动的那句为什么"都走
+    // `LockHint`（下面那一条钉的就是它）。所以这里要的是 `<LockHint`，不是 `<Tooltip`。
+    for want in ["<Table", "<Select", "<LockHint"] {
         assert!(pane.contains(want), "那一栏少了 {want}：{pane}");
     }
     // 灰控件那句原因挂在共用的那只 antd Tooltip 上（Chromium 不为 disabled 控件派发 hover）。
@@ -140,7 +171,7 @@ fn the_pane_header_says_files_and_folders_not_objects() {
 #[test]
 fn the_two_delete_buttons_each_say_their_own_range() {
     let t = strip_comments(&read("src/components/BrowserPane.tsx"));
-    let tight = t.split_whitespace().collect::<Vec<_>>().join("");
+    let tight = strip_tags(&t).split_whitespace().collect::<Vec<_>>().join("");
     assert!(tight.contains("这一层{listing.fileCount}个文件"),
         "栏上那句读数没说清数的是哪一层：{tight}");
     assert!(tight.contains("删掉这一层看到的${listing.totalCount}个"),

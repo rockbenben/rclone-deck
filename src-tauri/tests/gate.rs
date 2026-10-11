@@ -420,6 +420,31 @@ fn the_pane_preview_undoes_exactly_what_local_fs_id_does() {
     // 没量过的形状老实拒，不硬拼一个根出来。
     assert!(local_fs_id(std::path::Path::new(r"\\srv\share")).is_none());
 }
+
+/// 站在**子目录**里的那一栏必须真读得出图。
+///
+/// 清单行上的 `name` 本来就是根内相对名（`browser_list` 交的是 `Path` 不是 `Name`），
+/// 而根就是这一栏当前所在的位置 —— 再拼一次 `prefix` 会在每个子目录里造出一个不存在的名字。
+/// 那个 bug 的形状是"整屏每一格都写看不了"，而后台那句还说"可能已经被移走或没有权限"，
+/// 所以钉它不能靠读代码，要真在盘上摆一张图去读。三种形状各钉一次。
+#[test]
+fn a_pane_reads_the_root_relative_name_it_was_handed() {
+    use rclone_deck_lib::runner::browser::{local_fs_id, preview_pane_image};
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("pics")).unwrap();
+    std::fs::write(dir.path().join("pics").join("x.webp"), b"RIFFxxxxWEBPVP8 ").unwrap();
+    std::fs::write(dir.path().join("top.webp"), b"RIFFxxxxWEBPVP8 ").unwrap();
+    let id = local_fs_id(dir.path()).expect("量过的形状");
+    // 站在 pics 那一层：名字自带 `pics/` 那一段，prefix 也是 pics。
+    let got = preview_pane_image(&id, "pics", "pics/x.webp")
+        .expect("子目录里那一格读不出来：那是把 prefix 拼了两遍");
+    assert!(got.starts_with("data:image/webp;base64,"), "交回来的不是图片 data URL");
+    // 根上那一档（prefix 空）同样读得出来。
+    assert!(preview_pane_image(&id, "", "top.webp").is_ok(), "根上那一格也读不出来");
+    // 名字不落在这一栏当前那层里 ⇒ 拒。这一栏不许读到别处去（与远端那一档同一条判据）。
+    assert!(preview_pane_image(&id, "pics", "top.webp").is_err(),
+        "跳出这一层的名字被放行了：那是一条能读根内任意对象的出口");
+}
 #[test]
 fn the_list_is_sorted_by_name() {
     let local = side(&[
@@ -527,29 +552,4 @@ fn the_hand_rolled_base64_matches_the_standard_vectors() {
     assert_eq!(base64_encode(b"foobar"), "Zm9vYmFy");
     // 二进制档（0x00 / 0xFF 那一族，最容易在移位时错）
     assert_eq!(base64_encode(&[0x00, 0xff, 0xfe]), "AP/+");
-}
-
-/// base64 **解码**要与标准一致 —— 那是 `operations/cat` 回来的东西（2026-10-11）。
-///
-/// 编解码是一对：编码那边对着 RFC 4648 §10 的官方向量钉过，解码这边同样要钉，
-/// 而且多两档只有解码才有的形状：内嵌换行（rclone 的 JSON 转义里可能带）与补位。
-/// **解错的后果特别难查**：跳过一个认不出的字符会让后面每个字节错位，解出来"有图但不对"。
-#[test]
-fn the_hand_rolled_base64_decodes_back_to_the_original_bytes() {
-    use rclone_deck_lib::runner::{base64_decode, base64_encode};
-    for s in [
-        &b""[..], b"f", b"fo", b"foo", b"foob", b"fooba", b"foobar",
-        // 二进制档：0x00 / 0xFE / 0xFF 那一族，最容易在移位与补位上错
-        &[0x00u8, 0xFF, 0xFE][..],
-        &[0xFFu8; 16][..],
-        &[0x00u8; 9][..],          // 三个补位档都覆盖到
-    ] {
-        let enc = base64_encode(s);
-        assert_eq!(base64_decode(&enc).as_deref(), Some(s),
-            "编解码不是一对：{enc} 解出来不是原来那串");
-    }
-    // 换行要能跳过（rclone 交回来的 JSON 串里可能有）
-    assert_eq!(base64_decode("Zm9v\nYmFy").as_deref(), Some(&b"foobar"[..]));
-    // **认不出的字符不许猜**：跳过它会让后面全部错位，而那比直接报错难查得多。
-    assert!(base64_decode("Zm9v*g==").is_none(), "含非法字符却解出来了：那是错位的字节");
 }

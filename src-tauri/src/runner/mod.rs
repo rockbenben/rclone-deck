@@ -342,21 +342,6 @@ pub fn base64_encode(data: &[u8]) -> String {
     base64::engine::general_purpose::STANDARD.encode(data)
 }
 
-/// base64 解码 —— 同一个 crate。
-///
-/// 认不出的字符一律报错（`Err` → 上层交 `None`），**不猜也不跳过**：跳过一个会让后面每个
-/// 字节错位，解出来"有图但不对"，那比直接报错难查得多。crate 本身就是这个口径。
-pub fn base64_decode(data: &str) -> Option<Vec<u8>> {
-    use base64::Engine as _;
-    // rclone 的 JSON 转义里可能带换行；换行不是 base64 字符，但出现在中间是常见的
-    // （长串被 JSON 折行）。**只清换行**，别的非法字符仍交给引擎报错。
-    let cleaned: String = data.chars().filter(|c| !matches!(c, '\n' | '\r')).collect();
-    base64::engine::general_purpose::STANDARD.decode(cleaned).ok()
-}
-
-/// `operations/cat` 那一条的解码入口 —— 不再单独存在：`base64_decode` 就是它，
-/// `rc/mod.rs` 直接调那一个即可。另起一个薄壳只会多一处能各自漂走的名字。
-
 pub fn mirror_wrong_kind_refusal(name: &str, word: &str) -> String {
     format!("「{name}」是{word}任务，不能按对齐跑")
 }
@@ -494,14 +479,6 @@ pub struct Runner {
 }
 
 impl Runner {
-    /// 只读地拿到那个 `RcClient`（给 command 层用）。
-    ///
-    /// **加访问器而不是把 `rcd` 改成 `pub`**：字段是整个面板共享的那一个后台，
-    /// 放开它就等于放出"从任何地方拿它、然后往它上发调用"的路。命令那一层要做的
-    /// 只是读文件内容，而具体读哪一朵云由调用方交的两个字符串决定 —— 那一层的闸在
-    /// `browser::preview_remote_thumb` 里。
-    pub fn rc_client(&self) -> &crate::rc::RcClient { &self.rcd.client }
-
     pub fn new(rcd: Arc<RcdHandle>, app: AppConfig, defaults: Defaults, jobs: Vec<Job>) -> Self {
         Self {
             rcd, app, defaults, jobs,

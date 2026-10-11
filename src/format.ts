@@ -1,3 +1,11 @@
+/** 相对名的最后一段。清单行上的名字是**根内相对名**（`pics/2026/a.webp`），
+ *  而界面上"这一层里有什么"那一格只该摆最后那一段 —— 前面那几段面包屑已经说过了。
+ *  两处都要用（动作条算落点、网格那一格写名字），所以只写在这一处。 */
+export function baseName(name: string): string {
+  const i = name.lastIndexOf('/');
+  return i < 0 ? name : name.slice(i + 1);
+}
+
 export function formatBytes(n: number): string {
   if (!Number.isFinite(n) || n <= 0) return '0 B';
   const units = ['B', 'KiB', 'MiB', 'GiB', 'TiB'];

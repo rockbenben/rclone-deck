@@ -174,25 +174,31 @@ pub fn parent_of(remote: &str) -> String {
 /// 与 [`super::local_image_data_url`] 分成两个命令，是因为**根不一样**：
 /// 那一处是"这条任务的本地根"，而这里一栏能自由导航（`prefix` 随面包屑变），
 /// 且 `fs` 是 `local_fs_id` 编出来的那种字符串（`D:/pics`）。所以这里要把 `fs`
-/// **反解**回 `Path` 再拼 `prefix` —— 复用同一个 `local_fs_id` 既是唯一口径，
+/// **反解**回 `Path` —— 复用同一个 `local_fs_id` 既是唯一口径，
 /// 也顺带保证了"解不出来的形状（UNC 等）根本不会发到界面上"。
 ///
+/// **`name` 不与 `prefix` 拼接**：清单行上的名字本来就是**根内相对名**
+/// （`browser_list` 交的是 `Path` 不是 `Name`），而根就是这一栏当前所在的位置。
+/// 再拼一次会在每一个子目录里造出一个不存在的名字 —— 症状是"整屏每一格都看不了"，
+/// 而报出来的那句还说"可能已经被移走"（文件在，是我们自己拼错的）。
+/// `prefix` 仍然要用，它圈的是"这一栏看得见的那一层"：名字落在它之外就是界面交错了坐标，
+/// 与远端那一档同一条判据。
+///
 /// 三道安全闸与那一处逐条相同（理由见那儿）：相对名、规范化后仍在根下、扩展名白名单。
-/// **根是这一栏当前所在的位置**——它由操作员导航到哪就封到哪，不是任务配置里那个。
 pub fn preview_pane_image(fs: &str, prefix: &str, name: &str) -> Result<String, RunError> {
     let Some(root) = local_fs_id_to_path(fs) else {
         return Err(RunError::Invariant(
             "这一栏的位置是界面画不出来的形状，看不了图。".into()));
     };
-    // prefix 是这一栏的导航状态，它的每一段都来自清单行的 `name`（`BrowserPanel` 的
-    // `under()` 是唯一一处拼接）。但它仍然来自**界面**，所以与 `name` 一道过闸。
-    let mut rel = String::new();
-    if !prefix.is_empty() { rel.push_str(prefix); rel.push('/'); }
-    rel.push_str(name);
-    if !super::safe_relative_name(&rel) {
-        return Err(RunError::Invariant(format!("「{rel}」不是一个可以读的图片名。")));
+    // 两个输入都来自界面，所以两个都要过闸：`safe_relative_name` 挡上跳与绝对写法，
+    // 这一道挡"名字根本不在这一栏当前那层里"。
+    if !prefix.is_empty() && !name.starts_with(&format!("{prefix}/")) {
+        return Err(RunError::Invariant(format!("「{name}」不在这一层里，不读。")));
     }
-    super::read_local_image_data_url(&root, &rel)
+    if !super::safe_relative_name(name) {
+        return Err(RunError::Invariant(format!("「{name}」不是一个可以读的图片名。")));
+    }
+    super::read_local_image_data_url(&root, name)
 }
 
 /// `local_fs_id` 的反函数：`D:/pics` → `Path("D:\\pics")`。**只放行那一个量过的形状**，
@@ -208,53 +214,12 @@ fn local_fs_id_to_path(id: &str) -> Option<std::path::PathBuf> {
     Some(std::path::PathBuf::from(format!("{head}:\\{}", rest.join("\\"))))
 }
 
-/// 远端一栏读一张图的前若干字节（2026-10-11）——**云端预览**。
-///
-/// 走 `operations/cat` 并让**取内容的那一侧就截断**（`count` 被翻成 Range 头），
-/// 所以一张 20 MB 的原图只下前若干 KB，不是整张拉回来再裁。
-///
-/// **为什么这一条与本地那两条不是同一个函数**：本地的根在磁盘上，能用 `canonicalize`
-/// 规范化之后判"仍在根之下"；远端没有"规范化"这一步，能做的只有——
-/// - `safe_relative_name`（点段 / 盘符 / 前导斜杠，与本地同一份判据）；
-/// - 名字必须落在**这一栏当前的前缀**之下（远端那一栏也在导航，prefix 随面包屑变）；
-/// - 先 `operations/stat` 问大小，**超上限连内容都不问**（省一次整文件下载）。
-///
-/// 少了第一条，那一条命令就是一个"能把任意远端对象读成 base64 交上屏"的出口。
-pub async fn preview_remote_thumb(
-    client: &crate::rc::RcClient, fs: &str, prefix: &str, name: &str, max_bytes: u64,
-) -> Result<String, RunError> {
-    let Some(root) = fs.strip_suffix(':') else {
-        return Err(RunError::Invariant("这个位置不是远端，看不了图。".into()));
-    };
-    if !super::safe_relative_name(name) {
-        return Err(RunError::Invariant(format!("「{name}」不是一个可以读的图片名。")));
-    }
-    // 这一栏当前前缀之下：远端那一栏也能自由导航，交一个跳出前缀的名字就是在读别处。
-    if !prefix.is_empty() && !name.starts_with(&format!("{prefix}/")) {
-        return Err(RunError::Invariant(format!("{name} 不在这一层里，不读。")));
-    }
-    let full = if root.is_empty() { name.to_string() } else { format!("{root}/{name}") };
-    // 先问大小：超上限就**不问内容**。少这一次整文件下载是这一条最实际的省。
-    if let Ok(Some(meta)) = client.operations_stat(fs, &full).await {
-        if meta.size > max_bytes {
-            return Err(RunError::Invariant(format!(
-                "这张图 {:.1} MB，缩略图不取这么大的。",
-                meta.size as f64 / 1_048_576.0)));
-        }
-    }
-    let bytes = client.operations_cat_prefix(fs, &full, max_bytes).await
-        .map_err(|e| RunError::List(e))?;
-    let mime = match name.to_ascii_lowercase().rsplit('.').next().unwrap_or_default() {
-        "png" => "image/png",
-        "jpg" | "jpeg" => "image/jpeg",
-        "gif" => "image/gif",
-        "webp" => "image/webp",
-        "bmp" => "image/bmp",
-        "avif" => "image/avif",
-        _ => "application/octet-stream",
-    };
-    Ok(format!("data:{mime};base64,{}", super::base64_encode(&bytes)))
-}
+/// 远端那一栏**没有**取图通路。这一档试过、量过，做不到：按 Range 读对象内容需要 rclone 的
+/// `operations/cat`（或 `get`/`download`/`open`/`read` 里的任一个），而本机 v1.75.1 的 rc 接口上
+/// 这五个方法**都没注册**（`couldn't find method`；面板自己的 daemon 与另起的一个临时 daemon
+/// 各问一次，两次同答）。rc 上唯一能拿到对象内容的办法是整份 `copyto`，而"为了画一格 112px
+/// 的图先把整张原图拉下来"不是省而是费 —— 所以那一栏只给名字，界面上不摆一个点得动却拉不动的入口。
+/// 要做这一档，得先有一条真会下载的形状（那是另一件事）。
 
 pub fn local_fs_id(path: &Path) -> Option<String> {
     let flat = path.to_string_lossy().replace('\\', "/");

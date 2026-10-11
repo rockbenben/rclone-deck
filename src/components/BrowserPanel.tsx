@@ -3,9 +3,11 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 
 import * as api from '../api';
 import { errNote, plainNote } from '../errors';
+import { baseName } from '../format';
 import { BrowserPane } from './BrowserPane';
 import { LayerConfirm } from './LayerConfirm';
-import { NoteLine } from './NoteLine';
+import { HIT_OFF, LockHint } from './LockHint';
+import { NoteLine, noteTip } from './NoteLine';
 import type { BrowserEntry, BrowserListing, BrowserPreview, RemoteRef, RunReport, ShortNote } from '../types';
 
 type Side = 'local' | 'remote';
@@ -22,7 +24,6 @@ const EMPTY_PANE: PaneState = { fs: null, prefix: '', listing: null };
  *  都来自清单行的 `name`），`name` 是行上那个完整相对名或操作员敲进去的一段。
  *  这里只做"落在谁下面"这一件事——不补冒号、不改斜杠、不认端点，那些判据都在后台那一处。 */
 function under(dir: string, name: string): string { return dir === '' ? name : `${dir}/${name}`; }
-function baseOf(name: string): string { const i = name.lastIndexOf('/'); return i < 0 ? name : name.slice(i + 1); }
 
 /** 一次动作的结果，记着**是谁发起的**：它要落回那一栏脚下（上一版它是页面级一条 Alert，
  *  掉在视口外，于是有一格真缺陷混过了两轮评审）。 */
@@ -403,18 +404,18 @@ export function BrowserPanel() {
       },
       onPush: () => {
         if (here === null || incoming === null || srcPane === null) return;
-        const drop = under(pane.prefix, baseOf(incoming.name));
+        const drop = under(pane.prefix, baseName(incoming.name));
         void plain(side, '上传到这里', () => api.browserCopy(srcPane, incoming.name, here, drop));
       },
       onMoveHere: () => {
         if (here === null || picked === null || srcPane === null) return;
-        const drop = under(pane.prefix, baseOf(picked.name));
+        const drop = under(pane.prefix, baseName(picked.name));
         void openLayer(side, () => api.browserPreviewMove(srcPane, picked.name, here, drop), false, null);
       },
       onDownload: (row: BrowserEntry) => {
         const there = far.fs;
         if (here === null || there === null || far.listing === null) return;
-        const drop = under(far.prefix, baseOf(row.name));
+        const drop = under(far.prefix, baseName(row.name));
         void plain(side, '下载', () => api.browserCopy(here, row.name, there, drop));
       },
       onDeleteOne: (row: BrowserEntry) => {
@@ -459,22 +460,32 @@ export function BrowserPanel() {
   return (
     <Space orientation="vertical" size={12} style={{ width: '100%' }}>
       <Space size={8} wrap>
+        {/* 那句只说这一面是干什么的，**不指路**：那颗按钮就在它右边，指一次读者要多走一步
+            （DESIGN 的"指路也要挑时机"那条，与配对那一面「还没算过差异」同一口径）。 */}
         <Typography.Text className="fs-note">
           {comparing
             ? '左右是同一个位置的两面：要动哪个名字就点哪个。删东西的那几颗先列清单，确认交出去的是一次性的凭证。'
-            : '看本地的文件与图片。想跟云端比一比，按右边那颗。'}
+            : '看本地的文件与图片。'}
         </Typography.Text>
         {!comparing ? (
-          <Button size="small" disabled={firstRemote === undefined || busy}
-            onClick={() => {
-              // 进比对时**云端站到本地这一栏配对的那一头**（不是随便挑一个远端）——
-              // 这一面存在的意义就是比同一个位置的两面，随便挑一个远端等于把要比的两堆
-              // 放到一起，让人以为那就是结果。
-              const mate = refs.find((r) => r.id === panes.local.fs)?.pairedWith;
-              void go('remote', { ...EMPTY_PANE, fs: mate != null && mate !== '' ? mate : (firstRemote?.id ?? '') });
-            }}>
-            和云端比一比
-          </Button>
+          // 点不动也要说得出为什么：没有远端位置时那颗是灰的，而屏上刚说过"看本地"，
+          // 两句之间缺的就是"那为什么比不了"。句子是这一面自己判的（候选名单在手里），
+          // 所以走 `plainNote`，不是替后台编备用文案。
+          <LockHint title={noteTip(firstRemote === undefined
+            ? plainNote('这台机器上还没有远端位置')
+            : (busy ? plainNote('上一件事还没跑完') : EMPTY_NOTE))}>
+            <Button size="small" style={firstRemote === undefined || busy ? HIT_OFF : undefined}
+              disabled={firstRemote === undefined || busy}
+              onClick={() => {
+                // 进比对时**云端站到本地这一栏配对的那一头**（不是随便挑一个远端）——
+                // 这一面存在的意义就是比同一个位置的两面，随便挑一个远端等于把要比的两堆
+                // 放到一起，让人以为那就是结果。
+                const mate = refs.find((r) => r.id === panes.local.fs)?.pairedWith;
+                void go('remote', { ...EMPTY_PANE, fs: mate != null && mate !== '' ? mate : (firstRemote?.id ?? '') });
+              }}>
+              和云端比一比
+            </Button>
+          </LockHint>
         ) : (
           <Button size="small" onClick={() => void go('remote', { ...EMPTY_PANE, fs: null })}>
             不比了，回去看本地

@@ -35,19 +35,13 @@ export const previewLocalImage = (id: string, name: string) =>
  * `fs` 是后台交出来的位置坐标（`local_fs_id` 编出的 `D:/pics` 那种形状），`prefix` 是
  * 这一栏的导航状态，两者都由界面持有但都不是用户可以乱填的路径 —— 后台把它们反解回
  * `Path` 再过那三道闸。**不传绝对路径**，理由同 `previewLocalImage`。
+ * `name` 是清单行上那个**根内相对名**（它自己就带着 `prefix` 那几段），后台不再拼它。
  */
 export const previewPaneImage = (fs: string, prefix: string, name: string) =>
   invoke<string>('preview_pane_image', { fs, prefix, name });
 
-/**
- * 远端那一栏的缩略图（云端预览）。
- *
- * 后台用 `operations/cat` 并让**取内容的那一侧就截断**（`count` 被翻成 Range 头下发），
- * 所以这不是「把整张原图拉回来再裁」—— 一张 20 MB 的图只下前若干 KB。
- * 同样**不传绝对路径**：名字必须落在 `prefix` 那一层之下，后台会判。
- */
-export const previewRemoteThumb = (fs: string, prefix: string, name: string) =>
-  invoke<string>('preview_remote_thumb', { fs, prefix, name });
+// 远端那一栏**没有**取图入口：按 Range 读对象内容要 rclone 的 `operations/cat`，
+// 而本机那一版 rc 上没有这个方法（实测），只剩整份下载。理由写在 `runner::browser` 上。
 // 删除只有这一对入口：`runJob(id, false)` 对对齐任务会被后台拒绝（那句话术在 runner 里）。
 // `runMirror` 的 token 必须来自**刚刚那一次**登记：带着逐条名单的那份出自 `previewMirror`，
 // 没看名单的那份出自 `confirmMirror`。它单次消费，后台还会重列一遍（看过的那份逐条比对），

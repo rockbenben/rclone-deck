@@ -1,7 +1,9 @@
 import { Image, Space, Typography } from 'antd';
 import { useEffect, useRef, useState } from 'react';
 
-import { previewLocalImage, previewPaneImage, previewRemoteThumb } from '../api';
+import { previewLocalImage, previewPaneImage } from '../api';
+import { errNote } from '../errors';
+import type { ShortNote } from '../types';
 
 /** 只认这一族扩展名，与后端 `IMAGE_EXTS` 同一张表（两边不一致就是"点得动但读不出"）。 */
 const IMAGE_EXTS = ['.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.avif'];
@@ -23,13 +25,15 @@ export const looksLikeImage = (name: string): boolean => {
  *   翻的目的就是看，一列名字等于让人自己去资源管理器开一遍；而本地文件在磁盘上，
  *   读它不花钱（不下载、不问远端）。所以那一栏**直接摆图**，不等点击。
  *
- * 云端那一栏**不摆**：`fs` 是远端坐标，本机没有那个文件，看它得先下载一次 ——
- * 那是另一件还没做的事，这里不能摆一个点得动却拉不动的入口。
+ * 云端那一栏**不摆**：那一侧的对象在本机没有，而 rc 接口上没有"只读前若干字节"的出口
+ * （实测那五个方法都没注册），要画这一格就得整张下载。所以这里不摆一个点得动却拉不动的入口。
  */
-export function ThumbCell({ jobId, name, fs, prefix = '', auto = false, box = 72, remote = false }:
-  { jobId?: string; name: string; fs?: string; prefix?: string; auto?: boolean; box?: number; remote?: boolean }) {
+export function ThumbCell({ jobId, name, fs, prefix = '', auto = false, box = 72 }:
+  { jobId?: string; name: string; fs?: string; prefix?: string; auto?: boolean; box?: number }) {
   const [url, setUrl] = useState<string | null>(null);
-  const [failed, setFailed] = useState(false);
+  // 「看不了」要说得出为什么，而那一句只有后台有（超上限 / 形状画不出来 / 读不出来）。
+  // 界面不自己分类，也不设备用文案：把后台那两段原样留着，格子上给短的那句。
+  const [why, setWhy] = useState<ShortNote | null>(null);
   const [loading, setLoading] = useState(false);
   const [seen, setSeen] = useState(false);
   const ref = useRef<HTMLSpanElement | null>(null);
@@ -37,18 +41,14 @@ export function ThumbCell({ jobId, name, fs, prefix = '', auto = false, box = 72
   const fetchImage = async () => {
     setLoading(true);
     try {
-      // 三条路都由后台定根 —— 这里只交坐标，不交路径。
-      const data = remote
-        ? await previewRemoteThumb(fs as string, prefix, name)
-        : jobId !== undefined
-          ? await previewLocalImage(jobId, name)
-          : await previewPaneImage(fs as string, prefix, name);
+      // 两条路都由后台定根 —— 这里只交坐标，不交路径。
+      const data = jobId !== undefined
+        ? await previewLocalImage(jobId, name)
+        : await previewPaneImage(fs as string, prefix, name);
       setUrl(data);
       return data;
-    } catch {
-      // 拒绝的话术在后台（那才是有信息的那一版：为什么不给读）。
-      // 屏上只说"看不了"，细节是操作员要看时才问的事。
-      setFailed(true);
+    } catch (e) {
+      setWhy(errNote(e));
       return null;
     } finally {
       setLoading(false);
@@ -65,7 +65,7 @@ export function ThumbCell({ jobId, name, fs, prefix = '', auto = false, box = 72
    * `rootMargin` 提前一屏取：往下滚的那一下要立刻有图，等滚到才发请求会看见一片空白。
    */
   useEffect(() => {
-    if (!auto || seen || url !== null || failed) return;
+    if (!auto || seen || url !== null || why !== null) return;
     const el = ref.current;
     if (el === null) return;
     if (typeof IntersectionObserver === 'undefined') {
@@ -82,27 +82,31 @@ export function ThumbCell({ jobId, name, fs, prefix = '', auto = false, box = 72
     }, { rootMargin: '400px' });
     io.observe(el);
     return () => io.disconnect();
-  }, [auto, seen, url, failed, jobId, name, fs, prefix, remote]);
+  }, [auto, seen, url, why, jobId, name, fs, prefix]);
 
   useEffect(() => {
     // 换行（换 job / 翻页 / 换目录）就丢掉上一张：那是一份 base64 字符串，
     // 留着只是白占内存。`seen` 也一起归零 —— 新的这一格要重新决定"该不该取"。
     setUrl(null);
-    setFailed(false);
+    setWhy(null);
     setLoading(false);
     setSeen(false);
-  }, [jobId, name, fs, prefix, remote]);
+  }, [jobId, name, fs, prefix]);
 
   if (!looksLikeImage(name)) {
     // 不是图片就没有缩略图——**不摆一个占位方块**，那一格要短就短。
     return <Typography.Text className="fs-code">{name}</Typography.Text>;
   }
 
-  if (failed) {
+  if (why !== null) {
     // 读不出来时退回名字，而不是留一个破图：这一格的信息是名字，不是"这里有张图"。
+    // 那一句为什么**由后台说**（超上限 / 形状画不出来 / 读不出来是三种不同的处置），
+    // 界面不替它分类成"太大"那种两个字 —— 那是第二份口径。全文挂原生 title（规程 R68）。
     return (
       <Space size={4}>
-        <Typography.Text type="secondary" className="fs-caption">看不了</Typography.Text>
+        <Typography.Text type="secondary" className="fs-caption" title={why.detail === '' ? why.short : `${why.short}\n${why.detail}`}>
+          看不了
+        </Typography.Text>
         <Typography.Text className="fs-code">{name}</Typography.Text>
       </Space>
     );

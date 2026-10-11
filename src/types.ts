@@ -242,6 +242,9 @@ export interface RemoteRef {
   id: string;
   label: string;
   isLocal: boolean;
+  /** 配对的那一头（2026-10-11，联动对比视图靠它）。交的是**同一个形状的 id**
+   * （能直接喂回 `browser_list`），不是给人看的短名；任务里没有这一对时是空串。 */
+  pairedWith: string;
 }
 
 /** 清单里的一行（Rust 侧 `BrowserEntry`）。`name` 是这个对象在**那一侧根内**的完整相对名

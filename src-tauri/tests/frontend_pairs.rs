@@ -389,6 +389,80 @@ fn the_trial_button_says_out_loud_that_it_transfers_nothing() {
     assert!(!arm.contains("只会告诉你会动哪些"), "镜像那一档自己带着这句：{arm}");
 }
 
+/// 浏览面板：**默认看本地 + 对面空时满宽 + 本地图走网格**（2026-10-11）。
+///
+/// 三条是一件事：这一面开着多数时候不是为了左右比，就是为了翻本地那一堆图。
+/// 原来两栏都空着（人得先挑位置才看得见第一张图）、各占半宽（一行只放得下三四张图）、
+/// 图藏在表格里（要一行一行扫名字）—— 三样都把"翻图"这件事变重了。
+#[test]
+fn browsing_defaults_to_local_and_gives_it_the_whole_width() {
+    let raw = read("src/components/BrowserPanel.tsx");
+    let t = strip_comments(&raw);
+
+    // 默认站到第一个本地目录，且**不**自动站云端那一栏（替人挑"要比谁"比多一次点击更贵）
+    assert!(t.contains("r.find((x) => x.isLocal)"),
+        "打开这一面没有默认站到本地：{t}");
+    assert!(t.contains("p.local.fs !== null"),
+        "默认那一步会覆盖操作员已经挑好的位置：{t}");
+
+    // **本地为主、云端是可切换的比对**（2026-10-11 再改一版）：单边占满并收起动作族，
+    // 进比对才并排且把动作放出来。原来那条「对面空就满宽」只是形状的一半，
+    // 另一半是"对面空**且**没进比对时那一栏是 compact" —— 翻图时那族按钮一个都用不上。
+    assert!(t.contains("wide={!comparing}") && t.contains("compact={!comparing}"),
+        "单边/比对两档没有分别给满宽与收起的 compact：{t}");
+
+    // 进比对的入口在**顶部**，明说它是什么；退出的那颗也在。
+    assert!(t.contains("和云端比一比") && t.contains("不比了，回去看本地"),
+        "进/出比对的两颗按钮不在：翻图与比对之间的那一步得是看得见的：{t}");
+
+    // 进比对时云端站到**本地这一栏配对的那一头**，不是随便挑一个远端：
+    // 这一面存在的意义就是比同一个位置的两面，随便挑一个等于把要比的两堆放到一起。
+    assert!(t.contains("pairedWith"),
+        "进比对时没有读配对关系：{t}");
+}
+
+#[test]
+fn the_local_column_shows_photos_as_a_grid() {
+    let raw = read("src/components/BrowserPane.tsx");
+    let t = strip_comments(&raw);
+    assert!(t.contains("looksLikeImage"),
+        "图片与非图片没有分开：网格里每格都得是一张能看的图：{t}");
+    // 网格里已经列过的，表格里**不再画一遍**（同一张图在屏上出现两次是白占地方）
+    assert!(t.contains("grid.includes(row)"),
+        "网格列过的图在表格里又画了一遍：{t}");
+    // 网格与表格式共用 `ThumbCell`，而不是另写一个 —— 两处各画一次，
+    // "点得动但读不出"的那一格就会出现两次（一次能看、一次不能）。
+    assert!(t.contains("thumb-grid") && t.contains("<ThumbCell"),
+        "网格没有复用同一个缩略图组件：{t}");
+    // 点一格仍然是"选中那一个文件"（跨栏动作的源），网格不是另一个入口
+    assert!(t.contains("a.onPick("),
+        "网格那一格不与表格共用那个选中动作：上传/移到这里会断：{t}");
+}
+
+/// 浏览面板的两栏**联动**（2026-10-11）。
+///
+/// 这一面开着是为了**比两边差在哪**，而"差在哪"只在「同一位置的本地 ↔ 同一位置的云端」
+/// 这一对上成立。两边各挑各的位置时屏幕并排着，可它们根本不在同一处 —— 看着是对比，
+/// 其实摆在一起比的是两堆无关的东西。
+///
+/// 这一条钉三件：
+/// 1. 挑位置时**对面自动站到配对的那一头**（读后台的 `pairedWith`，界面不自己猜）；
+/// 2. **导航也联动** —— 往里走一层要两边一起走，只动一边走两层就站在不同深度上了；
+/// 3. 上一级（面包屑那条路）同样联动，否则会留下一道"能跳过去、跳完就跑偏"的缝。
+#[test]
+fn the_two_browser_columns_follow_one_another() {
+    let t = strip_comments(&read("src/components/BrowserPanel.tsx"));
+    // 配对关系读后台交出来的那一枚，界面不认路径、不猜
+    assert!(t.contains("pairedWith"),
+        "联动没有读后台的配对关系：界面就得自己猜「哪个本地配哪个远端」，那是第二套口径：{t}");
+    // 挑位置时对面跟上
+    assert!(t.contains("onSelectPosition"),
+        "换位置那一处不见了：{t}");
+    // 导航两处都要跟（进目录 + 面包屑），少一处就留下一道缝
+    let enter = t.matches("panesRef.current.remote").count();
+    assert!(enter >= 3, "联动只在挑位置时跟，导航（进入 / 面包屑）没跟：{t}");
+}
+
 /// 设置里的「任务」那一栏**不许拿任务名当标题**（2026-10-11）。
 ///
 /// 出厂那十条的名字里烘焙着方向（「镜像 R2：以本地为主（删云端多余的）」），而卡上

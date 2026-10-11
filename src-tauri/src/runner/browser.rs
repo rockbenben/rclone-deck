@@ -29,9 +29,21 @@ use crate::mutex::Busy;
 use crate::preview::{PreviewIntent, StoredPreview};
 use crate::runner::tasklog::{Level, TaskLog};
 
+/// 一个可以打开的位置。
+///
+/// `paired_with` 是**配对的那一头**（2026-10-11 加的，联动对比视图靠它）：
+/// 这一面站在某个本地目录上时，那一枚交出的是它配的远端，反过来也一样。
+/// 它交的是**同一个形状的 id**（能直接喂回 `browser_list`），不是一句给人看的短名 ——
+/// 短名是显示，id 是坐标，界面上拿它去列东西就必须是坐标。
+/// 任务里没有这一对（临时卡、或者两朵云单独加进来的远端）时是空串。
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct RemoteRef { pub id: String, pub label: String, pub is_local: bool }
+pub struct RemoteRef {
+    pub id: String,
+    pub label: String,
+    pub is_local: bool,
+    pub paired_with: String,
+}
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -196,6 +208,54 @@ fn local_fs_id_to_path(id: &str) -> Option<std::path::PathBuf> {
     Some(std::path::PathBuf::from(format!("{head}:\\{}", rest.join("\\"))))
 }
 
+/// 远端一栏读一张图的前若干字节（2026-10-11）——**云端预览**。
+///
+/// 走 `operations/cat` 并让**取内容的那一侧就截断**（`count` 被翻成 Range 头），
+/// 所以一张 20 MB 的原图只下前若干 KB，不是整张拉回来再裁。
+///
+/// **为什么这一条与本地那两条不是同一个函数**：本地的根在磁盘上，能用 `canonicalize`
+/// 规范化之后判"仍在根之下"；远端没有"规范化"这一步，能做的只有——
+/// - `safe_relative_name`（点段 / 盘符 / 前导斜杠，与本地同一份判据）；
+/// - 名字必须落在**这一栏当前的前缀**之下（远端那一栏也在导航，prefix 随面包屑变）；
+/// - 先 `operations/stat` 问大小，**超上限连内容都不问**（省一次整文件下载）。
+///
+/// 少了第一条，那一条命令就是一个"能把任意远端对象读成 base64 交上屏"的出口。
+pub async fn preview_remote_thumb(
+    client: &crate::rc::RcClient, fs: &str, prefix: &str, name: &str, max_bytes: u64,
+) -> Result<String, RunError> {
+    let Some(root) = fs.strip_suffix(':') else {
+        return Err(RunError::Invariant("这个位置不是远端，看不了图。".into()));
+    };
+    if !super::safe_relative_name(name) {
+        return Err(RunError::Invariant(format!("「{name}」不是一个可以读的图片名。")));
+    }
+    // 这一栏当前前缀之下：远端那一栏也能自由导航，交一个跳出前缀的名字就是在读别处。
+    if !prefix.is_empty() && !name.starts_with(&format!("{prefix}/")) {
+        return Err(RunError::Invariant(format!("{name} 不在这一层里，不读。")));
+    }
+    let full = if root.is_empty() { name.to_string() } else { format!("{root}/{name}") };
+    // 先问大小：超上限就**不问内容**。少这一次整文件下载是这一条最实际的省。
+    if let Ok(Some(meta)) = client.operations_stat(fs, &full).await {
+        if meta.size > max_bytes {
+            return Err(RunError::Invariant(format!(
+                "这张图 {:.1} MB，缩略图不取这么大的。",
+                meta.size as f64 / 1_048_576.0)));
+        }
+    }
+    let bytes = client.operations_cat_prefix(fs, &full, max_bytes).await
+        .map_err(|e| RunError::List(e))?;
+    let mime = match name.to_ascii_lowercase().rsplit('.').next().unwrap_or_default() {
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        "bmp" => "image/bmp",
+        "avif" => "image/avif",
+        _ => "application/octet-stream",
+    };
+    Ok(format!("data:{mime};base64,{}", super::base64_encode(&bytes)))
+}
+
 pub fn local_fs_id(path: &Path) -> Option<String> {
     let flat = path.to_string_lossy().replace('\\', "/");
     let (head, tail) = flat.split_once(':')?;
@@ -311,7 +371,7 @@ impl Runner {
         let names = self.rcd.client.config_listremotes().await?;
         // 实测：rc 回来的名字**不带冒号**，而每个 `fs` 参数都要带。这一句就是那条事实的落点。
         let mut out: Vec<RemoteRef> = names.iter()
-            .map(|n| RemoteRef { id: format!("{n}:"), label: n.clone(), is_local: false })
+            .map(|n| RemoteRef { id: format!("{n}:"), label: n.clone(), is_local: false, paired_with: String::new() })
             .collect();
         // 去重的键用 `Scope` 那一份判据（`browser_scope` 与锁用的是同一个）：两行指向同一棵树时
         // 只留一行，不在这里再写一份"位置怎么算相同"（大小写归一来自裁定 R84）。
@@ -321,29 +381,44 @@ impl Runner {
             .map(|r| browser_scope(&r.id, "").key())
             .collect();
         for job in self.jobs() {
+            // 先算出这一条任务**两端**的 id：联动视图要的就是"这一头 ↔ 那一头"，
+            // 所以两头一次算齐，而不是两轮循环里各算各的（那样配对关系就丢了）。
+            // `(是不是本地, id, 配对的那一头)`。**只有前两格是真值**，第三格在两端都算出来之后才填。
+            //
+            // 用 `push` 而不是 `ends[n] = …`：上面那个 `continue` 会跳过某一端（没量过的本地形状），
+            // 于是**下标与长度就错开了** —— 那一端没被 push，下一次 `ends[n]` 要往更后的位置写，
+            // 越界或者写到错的格上（实测 panic：index out of bounds, len 0）。`push` 自己管长度。
+            let mut ends: Vec<(bool, String)> = Vec::with_capacity(2);
             for ep in [job.endpoint_src(), job.endpoint_dst()] {
                 match ep {
                     Endpoint::Remote { fs, remote } => {
-                        // `fs` 已经到桶名为止，`remote` 是桶内路径（`endpoint_of` 的口径）。
-                        // 拼回去就是配置里那个写法，也是 `browser_scope` 认得的那种 `fs`。
-                        let id = if remote.is_empty() { fs.clone() } else { format!("{fs}/{remote}") };
-                        if seen.insert(browser_scope(&id, "").key()) {
-                            out.push(RemoteRef { label: id.clone(), id, is_local: false });
-                        }
+                        ends.push((false, if remote.is_empty() { fs.clone() } else { format!("{fs}/{remote}") }));
                     }
                     Endpoint::Local(p) => {
-                        // 没量过的本地形状不发这一行（`local_fs_id` 的 F16 那一段）。
-                        // 带点段的那一种不必在这里再筛一次：`jobs.toml` 的两侧在 parse 就被同一条判据拒了
-                        // （`config/jobs.rs`，裁定 R98），走到这里的 `p` 结构上已经不可能含点段。
-                        let Some(id) = local_fs_id(&p) else { continue };
-                        if seen.insert(Scope::local(&p).key()) {
-                            let label = p.file_name()
-                                .map(|f| f.to_string_lossy().to_string())
-                                .unwrap_or_else(|| id.clone());
-                            out.push(RemoteRef { id, label, is_local: true });
-                        }
+                        // 没量过的本地形状不进候选（`local_fs_id` 的 F16 那一段）。
+                        if let Some(id) = local_fs_id(&p) { ends.push((true, id)); }
                     }
                 }
+            }
+            // 少于两端就**不成对**，不动对面（临时卡、两侧同型那些）。硬凑一个配对是编的。
+            if ends.len() != 2 { continue; }
+            // 两端互相记住对方（这是"配对"这一件事的唯一算法，两处不许各写一遍）。
+            let mate0 = ends[1].1.clone();
+            let mate1 = ends[0].1.clone();
+            for (is_local, id) in ends.into_iter() {
+                let mate = if is_local { mate0.clone() } else { mate1.clone() };
+                // 带点段的那一种不必在这里再筛一次：`jobs.toml` 的两侧在 parse 就被同一条判据拒了
+                // （`config/jobs.rs`，裁定 R98），走到这里的 `p` 结构上已经不可能含点段。
+                let key = if is_local { Scope::local(std::path::Path::new(&id)).key() }
+                          else { browser_scope(&id, "").key() };
+                if !seen.insert(key) { continue; }
+                let label = if is_local {
+                    // 本地那半边给目录名（短）；远端那半边原样就是那个 id（配置里的写法）。
+                    std::path::Path::new(&id).file_name()
+                        .map(|f| f.to_string_lossy().to_string())
+                        .unwrap_or_else(|| id.clone())
+                } else { id.clone() };
+                out.push(RemoteRef { id, label, is_local, paired_with: mate });
             }
         }
         out.sort_by(|a, b| a.label.to_lowercase().cmp(&b.label.to_lowercase()));

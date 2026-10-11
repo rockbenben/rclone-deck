@@ -198,3 +198,36 @@ body { background: var(--canvas); color: var(--ink); font-family: "Segoe UI", "M
   object-fit: cover;
   border-radius: var(--r-ctl);
 }
+
+/* 浏览本地那一栏的图片网格（满宽时才有）。
+   `auto-fill` + `minmax` 是关键：格子数随窗口自己算，而不是写死一个列数 ——
+   窗口窄时自动少摆几列，不会把图挤到看不出是什么。 */
+.thumb-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(128px, 1fr));
+  gap: 12px;
+  margin-bottom: 4px;
+}
+
+/* 一格。它是个 `<button>`：选中、键盘可达、焦点可见都由元素本身给，
+   不必在这里另写一套 hover/active 的样子。 */
+.thumb-cell {
+  display: flex; flex-direction: column; align-items: center; gap: 6px;
+  padding: 8px 4px;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--r-ctl);
+  cursor: pointer;
+  font: inherit; color: inherit;
+}
+.thumb-cell:hover { background: var(--surface-muted); }
+.thumb-cell.picked { border-color: var(--link); background: var(--sel-bg); }
+
+/* 名字截中段而不是尾部：图片库的文件夹里同一批文件常常共享同一个前缀
+   （`2026/08/IMG_1234.webp`），尾部才是彼此不同的那部分。 */
+.thumb-name {
+  max-width: 100%;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-size: 12px; color: var(--ink-3);
+  direction: rtl; text-align: center;   /* rtl 让省略号落在开头（也就是尾部被截） */
+}

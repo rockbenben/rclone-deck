@@ -38,6 +38,16 @@ export const previewLocalImage = (id: string, name: string) =>
  */
 export const previewPaneImage = (fs: string, prefix: string, name: string) =>
   invoke<string>('preview_pane_image', { fs, prefix, name });
+
+/**
+ * 远端那一栏的缩略图（云端预览）。
+ *
+ * 后台用 `operations/cat` 并让**取内容的那一侧就截断**（`count` 被翻成 Range 头下发），
+ * 所以这不是「把整张原图拉回来再裁」—— 一张 20 MB 的图只下前若干 KB。
+ * 同样**不传绝对路径**：名字必须落在 `prefix` 那一层之下，后台会判。
+ */
+export const previewRemoteThumb = (fs: string, prefix: string, name: string) =>
+  invoke<string>('preview_remote_thumb', { fs, prefix, name });
 // 删除只有这一对入口：`runJob(id, false)` 对对齐任务会被后台拒绝（那句话术在 runner 里）。
 // `runMirror` 的 token 必须来自**刚刚那一次**登记：带着逐条名单的那份出自 `previewMirror`，
 // 没看名单的那份出自 `confirmMirror`。它单次消费，后台还会重列一遍（看过的那份逐条比对），

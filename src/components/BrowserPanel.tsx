@@ -101,7 +101,27 @@ export function BrowserPanel() {
   const loadRefs = useCallback(() => {
     setRefsLoading(true);
     api.browserRemotes()
-      .then((r) => { setRefs(r); setRefsError(null); })
+      .then((r) => {
+        setRefs(r);
+        setRefsError(null);
+        // **默认看本地**（2026-10-11）：位置一到手，本地那一栏就自己站上去。
+        //
+        // 这一面多数时候不是"要比两栏"，就是"翻本地那一堆图片"——原来两栏都空着，
+        // 人得先想清楚挑哪个位置才看得见第一张图，而"翻文件夹"这件事本来不需要这一步。
+        // 站到**第一个**本地目录而不是"最近用过的那个"：这一面不记浏览历史（`prefs.ts`
+        // 那一节「偏好记，会动东西的选择记不得」管的是会改东西的选择，这里是只读的位置），
+        // 硬记一个反而多一份要维护的状态。
+        //
+        // 云端那一栏**不自动站**：左右比是可选动作，自动站上去等于替人挑了"要比谁"，
+        // 而挑错位置比多一次点击贵得多（挑错的那一栏列出来的东西会让人以为那就是云端）。
+        setPanes((p) => {
+          if (p.local.fs !== null) return p;      // 已经站过了，不动它
+          const first = r.find((x) => x.isLocal);
+          // 这一步只落 `fs`，**不直接列**：列要走 `go`（它才管错误那句话要留在屏上）。
+          // 所以真正的那一次列由下面那个 effect 在 refs 到位之后触发。
+          return first === undefined ? p : { ...p, local: { ...p.local, fs: first.id } };
+        });
+      })
       // 两栏的端点都由后台交出，取不到就是没有：这里不猜，也不拿任务里那两条路径凑一份。
       // 但"没问到"要说在屏幕上，并且留一条重新问一次的路。
       .catch((e) => setRefsError(errNote(e)))
@@ -113,7 +133,7 @@ export function BrowserPanel() {
   /** 换位置 = 重新问一次那一层。列不出来要把原因留在原地，不许读成"这一层是空的"。 */
   const go = useCallback(async (side: Side, next: PaneState) => {
     setPanes((p) => ({ ...p, [side]: { ...next, listing: null } }));
-    if (next.fs === null) return;
+    if (next.fs === null || next.fs === '') return;
     try {
       const listing = await api.browserList(next.fs, next.prefix);
       setPanes((p) => ({ ...p, [side]: { ...next, listing } }));
@@ -135,6 +155,17 @@ export function BrowserPanel() {
     const now = panesRef.current;
     await Promise.all([go('local', now.local), go('remote', now.remote)]);
   }, [go]);
+
+  /** 默认那一步的**列**：位置落定了但清单还是空的（`loadRefs` 只落 `fs`），
+   *  这里补上那一发。判据是"有位置、没清单、刚落的"——
+   *  已经列过一次（`listing` 有值）或操作员正在挑位置时都不该再发一次，
+   *  否则每换一个下拉框都会并发打两发远端列举。
+   */
+  useEffect(() => {
+    const p = panes.local;
+    if (p.fs === null || p.listing !== null || listErrors.local !== null) return;
+    void go('local', p);
+  }, [panes.local.fs, panes.local.listing, listErrors.local, go]);
 
   /** 不发凭证的动作（建目录、下载、上传）：跑完刷新两栏，结果落在那句报告里。 */
   const plain = useCallback(async (side: Side, label: string, fn: () => Promise<RunReport>) => {
@@ -327,9 +358,43 @@ export function BrowserPanel() {
     const srcPane = picked === null ? null : panes[picked.side].fs;
     const incoming = picked !== null && picked.side !== side ? picked : null;
     return {
-      onSelectPosition: (fs: string) => { setPicked(null); void go(side, { fs, prefix: '', listing: null }); },
-      onJump: (prefix: string) => void go(side, { ...pane, prefix }),
-      onEnter: (name: string) => void go(side, { ...pane, prefix: name }),
+      onSelectPosition: (fs: string) => {
+        setPicked(null);
+        void go(side, { fs, prefix: '', listing: null });
+        // **联动**（2026-10-11）：在本地那一栏挑一个位置，云端**自动站到配对的那一头**。
+        //
+        // 为什么不是"两边各挑各的"：这一面开着是为了**比两边差在哪**，而"差在哪"只在
+        // 「同一个位置的本地 ↔ 同一个位置的云端」这一对上才成立。两边各挑各的位置时屏幕
+        // 并排着，可它们根本不在同一处 —— 看着是对比，其实摆在一起比的是两堆无关的东西。
+        //
+        // 配对关系读后台的 `RemoteRef.pairedWith`（由 `jobs.toml` 那两条算出来的），
+        // 界面不自己猜"哪个本地像是配哪个远端"。没有配对（临时卡、单独加进来的远端）
+        // 就**不动对面** —— 硬配一个比空着更坏。
+        //
+        // **只从本地那一侧联动**：反过来（先挑云端再挪本地）这时没有理由动本地 ——
+        // 本地那栏往往已经站在操作员要看的那一处了。
+        const mate = refs.find((r) => r.id === fs)?.pairedWith;
+        if (side === 'local' && mate != null && mate !== '' && panesRef.current.remote.fs !== mate) {
+          void go('remote', { ...EMPTY_PANE, fs: mate });
+        }
+      },
+      onJump: (prefix: string) => {
+        void go(side, { ...pane, prefix });
+        const mate = refs.find((r) => r.id === pane.fs)?.pairedWith;
+        const paired = side === 'local' && mate != null && mate !== ''
+          && panesRef.current.remote.fs === mate;
+        if (paired) { void go('remote', { ...panesRef.current.remote, prefix }); }
+      },
+      onEnter: (name: string) => {
+        void go(side, { ...pane, prefix: name });
+        // **导航也联动**：两边配着的时候，往里走一层要**两边一起走**。
+        // 只动一边的话，走两层之后就站在不同的深度上了 —— 而"同一层的本地 vs 同一层的
+        // 云端"才是能比的那一档。配着（对面那栏有位置且这一面是本地）才跟。
+        const mate = refs.find((r) => r.id === pane.fs)?.pairedWith;
+        const paired = side === 'local' && mate != null && mate !== ''
+          && panesRef.current.remote.fs === mate;
+        if (paired) { void go('remote', { ...panesRef.current.remote, prefix: name }); }
+      },
       onPick: (name: string | null) => setPicked(name === null ? null : { side, name }),
       onMkdir: () => { setNamingError(null); setNaming({ side, kind: 'mkdir', src: '', value: '' }); },
       onRename: (row: BrowserEntry) => {
@@ -374,13 +439,48 @@ export function BrowserPanel() {
   };
 
   const p = layer?.preview ?? null;
+  // 「和云端比一比」那枚按钮的落点：第一个远端。后台已经把"列桶根对某些钥匙不存在"
+  // 那一档挡在候选之外了（`browser_remotes` 的注释里记着那次实测），所以这里挑第一个即可。
+  const firstRemote = refs.find((r) => !r.isLocal);
+
+  /**
+   * **单边 = 翻图，比对 = 并排**（2026-10-11 定下的形状）。
+   *
+   * 这一面开着多数时候是为了**翻本地那堆图片**，不是为了搬东西。所以没进比对时
+   * 本地那一栏是 `compact`：只留导航与看图，那一排「新建目录 / 上传到这里 / 移到这里 /
+   * 删掉这一层看到的 N 个 / 清空这一层」收进一个折叠 —— 翻图时一个都用不上，
+   * 却占了半屏。进了比对才放出来（那是搬东西的场合，那些动作正是那时才有用）。
+   *
+   * 判据只问"进没进比对"这一件事，不问别的 —— 免得"翻图"与"没有可操作对象"
+   * 两种情形长出两套不同的收法。
+   */
+  const comparing = panes.remote.fs !== null;
 
   return (
     <Space orientation="vertical" size={12} style={{ width: '100%' }}>
-      <Typography.Text type="secondary" className="fs-note">
-        这一面只有动作，没有命令行：点中哪个名字，就动哪个名字。删东西的那几颗先列清单，
-        确认交出去的是一次性的凭证，后台动手前还要再看一次。
-      </Typography.Text>
+      <Space size={8} wrap>
+        <Typography.Text className="fs-note">
+          {comparing
+            ? '左右是同一个位置的两面：要动哪个名字就点哪个。删东西的那几颗先列清单，确认交出去的是一次性的凭证。'
+            : '看本地的文件与图片。想跟云端比一比，按右边那颗。'}
+        </Typography.Text>
+        {!comparing ? (
+          <Button size="small" disabled={firstRemote === undefined || busy}
+            onClick={() => {
+              // 进比对时**云端站到本地这一栏配对的那一头**（不是随便挑一个远端）——
+              // 这一面存在的意义就是比同一个位置的两面，随便挑一个远端等于把要比的两堆
+              // 放到一起，让人以为那就是结果。
+              const mate = refs.find((r) => r.id === panes.local.fs)?.pairedWith;
+              void go('remote', { ...EMPTY_PANE, fs: mate != null && mate !== '' ? mate : (firstRemote?.id ?? '') });
+            }}>
+            和云端比一比
+          </Button>
+        ) : (
+          <Button size="small" onClick={() => void go('remote', { ...EMPTY_PANE, fs: null })}>
+            不比了，回去看本地
+          </Button>
+        )}
+      </Space>
       {refsError !== null && (
         <Alert showIcon type="error" title="取不到可以打开的位置" description={
           <Space orientation="vertical" size={4}>
@@ -389,13 +489,23 @@ export function BrowserPanel() {
           </Space>
         } />
       )}
+      {/* **单边占满整宽，进比对才并排**（2026-10-11）。
+           这一面开着多数时候不是为了比，是为了翻本地那堆图。半宽的网格每行只放得下
+           三四张，看下去要横着拖好几回；满宽能多看一倍的图，而"多看几张"正是翻文件夹的目的。
+           比对是**按了上面那颗按钮**才进来的可选动作，不是打开就摆在眼前的两栏。
+
+           `compact` 也只在单边时给：翻图时那族"动文件"的动作一个都用不上，占着半屏；
+           进了比对才是搬东西的场合，那些动作正是那时才有用。 */}
       <div style={{ display: 'flex', gap: 16, alignItems: 'flex-start' }}>
         <div className="surface" style={{ flex: 1, minWidth: 0, padding: 12 }}>
-          <BrowserPane {...viewFor('local')} {...actionsFor('local')} />
+          <BrowserPane {...viewFor('local')} {...actionsFor('local')}
+            wide={!comparing} compact={!comparing} />
         </div>
-        <div className="surface" style={{ flex: 1, minWidth: 0, padding: 12 }}>
-          <BrowserPane {...viewFor('remote')} {...actionsFor('remote')} />
-        </div>
+        {comparing && (
+          <div className="surface" style={{ flex: 1, minWidth: 0, padding: 12 }}>
+            <BrowserPane {...viewFor('remote')} {...actionsFor('remote')} />
+          </div>
+        )}
       </div>
 
       <LayerConfirm

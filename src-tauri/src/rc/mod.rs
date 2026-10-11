@@ -438,6 +438,39 @@ impl RcClient {
             method: "operations/size".into(), message: format!("解析 size 失败：{e}（不能当成「0 个对象」）") }))
     }
 
+    /// 取远端文件的**前 `max_bytes` 个字节**，base64 交上来。
+    ///
+    /// 走 rclone 自己的 `operations/cat` + `headerAccept=base64`，并用 `count` 让**取内容的
+    /// 那一侧就截断**（实测那条命令把 `offset/count` 翻成 Range 头下发给后端）。所以一张
+    /// 20 MB 的原图这里只下前若干 KB，而不是整张拉回来再截 —— 这是这一条存在的全部理由。
+    ///
+    /// **上限由调用方给**，不在这里写死：缩略图要的和点开看大图要的不是同一个数，
+    /// 而"多大算太多"是产品判断不是协议细节（本地那一侧那道 8 MB 上限同理）。
+    ///
+    /// 官方论坛记着一件事：`cat` 的二进制走 JSON 时会被当成 UTF-8 串处理而过，
+    /// `headerAccept=base64` 正是为这件事加的那一档（`rclone/forum#31134`）。
+    pub async fn operations_cat_prefix(
+        &self, fs: &str, remote: &str, max_bytes: u64,
+    ) -> Result<Vec<u8>, ListError> {
+        let params = [
+            ("fs", fs.to_string()),
+            ("remote", remote.to_string()),
+            ("headerAccept", "base64".to_string()),
+            ("count", max_bytes.to_string()),
+        ];
+        let res = self.send("operations/cat", &params).await.map_err(ListError::Other)?;
+        let json = res.into_value("operations/cat").map_err(ListError::Other)?;
+        let b64 = json.get("result").and_then(|v| v.as_str())
+            .ok_or_else(|| ListError::Other(RcError::Rc {
+                method: "operations/cat".into(),
+                message: "cat 没交回内容（不能当成「这个文件是空的」）".into(),
+            }))?;
+        crate::runner::base64_decode(b64).ok_or_else(|| ListError::Other(RcError::Rc {
+            method: "operations/cat".into(),
+            message: "cat 交回的 base64 解不开".into(),
+        }))
+    }
+
     pub async fn operations_fsinfo(&self, fs: &str) -> Result<FsInfo, RcError> {
         let v = self.call("operations/fsinfo", &[("fs", fs.to_string())]).await?;
         serde_json::from_value(v).map_err(|e| RcError::Rc {

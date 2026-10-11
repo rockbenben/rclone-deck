@@ -327,21 +327,35 @@ pub fn read_local_image_data_url(root: &std::path::Path, rel: &str) -> Result<St
     Ok(format!("data:{mime};base64,{}", base64_encode(&bytes)))
 }
 
-/// 标准 base64（RFC 4648，带 `=` 补位）。手写而不引依赖：这个 crate 的依赖表是
-/// 逐条挑过的（见 `Cargo.toml` 里那段注释），为一段 20 行的编码器加一个 crate 不划算。
+/// base64 编码 —— **直接用 `base64` crate**（2026-10-11 换掉手写的那一份）。
+///
+/// 前面手写过一份，理由写的是"依赖表逐条挑过，为 20 行编码器加 crate 不划算"。
+/// 那句话**是错的**：`base64 = "0.23.1"` 早就在 `Cargo.toml` 里（不是传递依赖，是直接依赖），
+/// 也就是说这份 crate 无论如何都要编译，手写等于把一个已经在的依赖重造一遍。
+/// 而且重造的那份**容错口径更宽**（自己会跳过换行、容忍某些坏输入），与标准不一致的地方
+/// 要靠额外的证人钉着 —— 用 crate 就没有这一族问题。
+///
+/// 用 `STANDARD`（RFC 4648 标准字母表，带 `=` 补位）：rclone 的 `headerAccept=base64`
+/// 回的正是这一档，换成 URL-safe 会解不开。
 pub fn base64_encode(data: &[u8]) -> String {
-    const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut out = String::with_capacity(data.len().div_ceil(3) * 4);
-    for chunk in data.chunks(3) {
-        let b = [chunk[0], *chunk.get(1).unwrap_or(&0), *chunk.get(2).unwrap_or(&0)];
-        let n = ((b[0] as u32) << 16) | ((b[1] as u32) << 8) | b[2] as u32;
-        out.push(T[(n >> 18) as usize & 63] as char);
-        out.push(T[(n >> 12) as usize & 63] as char);
-        out.push(if chunk.len() > 1 { T[(n >> 6) as usize & 63] as char } else { '=' });
-        out.push(if chunk.len() > 2 { T[n as usize & 63] as char } else { '=' });
-    }
-    out
+    use base64::Engine as _;
+    base64::engine::general_purpose::STANDARD.encode(data)
 }
+
+/// base64 解码 —— 同一个 crate。
+///
+/// 认不出的字符一律报错（`Err` → 上层交 `None`），**不猜也不跳过**：跳过一个会让后面每个
+/// 字节错位，解出来"有图但不对"，那比直接报错难查得多。crate 本身就是这个口径。
+pub fn base64_decode(data: &str) -> Option<Vec<u8>> {
+    use base64::Engine as _;
+    // rclone 的 JSON 转义里可能带换行；换行不是 base64 字符，但出现在中间是常见的
+    // （长串被 JSON 折行）。**只清换行**，别的非法字符仍交给引擎报错。
+    let cleaned: String = data.chars().filter(|c| !matches!(c, '\n' | '\r')).collect();
+    base64::engine::general_purpose::STANDARD.decode(cleaned).ok()
+}
+
+/// `operations/cat` 那一条的解码入口 —— 不再单独存在：`base64_decode` 就是它，
+/// `rc/mod.rs` 直接调那一个即可。另起一个薄壳只会多一处能各自漂走的名字。
 
 pub fn mirror_wrong_kind_refusal(name: &str, word: &str) -> String {
     format!("「{name}」是{word}任务，不能按对齐跑")
@@ -480,6 +494,14 @@ pub struct Runner {
 }
 
 impl Runner {
+    /// 只读地拿到那个 `RcClient`（给 command 层用）。
+    ///
+    /// **加访问器而不是把 `rcd` 改成 `pub`**：字段是整个面板共享的那一个后台，
+    /// 放开它就等于放出"从任何地方拿它、然后往它上发调用"的路。命令那一层要做的
+    /// 只是读文件内容，而具体读哪一朵云由调用方交的两个字符串决定 —— 那一层的闸在
+    /// `browser::preview_remote_thumb` 里。
+    pub fn rc_client(&self) -> &crate::rc::RcClient { &self.rcd.client }
+
     pub fn new(rcd: Arc<RcdHandle>, app: AppConfig, defaults: Defaults, jobs: Vec<Job>) -> Self {
         Self {
             rcd, app, defaults, jobs,

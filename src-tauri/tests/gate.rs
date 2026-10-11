@@ -490,7 +490,29 @@ fn only_image_extensions_are_previewable() {
     }
 }
 
-/// base64 与标准实现逐字节一致 —— 自己写的编码器，**必须**有一个对照。
+/// base64 用的是**已有的 `base64` crate**，不是手写的那一份（2026-10-11 换的）。
+///
+/// 这一条钉的是"别再手写回来"：换掉的理由写在 `runner::base64_encode` 上（那个 crate
+/// 早就在 `Cargo.toml` 里，手写等于重造一个必然要编译的依赖）。
+/// 判据只看**依赖表与调用**，不看实现细节 —— 实现换成 crate 之后行为一致，
+/// 所以下面那两条 RFC 4648 的证人在换完之后照样全过（那才是这件事真正要保的东西）。
+#[test]
+fn base64_goes_through_the_crate_not_a_hand_rolled_table() {
+    let deps = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml")).unwrap();
+    assert!(deps.contains("base64"),
+        "base64 crate 不在依赖表里了：那份实现是手写的（它原本就在表里，不需要新加）");
+    let src = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/runner/mod.rs")).unwrap();
+    assert!(!src.contains(r#"b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"#),
+        "又把手写的字母表抄回来了");
+    assert!(src.contains("general_purpose::STANDARD"),
+        "base64 没走 crate 的 STANDARD：rclone 的 headerAccept=base64 回的是标准字母表那一档");
+}
+
+/// base64 编码与标准实现逐字节一致 —— 换 crate 之后**这两条证人必须照样全过**
+/// （2026-10-11：它们本来是给手写那份钉的，换成 `base64` crate 后它们一条没改就过了，
+/// 那才说明换掉的是实现、不是行为）。
 /// 三个长度档（补 2 档 + 不补 1 档）都过一遍，少测一档就正好漏掉那档的补位。
 #[test]
 fn the_hand_rolled_base64_matches_the_standard_vectors() {
@@ -505,4 +527,29 @@ fn the_hand_rolled_base64_matches_the_standard_vectors() {
     assert_eq!(base64_encode(b"foobar"), "Zm9vYmFy");
     // 二进制档（0x00 / 0xFF 那一族，最容易在移位时错）
     assert_eq!(base64_encode(&[0x00, 0xff, 0xfe]), "AP/+");
+}
+
+/// base64 **解码**要与标准一致 —— 那是 `operations/cat` 回来的东西（2026-10-11）。
+///
+/// 编解码是一对：编码那边对着 RFC 4648 §10 的官方向量钉过，解码这边同样要钉，
+/// 而且多两档只有解码才有的形状：内嵌换行（rclone 的 JSON 转义里可能带）与补位。
+/// **解错的后果特别难查**：跳过一个认不出的字符会让后面每个字节错位，解出来"有图但不对"。
+#[test]
+fn the_hand_rolled_base64_decodes_back_to_the_original_bytes() {
+    use rclone_deck_lib::runner::{base64_decode, base64_encode};
+    for s in [
+        &b""[..], b"f", b"fo", b"foo", b"foob", b"fooba", b"foobar",
+        // 二进制档：0x00 / 0xFE / 0xFF 那一族，最容易在移位与补位上错
+        &[0x00u8, 0xFF, 0xFE][..],
+        &[0xFFu8; 16][..],
+        &[0x00u8; 9][..],          // 三个补位档都覆盖到
+    ] {
+        let enc = base64_encode(s);
+        assert_eq!(base64_decode(&enc).as_deref(), Some(s),
+            "编解码不是一对：{enc} 解出来不是原来那串");
+    }
+    // 换行要能跳过（rclone 交回来的 JSON 串里可能有）
+    assert_eq!(base64_decode("Zm9v\nYmFy").as_deref(), Some(&b"foobar"[..]));
+    // **认不出的字符不许猜**：跳过它会让后面全部错位，而那比直接报错难查得多。
+    assert!(base64_decode("Zm9v*g==").is_none(), "含非法字符却解出来了：那是错位的字节");
 }

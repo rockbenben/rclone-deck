@@ -234,6 +234,25 @@ pub async fn preview_pane_image(
     Ok(crate::runner::browser::preview_pane_image(&fs, &prefix, &name)?)
 }
 
+/// 远端那一栏的缩略图（2026-10-11）。**只取前若干字节**——`count` 由 rc 翻成 Range 头
+/// 下发给后端，所以不是"整张拉回来再裁"。
+///
+/// 同样**不传绝对路径**：`fs` 是后台交出来的远端坐标，`name` 是清单行上的名字，
+/// 而且必须落在 `prefix` 那一层之下（见 `browser::preview_remote_thumb` 的三道闸）。
+#[tauri::command]
+pub async fn preview_remote_thumb(
+    state: tauri::State<'_, AppState>,
+    fs: String,
+    prefix: String,
+    name: String,
+) -> Result<String, AppError> {
+    const THUMB_BYTES: u64 = 512 * 1024;   // 512 KB：够画一张缩略图，不够下整张原图
+    let r = state.runner()?;
+    Ok(crate::runner::browser::preview_remote_thumb(
+        r.rc_client(), &fs, &prefix, &name, THUMB_BYTES,
+    ).await?)
+}
+
 #[tauri::command]
 pub async fn tail_log(
     state: tauri::State<'_, AppState>,

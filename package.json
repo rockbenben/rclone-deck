@@ -12,6 +12,7 @@
     "probe:rc": "node tools/rc-contract-probe.mjs",
     "copy:scan": "node tools/ui-copy-scan.mjs",
     "accept:ui": "node tools/ui-acceptance.mjs",
+    "accept:ui:reopen": "node tools/ui-reopen-pass.mjs",
     "lint:rust": "cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets --features test-helpers",
     "test": "cargo test --manifest-path src-tauri/Cargo.toml --features test-helpers -- --test-threads=1",
     "test:fast": "cargo test --manifest-path src-tauri/Cargo.toml",

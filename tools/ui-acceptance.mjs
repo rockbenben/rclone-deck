@@ -417,6 +417,80 @@ async function pickPane(pane, optionText) {
   await clickPoint(pt);
   await sleep(1400);
 }
+/** 浏览器那一面「两栏并排」这一**形状**的入口（四步共用）。
+ *  2026-10-11 起这一面默认是**单边满宽**：打开它是为了翻本地那堆图，所以屏上只有
+ *  一枚位置框、一句「个文件 ·」。按下「和云端比一比」才并排出第二栏。
+ *  于是凡是要 `pickPane(1, ...)` 或 `waitListed()` 的步骤都必须先走这里 ——
+ *  不走进来就红成「可见的位置选择器不足 2 个（总共 1 个）」，读着像界面坏了，
+ *  其实那是尺子还按"这一面永远两栏"的老形状走路（整段 20 步一起红就是这么级联的）。
+ *  幂等：已经在比对就什么都不做（顶栏那一句换成「左右是同一个位置的两面」，认它）。
+ *  进比对之后两栏都不是 `compact`，那一族"动文件"的动作与「上一级」都在明面上，
+ *  所以这里只负责把形状摆对，各步自己走自己的下一步。 */
+async function twoPanes() {
+  await click('浏览文件', 'any'); await sleep(900);
+  const comparing = Number(await ev('document.body.innerText.includes("左右是同一个位置的两面") ? 1 : 0'));
+  if (comparing === 0) {
+    await click('和云端比一比', 'any'); await sleep(1200);
+  }
+  await pickPane(0, 'local'); await pickPane(1, PROC.remote); await waitListed();
+}
+/** 设置面「任务」那一块：按**分组标题（那一对位置）**认出某一行，再点它那颗按钮。
+ *  2026-10-11 起行上第一句是「要做什么」那句（与卡上同一份 `intentOptions`），
+ *  任务名与那两条完整路径收进了「为什么？」—— 而 `NoteLine` 收起时那一段**根本没挂进 DOM**
+ *  （`{open && ...}`，不是 display:none），所以连 `textContent` 里都没有。
+ *  于是按名字定位（`inRow` 交「封面对齐」）整族失效：报出来是「候选=0」，
+ *  而界面上那颗「改这条」活得好好的 —— 认的是一个已经不在这屏上的字符串。
+ *  分组标题就是卡上位置下拉里那一句（`settings-jobs-grouped-by-pair` 钉的正是同一份说法），
+ *  拿它当身份 = 拿这一面自己声明的身份当身份。
+ *  对账那几条不在配对分组里（`intentPhraseFor` 交回原名），所以那几条仍可按名字认。 */
+async function clickJobRow(pairLabel, buttonLabel) {
+  // `async` 是必须的：下面要 `await` 一帧等滚动停下来再读坐标（少了 async，
+  // 页面里报的是 `SyntaxError: await is only valid in async functions`，
+  // 而驱动那边只回一句「表达式出错」—— 报的是尺子，不是界面）。
+  const pt = await ev(`(async () => {
+    const norm = (s) => String(s || '').replace(/\\s+/g, '');
+    const card = [...document.querySelectorAll('.ant-card')].filter((c) => c.getBoundingClientRect().width)
+      .find((c) => norm((c.querySelector('.ant-card-head-title') || {}).textContent) === '任务');
+    if (!card) return { err: '看不见「任务」那块卡片' };
+    // 分组标题里不许混进行自己那两颗「为什么？」：它们是 .fs-caption，但住在行里面，
+    // 混进来的话"下一组从哪儿开始"就会算错一行。
+    const heads = [...card.querySelectorAll('.fs-caption')]
+      .filter((e) => e.getBoundingClientRect().width && !e.closest('.ant-listy-item'));
+    const want = norm(${JSON.stringify(pairLabel)});
+    const h = heads.find((e) => norm(e.textContent).includes(want));
+    if (!h) return { err: '「任务」那一块里没有那个分组标题：' + want
+      + ' 有的=' + heads.map((x) => norm(x.textContent)).join(',') };
+    const after = (a, b) => !!(a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING);
+    // 「这一行属于 h」= h 在它之前，而**没有任何别的标题夹在中间**。
+    // 夹在中间那半句必须写成 "after(h, x) 且 after(x, r)"：只写 after(x, r) 的话，
+    // 凡是排在前一个分组标题之后的行都会被算成"不属于 h"，于是第二个及以后的分组永远读到零行
+    // （第一版就是这么红的：报「那个分组标题下面一条行都没有：fxb:b」，而那一行明明挂在屏上）。
+    // 这一整段是发到页面里跑的模板字面量，**注释里也不许出现反引号**（文件头那条规矩，今天又踩一次）。
+    const rows = [...card.querySelectorAll('.ant-listy-item')].filter((r) => r.getBoundingClientRect().width
+      && after(h, r) && !heads.some((x) => x !== h && after(h, x) && after(x, r)));
+    if (!rows.length) return { err: '那个分组标题下面一条行都没有：' + want };
+    const btnWant = norm(${JSON.stringify(buttonLabel)});
+    const btn = rows.flatMap((r) => [...r.querySelectorAll('button')]).find((b) => norm(b.textContent).includes(btnWant));
+    if (!btn) return { err: '那一组里没有那颗按钮：' + btnWant + ' 行数=' + rows.length };
+    // 先把它滚到眼前再读坐标：那一块住在设置面的下半部，整页滚着，
+    // 直接读矩形会拿到视口外的 y，点下去落在窗口外面 —— 按钮"按了"而表单没开，
+    // 下一步就报「没有那个字段」（真窗口跑出来的就是这个顺序）。
+    btn.scrollIntoView({ block: "center" });
+    await new Promise((r) => setTimeout(r, 200));
+    const b = btn.getBoundingClientRect();
+    const x = b.x + b.width / 2, y = b.y + b.height / 2;
+    const at = document.elementFromPoint(x, y);
+    if (!b.width || !at || !(btn.contains(at) || at.contains(btn))) {
+      return { err: '那颗按钮滚到眼前之后坐标上不是它（落在「'
+        + (at ? String(at.className).split(" ")[0] || at.tagName.toLowerCase() : "空") + '」）：' + btnWant };
+    }
+    return { x, y, tag: btn.tagName,
+      disabled: !!btn.disabled, rows: rows.length, text: btn.textContent.trim() };
+  })()`);
+  if (pt.err) throw new Error(String(pt.err));
+  await clickPoint(pt);
+  return pt;
+}
 /** 卡上那一格选择框。`which` 0=模式 1=方向；`want` 给了就在打开之后按文字点那一格。
  *  为什么不复用 `click()`：`finder` 的行内那一支只在行里找 `button`，而选择框不是按钮。
  *  返回**列出来的选项文字**（用 | 拼）：判"框里只列真有的组合"要看的正是这一串。
@@ -1087,8 +1161,7 @@ const STEPS = [
       await shot('rail-empty-state.png');
     } },
   { id: 'browser-two-panes', what: '双栏 + 后台那句过滤说明（I8）', run: async () => {
-      await click('浏览文件', 'any'); await sleep(1000);
-      await pickPane(0, 'local'); await pickPane(1, PROC.remote); await waitListed();
+      await twoPanes();
     } },
   { id: 'enter-a-right', what: '右栏进到 a（进入按钮）', run: async () => {
       await click('进入', 1, 0); await sleep(1200);
@@ -1339,8 +1412,7 @@ const STEPS = [
       await click('我知道，删这', 'any'); await sleep(1500);
     } },
   { id: 'refusal-toast-visible', what: '一次撞名拒绝真的到了眼前：toast 节点数与那句原文（Step 5 的口径）', run: async () => {
-      await click('浏览文件', 'any'); await sleep(700);
-      await pickPane(0, 'local'); await pickPane(1, PROC.remote); await waitListed();
+      await twoPanes();
       // 选同一个位置不会触发 onChange（antd 的 Select 就值不变这件事不说话），于是上一站的前缀
       // 会留在栏上。回到根这一件事现在有正规通路了：点面包屑上那个根。
       await click(PROC.remote, 'any'); await sleep(1200); await waitListed();
@@ -1349,10 +1421,9 @@ const STEPS = [
       await click('上传到这里', 1); await sleep(1500);
     } },
   { id: 'purge-runs-without-rules', only: 'B', what: '去掉排除规则之后：清空这一层能执行（R74 的另一档）', run: async () => {
-      await click('浏览文件', 'any'); await sleep(700);
-      // 远端那一栏必须按 HOME 取（`PROC.remote`）：写死 fxb 的话，A 这一段在下拉里
-      // 找不到它 —— 同一族问题修过一次（`refusal-toast-visible`），当时漏了这条。
-      await pickPane(0, 'local'); await pickPane(1, PROC.remote); await waitListed();
+      // 远端那一栏在 `twoPanes()` 里按 HOME 取（`PROC.remote`）：写死 fxb 的话，A 那一段在
+      // 下拉里找不到它 —— 同一族问题修过一次（`refusal-toast-visible`），当时漏了这条。
+      await twoPanes();
       // 上一栏可能还站在某一层里（上一步刚进过 a）：Select 选**同一个位置**不触发 onChange，
       // 所以那一层的读数会留着 —— 回到根要靠面包屑那个根节点（同族见 refusal-toast-visible）。
       await click(PROC.remote, 'any'); await sleep(1400); await waitListed();
@@ -1360,8 +1431,7 @@ const STEPS = [
       await click('清空这一层', 1); await sleep(2500);
     } },
   { id: 'note-expand', only: 'A', what: '那句常驻解释默认只露摘要，点「为什么？」才出细节（⑤片的分层口径）', run: async () => {
-      await click('浏览文件', 'any'); await sleep(900);
-      await pickPane(0, 'local'); await pickPane(1, PROC.remote); await waitListed();
+      await twoPanes();
       const before = await ev('(() => document.body.innerText.includes("被排除的对象不在列表里") ? 1 : 0)()');
       await click('为什么？', 0); await sleep(600);
       const after = await ev('(() => document.body.innerText.includes("被排除的对象不在列表里") ? 1 : 0)()');
@@ -1652,7 +1722,18 @@ const STEPS = [
       log('REFUSE-BIN 等 ' + w.ms + '毫秒 屏上=' + alerts.slice(0, 260));
       if (!w.ok) throw new Error('等 12 秒那一句「没改成」还没出来（屏上只有上一格的成功提示）：' + alerts.slice(0, 200));
       if (!alerts.includes('那一格是空的')) throw new Error('空路径那一档拿的是"那个位置没有可执行文件"那句（说的是操作员没指过的路径）：' + alerts.slice(0, 200));
-      await clickIfEnabled('取消', 'any'); await sleep(500);
+      // 被拒之后**把那一格填回原值**，而不是点「取消」：默认那几块根本没有「取消」那颗
+      // （撤掉草稿的唯一通路是重开面板），`clickIfEnabled` 找不到就静默什么也不做 ——
+      // 于是这份"空路径"草稿一直挂着，后面每一格按「保存这几项」都吃同一句 plan 拒绝、
+      // **根本没有层可开**（历史那 5 条级联红的头就在这里，而逐条单独跑全过：单独跑时
+      // 前面那一格没把现场留下）。检查类的一步也要收拾自己留下的现场。
+      const bin = (fxText('jobs').match(/^rclone_bin = '([^']+)'/m) || [])[1];
+      if (!bin) throw new Error('夹具那份 jobs.toml 里读不到 rclone_bin，没法把那一格填回去');
+      await setFieldInput('rclone 程序在哪', bin);
+      await sleep(600);
+      const dirty = Number(await ev('document.body.innerText.includes("还没保存：默认那几项") ? 1 : 0'));
+      log('REFUSE-BIN 填回原值之后那句还挂着=' + dirty);
+      if (dirty !== 0) throw new Error('填回原值之后仍说默认那几项没保存（这一格把脏现场留给了后面）');
       assertBytes('jobs', jobs, '被拒的一次动了 jobs.toml');
       assertBytes('conf', conf, '被拒的一次动了 rclone.conf');
     } },
@@ -1686,7 +1767,15 @@ const STEPS = [
     } },
   { id: 'settings-save-job-pairing', what: '改这条：镜像那一行的「从哪里来」换新目录 → jobs.toml 上只有那一行变，两条理由注释都在', run: async () => {
       const before = readJobs();
-      await click('改这条', 'any', 0, '封面对齐'); await sleep(800);
+      // 自己站上设置那一面并等那两份文件读回来（与相邻那几格同一开头）：这一格以前"能单独跑"
+      // 只是因为上一格恰好把它留在设置那一面 —— 单独跑在别的面时 `clickJobRow` 报的是
+      // 「看不见「任务」那块卡片」，红的是这一步没带自己的前提。
+      await click('设置', 'any'); await sleep(1300);
+      await waitField('rclone 程序在哪');
+      // 认这一行靠**分组标题**（那一对位置），不靠任务名：2026-10-11 起行上第一句是
+      // 「要做什么」，名字与路径住在「为什么？」的展开里（收起时不挂 DOM），
+      // `inRow='封面对齐'` 那种写法报的是「候选=0」，而那颗「改这条」在屏上好好的。
+      await clickJobRow(PROC.remote + ':b', '改这条'); await sleep(800);
       await setFieldInput('从哪里来', PROC.fx + '/mirror-src-changed');
       await click('保存这条', 'any'); await waitLayer();
       const rows = await visibleModalRows();
@@ -1701,6 +1790,15 @@ const STEPS = [
         + ' 块内注释在=' + (nowText.includes('# 这一条是批量上传用的') ? 1 : 0));
       if (diff !== 1) throw new Error('改动不止一行：' + diff);
       if (!now.includes('mirror-src-changed')) throw new Error('那一行没落地');
+      // 改动落在**哪一条**上也要钉一次。只判"文件里出现了新值 + 只差一行 + 卡上还是旧的"，
+      // 点错隔壁那一行也会全绿：同一块里几条任务长得一模一样，而这三条判据都不看身份。
+      // 判据用这一面自己声明的那份身份 —— 新值必须住在 `fxb:b` 那一对的条目里
+      // （`clickJobRow` 按分组标题认行，这里就是它那条判据的另一头）。
+      const touched = now.split('[[job]]').find((b) => b.includes('mirror-src-changed')) || '';
+      if (!touched.includes('dst = "' + PROC.remote + ':b"')) {
+        throw new Error('新值落在了别的那一条上（该 ' + PROC.remote
+          + ':b 那一对）：' + touched.replace(/\s+/g, ' ').slice(0, 160));
+      }
       if (before.includes('mirror-src-changed')) throw new Error('基线里就已经是新值了（夹具没铺对，这一遍没在证明任何事）');
       if (!nowText.includes('# 这一段是操作员自己写的理由')) throw new Error('文件头那两行理由注释被吃掉了');
       if (!nowText.includes('# 这一条是批量上传用的')) throw new Error('块内那行理由注释被吃掉了');
@@ -2787,8 +2885,7 @@ const STEPS = [
   // 它后面只留两格，而且两格都不碰后台：写下"上次开在哪一面/哪一段"（纯点一下分段控件），
   // 以及重开之后量那一份回来（`needsReopen`，主跑那一遍里是 SKIP）。
   { id: 'list-failure-visible', what: '列不出来那一句看得见：toast 节点数 + 栏上常驻的 Alert（把面板自己拉起的 rcd 停掉）', run: async () => {
-      await click('浏览文件', 'any'); await sleep(900);
-      await pickPane(0, 'local'); await pickPane(1, PROC.remote); await waitListed();
+      await twoPanes();
       // 这一面没有命令行，交不出一个不存在的远端名（那正是它的设计）。所以失败由**面板自己拉起的
       // rcd 停掉**来造：只杀 rcd.pid 里那个 pid，走的是同一条 browser_list 失败通路。
       // 家从参数传给那个脚本：它曾把 pid 文件路径写死成 A，于是对 B 跑整套时它杀的是

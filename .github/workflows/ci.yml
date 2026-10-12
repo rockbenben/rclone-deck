@@ -52,6 +52,19 @@ jobs:
       - name: 文案标点扫描（直引号括中文 / 中文句中的半角冒号）
         run: npm run copy:scan
 
+      # `ui-copy-scan.mjs` 只收**含中文**的句子（它的 CN.test），所以一条纯英文的界面话
+      # （`title="Delete"`、空状态、Tooltip）对那道闸门是隐形的。这一条补上那一半：
+      # 只报散文，两词以上且含常见英文功能/状态词，CSS 值与标识符形状不算。
+      # 依据是 README「界面语言：只有中文」—— 纯英文界面话是漏翻，不是风格选择。
+      - name: 纯英文界面文案扫描（漏翻那一半）
+        run: npm run copy:ascii
+
+      # 上一条报「零条」有两种可能：真的干净，或者它已经瞎了 —— 从输出上看不出区别。
+      # （真发生过：这道闸门的前两版对 `<Button>Delete</Button>` 与全小写短语全盲，
+      #  却在 src/ 上报零条。）这一步拿一份**故意写错的**英文文案当靶子，断言它必须红。
+      - name: 上一条闸门的自检（退化就红）
+        run: npm run copy:ascii:selftest
+
       - name: npm 依赖漏洞（high 及以上即红）
         run: npm audit --audit-level=high
 

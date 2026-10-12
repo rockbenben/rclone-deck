@@ -17,6 +17,13 @@ docs/superpowers/
 docs/**/evidence/ui/
 *.png
 
+# `social-card.png` / `social-card@2x.png` 是**发布资产**，不是证据图：它由
+# social-card.html 渲染出来（那个文件的头里写着用途与渲染命令），漏掉的话
+# GitHub 的社交预览就没有这张卡。gitignore 后面的规则覆盖前面的，所以这行
+# 必须**写在 `*.png` 之后**，写在前面会被上面那条吃掉（放过一次）。
+!social-card.png
+!social-card@2x.png
+
 # 界面打磨稿：设计阶段反复改出来的工作稿，逐轮重写，不是结论。
 # 定下来的那份在 DESIGN.md；这里的稿子不入库（同 docs/superpowers/ 的道理）。
 design-preview/
@@ -50,6 +57,14 @@ desktop.ini
 # 但有人把家指到仓里就会留在这）
 *.log
 *.pid
+
+# 2026-10-12：这两处是逐条实测探针的落盘位置，**曾经被跟踪过**。
+# tmp-checkprobe/ 里那 6 个文件跟着仓走了一个版本，其中 rcd.err 记的是本机绝对路径
+# （D:\Backup\...），发出去等于把作者家目录写进公开仓。已 `git rm` 掉。
+# 这里点名挡住：`*` 那条只挡扩展名，挡不住探针下次换个后缀又混进来。
+# 盘上剩下的空壳（rcd.log 0 字节、guardprobe 的 9 字节夹具）不影响发布，删不删都行。
+tmp-checkprobe/
+tmp-guardprobe/
 
 # 密钥类：面板自己不放（它明令不落盘凭据），仓里出现就是事故
 .env

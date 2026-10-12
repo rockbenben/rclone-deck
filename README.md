@@ -4,7 +4,7 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE) [![365 开源计划 #041](https://img.shields.io/badge/365%20%E5%BC%80%E6%BA%90%E8%AE%A1%E5%88%92-%23041-1f6feb)](https://github.com/rockbenben/365opensource)
 
-[![下载 Windows x64 安装包](https://img.shields.io/badge/%E4%B8%8B%E8%BD%BD-Windows%20x64-0C7E72?style=flat-square)](https://github.com/rockbenben/rclone-deck/releases) [![版本记录](https://img.shields.io/badge/%E7%89%88%E6%9C%AC%E8%AE%B0%E5%BD%95-Changelog-grey?style=flat-square)](https://github.com/rockbenben/rclone-deck/releases)
+[⬇ 下载安装包（Windows x64）](https://github.com/rockbenben/rclone-deck/releases/latest) · [版本记录](https://github.com/rockbenben/rclone-deck/releases)
 
 ![配好的位置那一面](docs/images/pairs-face.webp)
 
@@ -33,8 +33,7 @@
 ## 快速开始
 
 1. 装好 rclone，并用 `rclone config` 把远端配出来（这块界面不管凭据，也不显示它们）。
-2. 打开 rclone-deck。**第一次打开时顶栏会红着写「后台没能启动」**——它还不知道你的 rclone 装在哪。去「设置」里的「rclone 程序在哪」那一格，填你在终端 `where rclone` 查到的第一条路径，然后**重开面板**。之后顶栏那盏灯变成「后台就绪」就成了。（面板不替你猜在哪：本机有两份 rclone 时，随便挑一个可能挑错。）
-   端口你不用管，面板会自己挑一个当下没人占的。顶栏「详情」里显示的永远是**实际**在用的那个号。
+2. 打开 rclone-deck。**第一次打开时顶栏会红着写「后台没能启动」**——它还不知道你的 rclone 装在哪。去「设置」里的「rclone 程序在哪」那一格，填你在终端 `where rclone` 查到的第一条路径，然后**重开面板**。之后顶栏那盏灯变成「后台就绪」就成了。（面板不替你猜在哪：本机有两份 rclone 时，随便挑一个可能挑错。）端口你不用管，面板会自己挑一个当下没人占的；顶栏「详情」里显示的永远是**实际**在用的那个号。
 3. 在「配好的位置」那一面挑一对位置，要做什么先站「只补，不删」。
 4. 按「看差异」，看清要动的是哪些名字。第一次跑建议就停在这儿。
 5. 觉得对了再按「开始」。要删东西得把「要做什么」换成「让两边对齐（会删）」，那一档会先开一个确认层把这一趟的范围与方向复述给你；要看逐条名字，按层里那颗「重新预览」。

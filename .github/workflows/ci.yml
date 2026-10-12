@@ -91,10 +91,9 @@ jobs:
       - name: 装 rclone
         run: choco install rclone --yes --no-progress
 
-      # choco 往 PATH 里放的是**转发 shim**（本机实测同款：bin 下那些 exe 才 100 KB 上下，
-      # 真正体是几十 MB），shim 再把真正的 rclone 从 lib 目录拉起来。于是：
+      # choco 往 PATH 里放的是**转发 shim**，shim 再把真正的 rclone 从包目录里拉起来。于是：
       #   · 起 daemon 时我们交出去的是 shim 的路径；
-      #   · 真正绑住端口、真正跑 rcd 的是 lib 下那个映像；
+      #   · 真正绑住端口、真正跑 rcd 的是包目录里那个映像；
       #   · 而 `DaemonGuard::cmd_is_our_rcd` 与生产 `reclaim` 里的 `same_path`
       #     是拿 OS 报的**进程映像完整路径**去逐字符比的（那条判据的注释写着
       #     「完整路径，不是文件名——本机装着两个不同构建的 rclone.exe」）。
@@ -102,17 +101,37 @@ jobs:
       # 全撞「端口被占」。2026-10-12 第一次真跑 CI 整批红就是这一条。
       #
       # 所以把 RCLONE_BIN 指到**真正的可执行文件**——夹具本来就留了这个出口
-      # （rclone_supervisor.rs 那份 helper 的文档明写「可用 RCLONE_BIN 覆盖」）。
-      # 按体量挑而不是写死文件名：真程序几十 MB，shim 只有一百来 KB。
+      # （rcd_supervisor.rs 那份 helper 的文档明写「可用 RCLONE_BIN 覆盖」）。
+      #
+      # 这里**刻意不写死包目录的路径**：choco 把包解到哪儿会随版本变，写死正是下一次
+      # CI 又红的原因（第一版就是这么栽的：写死 lib\rclone 后在 runner 上找不到，直接 throw）。
+      # 判据是性质而不是位置：
+      #   ① 排除 chocolatey\bin（那是 shim 目录）；② 取体量最大的那个
+      # （真程序几十 MB，shim 一百来 KB —— 本机实测 69.8 MB 对 94–142 KB）。
+      # 候选一律打印出来，哪一步判断错了日志里一眼看得见。
+      #
+      # 找不到时**不硬失败**：这一步是配置，不该由它来挡 CI。退回 PATH 的解析结果并打告警，
+      # 让测试自己给出可读的报错（守卫那条仍然是硬闸，症状照旧可见）。
       - name: 指向真正的 rclone 可执行文件（choco 放的是转发 shim）
         run: |
-          $real = Get-ChildItem 'C:\ProgramData\chocolatey\lib\rclone' -Recurse -Filter rclone.exe -ErrorAction Stop |
-                  Where-Object { $_.Length -gt 1MB } |
-                  Select-Object -First 1
-          if (-not $real) { throw '在 chocolatey 的 lib 目录里没找到真正的 rclone.exe' }
-          # 不用 `Out-File -Encoding utf8`：PowerShell 5.1 那一档会写 BOM（实测首字节 EF BB BF），
-          # 而 GitHub 要求 GITHUB_ENV 是无 BOM 的 UTF-8 —— BOM 正好落在这个文件的第一行，
-          # 会把 RCLONE_BIN 这个**变量名本身**弄坏，症状是"设了却读不到"。
+          $all = Get-ChildItem -Path 'C:\ProgramData\chocolatey','C:\tools' `
+                               -Recurse -Filter rclone.exe -ErrorAction SilentlyContinue
+          Write-Host '候选 rclone.exe：'
+          $all | ForEach-Object { Write-Host ("  {0,8:N1} MB  {1}" -f ($_.Length/1MB), $_.FullName) }
+          $real = $all |
+                  Where-Object { $_.DirectoryName -notlike '*\chocolatey\bin' -and $_.Length -gt 1MB } |
+                  Sort-Object Length -Descending | Select-Object -First 1
+          if ($real) {
+            Write-Host "选定: $($real.FullName)"
+          } else {
+            $fallback = (Get-Command rclone -ErrorAction SilentlyContinue).Source
+            Write-Host "::warning::没找到真正的 rclone.exe，退回 PATH 的解析结果 $fallback"
+            Write-Host "::warning::若下面的测试报「端口被占」或 SpawnFailed，多半就是这个原因"
+            $real = Get-Item $fallback
+          }
+          # 不用 `Out-File -Encoding utf8`：Windows PowerShell 5.1 那一档会写 BOM（实测首字节 EF BB BF），
+          # 而 GitHub 要求 GITHUB_ENV 是无 BOM 的 UTF-8 —— BOM 落在第一行会把 RCLONE_BIN
+          # 这个**变量名本身**弄坏，症状是"设了却读不到"。
           [System.IO.File]::AppendAllText(
             $env:GITHUB_ENV,
             "RCLONE_BIN=$($real.FullName)`n",

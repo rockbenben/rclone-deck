@@ -91,6 +91,34 @@ jobs:
       - name: 装 rclone
         run: choco install rclone --yes --no-progress
 
+      # choco 往 PATH 里放的是**转发 shim**（本机实测同款：bin 下那些 exe 才 100 KB 上下，
+      # 真正体是几十 MB），shim 再把真正的 rclone 从 lib 目录拉起来。于是：
+      #   · 起 daemon 时我们交出去的是 shim 的路径；
+      #   · 真正绑住端口、真正跑 rcd 的是 lib 下那个映像；
+      #   · 而 `DaemonGuard::cmd_is_our_rcd` 与生产 `reclaim` 里的 `same_path`
+      #     是拿 OS 报的**进程映像完整路径**去逐字符比的（那条判据的注释写着
+      #     「完整路径，不是文件名——本机装着两个不同构建的 rclone.exe」）。
+      # 两边对不上 → 守卫一次也不收尸 → daemon 泄漏 → 同一 target 里后面的用例
+      # 全撞「端口被占」。2026-10-12 第一次真跑 CI 整批红就是这一条。
+      #
+      # 所以把 RCLONE_BIN 指到**真正的可执行文件**——夹具本来就留了这个出口
+      # （rclone_supervisor.rs 那份 helper 的文档明写「可用 RCLONE_BIN 覆盖」）。
+      # 按体量挑而不是写死文件名：真程序几十 MB，shim 只有一百来 KB。
+      - name: 指向真正的 rclone 可执行文件（choco 放的是转发 shim）
+        run: |
+          $real = Get-ChildItem 'C:\ProgramData\chocolatey\lib\rclone' -Recurse -Filter rclone.exe -ErrorAction Stop |
+                  Where-Object { $_.Length -gt 1MB } |
+                  Select-Object -First 1
+          if (-not $real) { throw '在 chocolatey 的 lib 目录里没找到真正的 rclone.exe' }
+          # 不用 `Out-File -Encoding utf8`：PowerShell 5.1 那一档会写 BOM（实测首字节 EF BB BF），
+          # 而 GitHub 要求 GITHUB_ENV 是无 BOM 的 UTF-8 —— BOM 正好落在这个文件的第一行，
+          # 会把 RCLONE_BIN 这个**变量名本身**弄坏，症状是"设了却读不到"。
+          [System.IO.File]::AppendAllText(
+            $env:GITHUB_ENV,
+            "RCLONE_BIN=$($real.FullName)`n",
+            (New-Object System.Text.UTF8Encoding $false))
+          Write-Host "RCLONE_BIN = $($real.FullName)  ($([math]::Round($real.Length/1MB,1)) MB)"
+
       # README「支持范围」写的是实测钉在 v1.75.1。choco 装的是当时最新，
       # 所以这条**不**去卡版本（卡了就等于把 CI 冻在一个越旧越没人验的 rclone 上），
       # 只把实际版本摆出来：跑挂时先看这里是不是换了 rclone，而不是先怀疑代码。

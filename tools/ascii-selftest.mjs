@@ -21,6 +21,8 @@ const EXPECT = [
   'Delete',                        // JSX 文本节点里的单个大写词
   'Cancel',                        // 同上
   'Loading',                       // 同上
+  'cancel',                        // **全小写**单词 —— 大小写判据放过它的那个洞
+  'DELETE',                        // **全大写**
   'No results found',              // JSX 文本节点里的多词散文
   'Upload failed, please try again', // 带逗号的散文（逗号不能拿来判"这是代码"）
   'copy path name',                // 全小写多词 —— CLASS_SHAPE 那类形状过滤的盲区

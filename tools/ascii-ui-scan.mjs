@@ -46,10 +46,13 @@ const UI_WORD = new RegExp(
 // 明确不是散文的东西
 const CSS_VALUE =
   /^(var\(--[\w-]+\)|#[\da-fA-F]{3,8}|[-\d.]+(px|rem|em|%|vh|vw|s|ms|deg|fr|ch|ex)|rgba?\(|hsla?\()/;
+// 只有这一条形状过滤，且**只用在③字符串字面量那一路**（防 CSS 类名 `fs-code path-line` 误报）。
+// 高信号的①属性 / ②JSX 文本节点一路**不做任何形状过滤** ——
+// 第一版就是在这里栽的：它把 `Delete` 当成合法标识符放过去、把 `copy path name`
+// 当成类名放过去，于是闸门对这两类真实漏翻全盲，却在 src/ 上报「零条」。
+// 留着几个"看着像过滤器但没人调用"的大小写判据最容易把同一个 bug 请回来，所以不留。
 const CLASS_SHAPE = /^[a-z][\w-]*(\s+[a-z][\w-]*)*$/;        // thumb-name fs-code
-const IDENT_LIKE = /^[A-Za-z_$][\w$-]*$/;                    // 单个标识符，无空格
-const CAMEL = /^[a-z][a-z0-9]*([A-Z][a-z0-9]*)+$/;
-const PASCAL = /^[A-Z][a-z0-9]*([A-Z][a-z0-9]*)+$/;
+
 const ALLOWED_ATTR = new Set([
   'title', 'label', 'placeholder', 'okText', 'cancelText', 'emptyText',
   'description', 'message', 'tooltip', 'aria-label', 'alt', 'hint', 'reason',

@@ -16,6 +16,13 @@ export function DeliberateEnglish(props: { x: unknown }) {
       <Button title="Refresh">R</Button>
       <Empty description="No data" />
 
+      {/* ②b 大小写三态：全大写 / 首字母大写 / 全小写。
+          这一组是量出来的：第一版有一处 `IDENT_LIKE` 形状过滤只认大写开头，
+          于是全小写的 `cancel` 被当成标识符放过 —— 验证员就是照这条复现的。 */}
+      <span>DELETE</span>
+      <span>Delete</span>
+      <span>cancel</span>
+
       {/* ③ 属性值里的散文 —— 上一版能抓住，这里当回归 */}
       <Tooltip title="Copy the file name to clipboard">
         <span>hint</span>

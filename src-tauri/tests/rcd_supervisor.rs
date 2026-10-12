@@ -59,11 +59,31 @@ fn p() -> u16 {
 /// 裁定 R47 item 1：守卫**不读它**——Task 9 的 `setup_with_conf` 那份 spec 的 `rclone_bin` 是从
 /// 配置派生的，跟这里的环境变量默认值没有必然关系；守卫要是继续读它，那时候两档会同时瞎掉。
 ///
-/// 兜底交的是 PATH 上的**裸名**，不是某个开发机的绝对路径（理由与改动经过见
-/// `tests/localdaemon/mod.rs` 那份同名函数：2026-10-12 在 GitHub Actions 上整批 `SpawnFailed`，
-/// 而 choco 装的 rclone 就在 PATH 里）。同一份理由、同一处修法，两边要一起改。
+/// 兜底从 PATH 上解析出**完整路径**而不是写死某台机（写死会让 CI 整批 `SpawnFailed`），
+/// 也不交裸名（裸名与身份判据那份「完整路径，不是文件名」对不上，守卫就不收尸、
+/// daemon 泄漏，后面每条用例都撞端口占用）。理由与实现见 `tests/localdaemon/mod.rs`
+/// 的同名函数——两处是抄同一份，改一处要改另一处。
 fn rclone_bin() -> String {
-    std::env::var("RCLONE_BIN").unwrap_or_else(|_| "rclone".into())
+    if let Ok(p) = std::env::var("RCLONE_BIN") {
+        return p;
+    }
+    resolve_on_path("rclone").unwrap_or_else(|| "rclone".into())
+}
+
+/// 在 PATH 上按名字找可执行文件，返回**第一个命中的完整路径**。
+/// 抄 `tests/localdaemon/mod.rs` 那份同名函数（那边是它的出处，理由与走过的弯路都写在那儿）；
+/// 这两个文件各自编译成独立测试目标，没有共享模块可依赖，所以是抄而不是 import。
+fn resolve_on_path(exe: &str) -> Option<String> {
+    let path = std::env::var_os("PATH")?;
+    for dir in std::env::split_paths(&path) {
+        for name in [format!("{exe}.exe"), exe.to_string()] {
+            let cand = dir.join(&name);
+            if cand.is_file() {
+                return Some(cand.to_string_lossy().into_owned());
+            }
+        }
+    }
+    None
 }
 
 /// 目录里的文件名，排过序。轮转那条用它来看"归档到底造出来没有"。

@@ -59,23 +59,42 @@ pub static PORT: LazyLock<u16> = LazyLock::new(|| {
 });
 
 pub fn rclone_bin() -> String {
-    std::env::var("RCLONE_BIN").unwrap_or_else(|_| {
-        // 判据是"能不能起来"，不是"路径长什么样"。
-        //
-        // 原来这里写死的是作者那台机的绝对路径（`%USERPROFILE%` 底下的 WinGet Links 目录），
-        // 于是在别的机器上 `Command::new` 直接 `SpawnFailed`：
-        // 2026-10-12 第一次跑 GitHub Actions 时，runner 上 choco 装的 rclone 明明在 PATH 里
-        // （`ci.yml` 那步是绿的），测试却整批红在这一行。
-        // 绝对路径本身也不该抄进源码——同一条理由见 `tests/app_state.rs`：别人的机器上没有那个家。
-        //
-        // 交一个 PATH 上的**裸名**让 `Command` 自己按 PATHEXT 去解析：choco / winget / scoop
-        // 都往 PATH 里放可执行文件或 shim，于是三种装法都成立。同一个仓库的
-        // `rcd/mod.rs` 查端口也已经是 `Command::new("netstat")` 这么写的，两处一致。
-        //
-        // 这与 `tests/app_state.rs` 那条"不许出现作者的用户名"是同一个病：
-        // 出厂配置里已经钉住了，测试夹具当时漏了同一处。
-        "rclone".into()
-    })
+    if let Ok(p) = std::env::var("RCLONE_BIN") {
+        return p;
+    }
+    // 从 PATH 上找出 rclone，并交出它的**完整路径**。
+    //
+    // 为什么不能只交一个裸名（`"rclone"`）让 `Command` 自己解析：那样确实能躲开
+    // 「找不到程序」，但会拆掉一条既有不变量 —— `DaemonGuard::cmd_is_our_rcd` 与
+    // 生产 `reclaim` 里的 `same_path` 都是拿 **OS 报的进程镜像完整路径** 去和
+    // `spec.rclone_bin` 逐字符比（`cmd_is_our_rcd` 的注释写得很直白：
+    // 「完整路径，不是文件名——本机装着两个不同构建的 rclone.exe」）。
+    // 裸名与完整路径对不上，守卫就永远不收尸，daemon 泄漏，于是同一 target 里
+    // 后面的用例全撞 `PortBusyByForeignProcess` / `OrphanNotReapable` —— 级联。
+    //
+    // 为什么原来会坏在 CI 上：兜底写死的是作者那台机的绝对路径，
+    // runner 上 choco 把 rclone 装进了 PATH（`ci.yml` 那步是绿的），夹具却压根不看 PATH，
+    // 于是 2026-10-12 第一次真跑 CI 时整批 `SpawnFailed`。
+    //
+    // 交完整路径同时满足两边：谁装的（choco / winget / scoop）都能找到，
+    // 而交给身份判据的仍然是它期望的那个绝对路径。
+    resolve_on_path("rclone").unwrap_or_else(|| "rclone".into())
+}
+
+/// 在 PATH 上按名字找可执行文件，返回**第一个命中的完整路径**。
+/// Windows 上先试 `.exe` 后缀（shim 与真程序都带它）；找不到就交 `None`，
+/// 由调用方决定兜底——宁可让它按原样 spawn 出可读的 `SpawnFailed`，也不交一个对不上的假路径。
+fn resolve_on_path(exe: &str) -> Option<String> {
+    let path = std::env::var_os("PATH")?;
+    for dir in std::env::split_paths(&path) {
+        for name in [format!("{exe}.exe"), exe.to_string()] {
+            let cand = dir.join(&name);
+            if cand.is_file() {
+                return Some(cand.to_string_lossy().into_owned());
+            }
+        }
+    }
+    None
 }
 
 pub fn fwd(p: &Path) -> String {

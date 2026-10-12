@@ -2,16 +2,35 @@
 <!--
   rclone-deck 的社交预览图（GitHub Social preview，1280×640）。
 
-  视觉方向：深色底 + 产品自己的色板（src/theme.ts 的 dark 那一档）。
-  抄产品色板而不是另配一套，是为了卡片和界面看着像同一个东西。
+  尺寸是按**缩略图**倒推的，不是按全尺寸正推的。
+  信息流里这张卡大约以 400px 宽出现，所以：1280→400 是 0.3125 的缩放，
+  28px 的字落到约 8.75px（勉强认得出），26px 落到约 8px（读不出来），
+  23px 落到约 7px（纯灰条）。据此只留三档字号，每档各说一件事：
 
-  钩子取的是这个项目**最大的那块价值**，不是最好写的那个点：
-  README 通篇在讲「会删东西的地方只有两处，两处都先让你看清」——
-  「删除前的确认」才是它替用户扛住的那件事，「配 rclone」只是入口。
-  信息流里读者只看得到大色块和大字，所以截图细节一律不进这张卡。
+    1. 是什么     —— 顶栏一行：产品名在左、能连谁在右，同字号，不用另起一行
+    2. 做什么     —— 主标题 78px，两行，第二行落主色
+    3. 凭什么信它 —— 安全那条 40px，带左边框，与主标题拉开一级
+
+  为什么只有这三档：这一版之前有一行 26px 的补充说明和一条 23px 的页脚。
+  把渲染结果缩到 400px 看，那两行都是糊的——它们在唯一真正会被看到的尺寸里
+  不传递任何信息，却把版面切成了四段。**读不出来的字就是噪音，不是内容**，
+  所以砍掉；它们要说的事由主标题与安全那条承接。
+
+  内容上，这一版把**「删除前的确认」**搬到了屏上。上一版的注释写着钩子取的是
+  这个项目最大的那块价值，可屏上四枚能力标讲的是列差异 / 查得出 / 看图 /
+  起后台，一条都没讲那件事——注释说的和画的不是一回事，而社交卡只有这一屏能说话。
+
+  右侧几何不是装饰：两摞文件从两边汇到一点，对应的正是这产品在解决的事——
+  两边都改过之后，收敛成一个结果。形状做到足够粗（28px 的条、32px 的间距），
+  因为它在 400px 下只剩约 9px 高的糊块，细节一律没有意义，只有"两堆 → 一点"
+  这件事还认得出。
+
+  配色逐个抄自 src/theme.ts 的 dark 一档（不是另配的一套），卡片和界面才像同一个东西。
+  注释位不用直双引号（用窄口与破折号），与仓里「文案」那条判据一致。
 
   渲染：
     node {SKILL_DIR}/render.mjs social-card.html social-card.png --palette
+    node {SKILL_DIR}/render.mjs social-card.html social-card@2x.png --dpr 2 --palette
 -->
 <html lang="zh-CN">
 <head>
@@ -19,81 +38,99 @@
 <style>
   * { margin: 0; box-sizing: border-box; }
   body {
-    /* position:relative：让 .foot 锚在卡片上，而不是视口上 —— 少了它，
-       footer 会从任何比视口矮的卡片上漂走。 */
+    /* position:relative：让 .foot 与右侧那块几何锚在卡片上，而不是视口上
+       ——少了它，任何比视口矮的卡片都会把它们甩出去。 */
     position: relative;
     width: 1280px; height: 640px; overflow: hidden;
     display: flex; flex-direction: column; justify-content: center;
-    padding: 0 88px; gap: 30px;
-    /* 色板逐个抄自 src/theme.ts 的 dark 一档，不是另配的 */
+    padding: 0 80px;
     background: #14161A; color: #E6E9EF;
     font-family: system-ui, "Segoe UI", "PingFang SC", "Microsoft YaHei",
                  "Noto Sans CJK SC", "Noto Sans SC", sans-serif;
     -webkit-font-smoothing: antialiased;
   }
-  /* 右后侧一块极淡的青色光晕，暗示"两边对起来"，不抢大字 */
+  /* 右后侧一块极淡的青色光晕，只暗示不抢 */
   body::after {
-    content: ""; position: absolute; right: -140px; top: -180px;
-    width: 620px; height: 620px; border-radius: 50%;
-    background: radial-gradient(circle, rgba(49,169,154,0.16) 0%, rgba(49,169,154,0) 70%);
+    content: ""; position: absolute; right: -180px; top: -220px;
+    width: 680px; height: 680px; border-radius: 50%;
+    background: radial-gradient(circle, rgba(49,169,154,0.15) 0%, rgba(49,169,154,0) 70%);
   }
 
-  .eyebrow {
-    display: flex; align-items: center; gap: 16px;
-    font-size: 25px; font-weight: 600; letter-spacing: 0.06em;
+  /* ── 1. 顶栏：产品名 + 能连谁，同字号同一档，不另起一行 ── */
+  .top {
+    position: relative;
+    display: flex; align-items: center; gap: 18px;
+    font-size: 28px; font-weight: 700; letter-spacing: 0.02em;
     color: #8A93A5;
   }
   /* 主色的小圆点：一眼认出这是哪个产品的卡 */
-  .eyebrow::before {
-    content: ""; width: 15px; height: 15px; border-radius: 50%;
+  .top::before {
+    content: ""; width: 16px; height: 16px; border-radius: 50%;
     background: #31A99A; flex: none;
   }
+  .top .name { color: #E6E9EF; }
+  /* 顶栏右侧：能连谁。同一档字号，于是缩到 400px 时它与产品名一起读得出来，
+     不必另起一行当页脚（页脚那一档在这个尺寸下是读不出来的）。 */
+  .top .reach {
+    position: absolute; right: 0;
+    font-weight: 400; font-size: 28px; color: #8A93A5;
+  }
 
+  /* ── 2. 主标题 ─────────────────────────────────────── */
   h1 {
     position: relative;
-    /* 缩略图尺寸下信息流里只看得清大色块和大字：84px 时标题吃掉近半屏，
-       缩小后仍是最显眼的元素，但给下面的标和页脚留出了呼吸的位置。 */
-    font-size: 72px; line-height: 1.18; font-weight: 800;
-    letter-spacing: -0.01em; max-width: 1010px;
+    /* 缩略图里唯一真正被读到的一档。78px × 两行 ≈ 190px，
+       下面留出安全那条与呼吸的位置——不排满，缩略图下才不糊成一坨。 */
+    font-size: 78px; line-height: 1.16; font-weight: 800;
+    letter-spacing: -0.015em; margin-top: 30px;
   }
   h1 .hl { color: #31A99A; }
 
-  /* 三枚能力标：三小句，不是一句话（那张脸在缩略图里全糊）。
-     放不下就换行，不靠缩小字号硬塞一行——缩略图里本来就看不清小字。 */
-  .pills { position: relative; display: flex; gap: 13px; flex-wrap: wrap; max-width: 1010px; }
-  .pill {
-    font-size: 24px; font-weight: 600; line-height: 1;
-    padding: 14px 24px; border-radius: 999px;
-    background: #1B1E24; color: #A2AAB8;
-    border: 1px solid #333A45;
+  /* ── 3. 安全那条：钩子本体 ─────────────────────────── */
+  /* 左边框而不是第三行标题：它要和主标题拉开一级，又不能大到跟主标题抢。
+     40px 是量出来的——34px 那版缩到 400px 时贴着可读的下沿，40px 留住了余量。 */
+  .safe {
+    position: relative;
+    margin-top: 42px; padding: 6px 0 6px 30px;
+    border-left: 6px solid #31A99A;
+    max-width: 900px;
   }
-  .pill.safe { color: #31A99A; border-color: rgba(49,169,154,0.42); }
+  .safe .lead {
+    font-size: 40px; line-height: 1.36; font-weight: 700; color: #E6E9EF;
+  }
+  .safe .lead em { font-style: normal; color: #31A99A; }
 
+  /* ── 系列编号：只留这一枚，且给足字号 ─────────────── */
+  /* 它是 365 计划里第 041 个项目，对老读者有用；但缩到 400px 只有约 8px，
+     所以只留它、放大它，不再搭配别的小字。 */
   .foot {
-    position: absolute; left: 88px; bottom: 52px;
-    display: flex; align-items: center; gap: 15px;
-    font-size: 22px; color: #8A93A5;
+    position: absolute; left: 80px; bottom: 48px;
+    font-size: 28px; font-weight: 700; letter-spacing: 0.04em;
+    color: #31A99A;
   }
-  .foot .sep { color: #60697D; }
-  .foot .num { font-weight: 700; color: #31A99A; }
+
+  /* 这一版**没有右侧几何**。量过才知道它在这个版面里放不下：
+     主标题第一行（78px）实际宽到 x≈875，安全那句宽到 x≈900，顶栏右侧到 x≈1228，
+     于是右侧只剩约 320px 的横向空档，而「两摞文件汇到一点」最小也要 396px。
+     压到 320 就得把条降到 20px 以下，400px 缩略图下每条只剩 6px——与一片灰没有区别。
+     试过三版位置（右边中线、右下、缩窄），每一版要么在 400px 下读不出形状、
+     要么压住上面某一句字。既然它在唯一真正会被看到的尺寸里传递不了信息，
+     就不留它：右半留白，右后的青色光晕已经把那块填住了。
+     留三档字号、各自都能在 400px 下读出来，比多一个装饰块实在。 */
 </style>
 </head>
 <body>
-  <div class="eyebrow">rclone-deck</div>
+  <div class="top">
+    <span class="name">rclone-deck</span>
+    <span class="reach">S3 / R2 / WebDAV · 本地目录 · Windows</span>
+  </div>
 
   <h1>本地改了、云端也改了，<br /><span class="hl">哪边留你说</span></h1>
 
-  <div class="pills">
-    <span class="pill safe">哪边不一样直接列</span>
-    <span class="pill">两边都在的也查得出</span>
-    <span class="pill">待上传的能看图</span>
-    <span class="pill">后台替你起好</span>
+  <div class="safe">
+    <div class="lead">会删东西的地方<em>只有两处</em>，两处都先让你看清。</div>
   </div>
 
-  <div class="foot">
-    <span class="num">365 #041</span>
-    <span class="sep">·</span>
-    <span>S3 / R2 / WebDAV · 本地目录</span>
-  </div>
+  <div class="foot">365 #041</div>
 </body>
 </html>

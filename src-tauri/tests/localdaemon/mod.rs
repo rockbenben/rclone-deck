@@ -60,7 +60,21 @@ pub static PORT: LazyLock<u16> = LazyLock::new(|| {
 
 pub fn rclone_bin() -> String {
     std::env::var("RCLONE_BIN").unwrap_or_else(|_| {
-        "C:\\Users\\Administrator\\AppData\\Local\\Microsoft\\WinGet\\Links\\rclone.exe".into()
+        // 判据是"能不能起来"，不是"路径长什么样"。
+        //
+        // 原来这里写死的是作者那台机的绝对路径（`%USERPROFILE%` 底下的 WinGet Links 目录），
+        // 于是在别的机器上 `Command::new` 直接 `SpawnFailed`：
+        // 2026-10-12 第一次跑 GitHub Actions 时，runner 上 choco 装的 rclone 明明在 PATH 里
+        // （`ci.yml` 那步是绿的），测试却整批红在这一行。
+        // 绝对路径本身也不该抄进源码——同一条理由见 `tests/app_state.rs`：别人的机器上没有那个家。
+        //
+        // 交一个 PATH 上的**裸名**让 `Command` 自己按 PATHEXT 去解析：choco / winget / scoop
+        // 都往 PATH 里放可执行文件或 shim，于是三种装法都成立。同一个仓库的
+        // `rcd/mod.rs` 查端口也已经是 `Command::new("netstat")` 这么写的，两处一致。
+        //
+        // 这与 `tests/app_state.rs` 那条"不许出现作者的用户名"是同一个病：
+        // 出厂配置里已经钉住了，测试夹具当时漏了同一处。
+        "rclone".into()
     })
 }
 

@@ -4,7 +4,7 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE) [![365 开源计划 #041](https://img.shields.io/badge/365%20%E5%BC%80%E6%BA%90%E8%AE%A1%E5%88%92-%23041-1f6feb)](https://github.com/rockbenben/365opensource)
 
-<!-- 发布后补这一行（可点的入口）：在线试用 / 下载 / English。仓库还没推上 GitHub，先不写假链接。 -->
+[![下载 Windows x64 安装包](https://img.shields.io/badge/%E4%B8%8B%E8%BD%BD-Windows%20x64-0C7E72?style=flat-square)](https://github.com/rockbenben/rclone-deck/releases) [![版本记录](https://img.shields.io/badge/%E7%89%88%E6%9C%AC%E8%AE%B0%E5%BD%95-Changelog-grey?style=flat-square)](https://github.com/rockbenben/rclone-deck/releases)
 
 ![配好的位置那一面](docs/images/pairs-face.webp)
 

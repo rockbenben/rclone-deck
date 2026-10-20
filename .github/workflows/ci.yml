@@ -1,6 +1,18 @@
 # 本仓只支持 Windows（README「支持范围」里写死了），所以 runner 只有 windows-latest。
 # 别加 linux/macos：Rust 侧与 tools/*.cmd、*.ps1 里有 Windows 专属行为，
 # 在别的系统上"绿"了也证明不了任何事，只会拖慢 PR。
+#
+# action 版本（2026-10 升到当前 major）：
+#   · checkout / setup-node / upload-artifact 都在 v7。三个都跑在 Node 24 运行时上。
+#     setup-node v6 起**自动缓存只认 npm**（别的包管理器得自己配 cache），
+#     本仓三条 job 都只用 `cache: npm`，不受影响。
+#     upload-artifact v6 起要求 runner ≥ 2.327.1（GitHub 托管的 runner 本来就够），
+#     v7 新增"单文件直传"（`archive: false`），本仓传的是打包产物，保持默认打包上传。
+#   · rust-cache 还是 v2、tauri-action 还是 v1 —— 这两个没有更新的 major。
+#     install-action 的 `cargo-audit` 标签与 `releases/cargo-audit` 分支指向同一个提交，
+#     换过去没有意义。
+#   · node-version 仍钉 24（不带 .x）：package.json 的 engines 要求 >=24，
+#     而"24 这一支的最新版"就是升级策略本身，26 出了也不跟着跳。
 name: CI
 
 on:
@@ -27,9 +39,9 @@ jobs:
     name: 前端：装依赖 → 类型检查 → 构建
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-node@v5
+      - uses: actions/setup-node@v7
         with:
           # package.json 的 engines 要求 >=24，所以这里钉 24（**不带 .x**：
           # 意思是"24 这一支的最新版"，26 出了也不会跟着跳）。
@@ -74,7 +86,7 @@ jobs:
     name: Rust：clippy → 全套测试（含真后台）
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -167,7 +179,7 @@ jobs:
     name: 依赖漏洞：Rust advisory 数据库
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       - uses: taiki-e/install-action@cargo-audit
 
@@ -178,7 +190,7 @@ jobs:
 
       - name: 传审计报告
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: cargo-audit-report
           path: audit.json
@@ -191,9 +203,9 @@ jobs:
     if: github.event_name != 'pull_request' && !startsWith(github.ref, 'refs/tags/')
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-node@v5
+      - uses: actions/setup-node@v7
         with:
           node-version: 24
           cache: npm
@@ -219,7 +231,7 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
 
       - name: 传安装包
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: rclone-deck-nsis
           path: src-tauri/target/release/bundle/nsis/*.exe
@@ -237,9 +249,9 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-node@v5
+      - uses: actions/setup-node@v7
         with:
           node-version: 24
           cache: npm

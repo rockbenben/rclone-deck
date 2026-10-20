@@ -11,6 +11,7 @@ import { PairDraftLayer } from './components/PairDraftLayer';
 import { KEY_FACE, KEY_TAB, useStored } from './prefs';
 import { RcdStatusBar } from './components/RcdStatusBar';
 import { SettingsPanel } from './components/SettingsPanel';
+import { autoCheck } from './updates';
 import type { GateReport, JobDraft, JobView, LogTail, PreviewView, PruneReport, RcdStatus, ShortNote, TaskState } from './types';
 
 const POLL_MS = 1000;
@@ -142,6 +143,20 @@ export function Panel() {
     timer.current = window.setInterval(() => void refresh(), POLL_MS);
     return () => { if (timer.current) window.clearInterval(timer.current); };
   }, [refresh]);
+
+  // 更新检查：默认**关着**（那一档存在 `src/updates.ts` 那一层里），所以这一段平时什么也不做。
+  // 开了才在面板起来时问一次；问出什么由下面那条通知说——**不下载也不装**，
+  // 下不下是设置面那张卡上「下载并安装」那一颗的事。
+  useEffect(() => {
+    void autoCheck().then((r) => {
+      if (r.status !== 'available') return;
+      notification.info({
+        message: '有新版了',
+        description: `版本 ${r.version}。到「设置」那面可以下载安装。`,
+        duration: 10,
+      });
+    });
+  }, [notification]);
 
   const act = useCallback(async (label: string, fn: () => Promise<unknown>) => {
     setBusy(true);

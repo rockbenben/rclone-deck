@@ -94,10 +94,22 @@ jobs:
 
       # Cargo.toml 在 src-tauri 而不是仓根，所以得指明工作区；
       # 不指的话这份缓存永远命中不了，每轮都要从头编 tauri（十几分钟）。
+      #
+      # `-> target` 才是 rust-cache 的规范写法：**target 目录是相对工作区给的**。
+      # 写成 `-> .` 的话，target 目录就等于 `src-tauri` 自己 —— 整棵源码树
+      # （连 Cargo.toml 与 src/ 一起）都进了缓存归档；归档一恢复，就把刚 checkout
+      # 出来的工作区覆盖成旧快照。2026-10-20 升依赖时踩的就是这个：锁文件变了 →
+      # 缓存键里的 lockfile 哈希跟着变 → 精确键未命中、restore-key 命中了旧归档 →
+      # `src-tauri/Cargo.toml` 直接不见，clippy 报
+      # "manifest path `src-tauri/Cargo.toml` does not exist"（那条 job 与打包那条同红）。
+      # 只缓存 target/ 就不会碰到源码树。
       - uses: Swatinem/rust-cache@v2
         with:
           key: ${{ runner.os }}-cargo
-          workspaces: src-tauri -> .
+          workspaces: src-tauri -> target
+          # 缓存形态变了（不再把整棵 src-tauri 装进归档），前缀必须换掉：
+          # 旧归档按 restore-key 仍会被命中并恢复，踩的就是上面那个坑。
+          prefix-key: v1-rust
 
       # rclone 不是 mock：tests/rcd_supervisor、runner_local、mirror_runner、
       # browser_runner、draft_pairs 这五条目标起的是**真** rclone rcd。
@@ -214,10 +226,12 @@ jobs:
         with:
           components: clippy
 
+      # 缓存只装 target/，不装整棵 src-tauri —— 理由与前缀为什么换，见上面 rust 那条里的注释。
       - uses: Swatinem/rust-cache@v2
         with:
           key: ${{ runner.os }}-cargo-bundle
-          workspaces: src-tauri -> .
+          workspaces: src-tauri -> target
+          prefix-key: v1-rust
 
       - run: npm ci
 
@@ -260,10 +274,12 @@ jobs:
         with:
           components: clippy
 
+      # 缓存只装 target/，不装整棵 src-tauri —— 理由与前缀为什么换，见上面 rust 那条里的注释。
       - uses: Swatinem/rust-cache@v2
         with:
           key: ${{ runner.os }}-cargo-release
-          workspaces: src-tauri -> .
+          workspaces: src-tauri -> target
+          prefix-key: v1-rust
 
       - run: npm ci
 

@@ -160,7 +160,7 @@ node tools/ui-acceptance.mjs --home=A --from=0 --to=20 --out=docs/superpowers/ev
 
 ## CI 跑在哪
 
-`.github/workflows/ci.yml`，四条 job：
+`.github/workflows/ci.yml`，五条 job：
 
 | job | 跑在哪 | 什么时候 | 装什么 |
 | --- | --- | --- | --- |
@@ -168,6 +168,7 @@ node tools/ui-acceptance.mjs --home=A --from=0 --to=20 --out=docs/superpowers/ev
 | `rust` | windows-latest | 每个 push / PR | Rust + **rclone**（五条测试目标要起真后台） |
 | `security` | ubuntu-latest | 每个 push / PR | `cargo-audit` |
 | `bundle` | windows-latest | 推 main / 手动 | 出 NSIS 安装包并传成 artifact |
+| `release` | windows-latest | 打 `v*` 标签 | 出安装包**与更新包**，并建一个 release |
 
 两点说明：
 
@@ -175,6 +176,30 @@ node tools/ui-acceptance.mjs --home=A --from=0 --to=20 --out=docs/superpowers/ev
 - **`bundle` 不在 PR 上跑。** NSIS 要现下、release 模式要重编全量 Rust；PR 上「能编过」由 `rust` 那条 job 兜住。手动触发（workflow_dispatch）可以单独出安装包。
 
 Rust 编译缓存走 [Swatinem/rust-cache](https://github.com/Swatinem/rust-cache)，工作区显式指成 `src-tauri -> .` —— `Cargo.toml` 不在仓根，不指的话每轮都要从头编 tauri。
+
+### 发一个版本：安装包与更新包
+
+面板「设置」那面有一项**「版本与更新」**：默认**关着**，开了才会在每次打开时联网问一句有没有新版；
+也可以随时点「立即检查」。有新版时面板只说版本号——下载与安装要人自己按。
+
+它读的是 GitHub 上的 `releases/latest/download/latest.json`，所以发一个版本要走三步：
+
+1. **先把版本号改对**：`src-tauri/tauri.conf.json` 与 `package.json` 里的版本号要一样，
+   并且要等于打算打的那个标签（`v0.1.1` 那种）。`release` 那条 job 用的 `tagName: v__VERSION__`
+   拿的是配置里那一个版本，对不上 tauri-action 会当场拒——错位的标签会让更新包指向一个装不上的版本。
+2. **打标签**：`git tag v0.1.1` 然后推上去。这一趟 `release` 那条 job 出安装包与更新包
+   （`latest.json` 加各个 `.sig`），并建一个 release。
+3. **把那个 release 发布出去**（草稿 → 发布）。更新端点读的是 `releases/latest`，
+   而它**只认已发布的** release：草稿里的 `latest.json` 外面看不到。
+   这一步是最后一步，也是唯一需要人按的那一步。
+
+**私钥在哪儿**：仓里存的是**公钥**（`src-tauri/rclone-deck.pub`，公钥本来就是公开的）。
+私钥只在本机（`src-tauri/.updater/`，那个目录不入库），并且要存成仓的 secret
+**`TAURI_SIGNING_PRIVATE_KEY`**（值是那整个 PEM 文本）。这把钥匙**没有密码**，
+所以不需要 `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`（留一个空值即可）。
+
+`bundle.createUpdaterArtifacts` 开着的时候，**出包必须有私钥**——没有就出不了更新包，
+`bundle` 与 `release` 两条 job 都会红在这上面。所以这个 secret 要先建好再推 main。
 
 ## 踩过的坑
 

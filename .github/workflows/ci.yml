@@ -6,6 +6,8 @@ name: CI
 on:
   push:
     branches: [main]
+    # 打上 `v*` 标签 = 要发一个版本：那条由 `release` 那条 job 出包并建 release。
+    tags: ['v*']
   pull_request:
   workflow_dispatch:
 
@@ -185,7 +187,8 @@ jobs:
     name: 打包：NSIS 安装包
     # 只在推 main 与手动触发时跑：NSIS 要现下、release 模式重编全量 Rust，
     # 对每个 PR 都做一遍不值当。PR 上"能编过"由 rust 那条 job 兜住。
-    if: github.event_name != 'pull_request'
+    # 打标签的那一趟由 release 那条 job 出包（同一个安装包，还要多一份更新包），这里不重复出一次。
+    if: github.event_name != 'pull_request' && !startsWith(github.ref, 'refs/tags/')
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v5
@@ -206,8 +209,14 @@ jobs:
 
       - run: npm ci
 
+      # `bundle.createUpdaterArtifacts` 开着时出包**必须**有私钥：更新包要它签名，
+      # 没有私钥就出不了更新包（tauri 自己会拒）。私钥只从仓的 secret 来 ——
+      # 仓里存的是公钥（`src-tauri/rclone-deck.pub`），私钥不入库、也不进这个文件。
       - name: 出安装包
         run: npm run tauri build
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
 
       - name: 传安装包
         uses: actions/upload-artifact@v4
@@ -216,3 +225,58 @@ jobs:
           path: src-tauri/target/release/bundle/nsis/*.exe
           if-no-files-found: error
           retention-days: 30
+
+  release:
+    name: 发布：出安装包与更新包
+    # 只在打上 `v*` 标签时跑。**标签上的版本号要等于 `tauri.conf.json` 里那一个**
+    # （`tagName: v__VERSION__` 拿的是配置里那个版本），对不上 tauri-action 会当场拒——
+    # 这道拒是好的：错位的标签会让更新包指向一个装不上的版本。
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: windows-latest
+    # 建 release 要写权限：仓里默认给的是 `contents: read`（`permissions` 那块）。
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ runner.os }}-cargo-release
+          workspaces: src-tauri -> .
+
+      - run: npm ci
+
+      # 这一步出两样东西：安装包（`*-setup.exe`）与更新包（`latest.json` + 各个 `.sig`）。
+      # 更新包是面板里那一项「检查更新」读的东西：端点写的是
+      # `releases/latest/download/latest.json`，而 `releases/latest` **只认已发布的** release。
+      # 所以出完还要把那个草稿**发布出去**（见下面 `releaseDraft` 那段）。
+      - name: 出安装包与更新包
+        uses: tauri-apps/tauri-action@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # 私钥只从仓的 secret 来，值不进这个文件。仓里存的是公钥。
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          tagName: v__VERSION__
+          releaseName: rclone-deck v__VERSION__
+          releaseBody: |
+            rclone-deck 桌面版（Windows）。
+
+            面板在「设置」那面有一项「版本与更新」：**默认关着**，开了才会在每次打开时联网问一句
+            有没有新版；也可以随时点「立即检查」。有新版时面板只说版本号，下载与安装要人自己按。
+          generateReleaseNotes: true
+          # **草稿**：端点读的是 `releases/latest`，而它**只认已发布的** release——
+          # 草稿里的 `latest.json` 外面看不到。所以出完这一趟要把草稿发布出去，
+          # 那一下才是真的把更新推到装好的那些面板上（与本仓另外两个应用同一口径）。
+          releaseDraft: true
+          prerelease: false

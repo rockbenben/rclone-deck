@@ -7,6 +7,7 @@ import { groupDraftJobs, intentOptions } from '../pairs';
 import type { PairGroup } from '../pairs';
 import { errNote } from '../errors';
 import { NoteLine } from './NoteLine';
+import { UpdateCard } from './UpdateCard';
 
 import type {
   Applied, ConfigChange, ConfigIntent, JobDraft, JobRow, RemoteBlock, SecretState, SettingsPlan, SettingsView, ShortNote,
@@ -461,6 +462,10 @@ export function SettingsPanel(props: {
           )}
         </Space>
       </Card>
+
+      {/* 「版本与更新」：面板唯一一处会联网的地方，而它默认关着（`src/updates.ts` 那一档）。
+          放在这一面的最后一块：它是**用法**，不是配置——不写进那两份文件，也不问后台要差异。 */}
+      <UpdateCard />
 
       {/* 确认层：正文第一行是完整路径，第二行是那一**对**位置（或删除的那一条的现在那一对）。
           差异逐行照后台交出来的那份列，一行都不许界面自己补。 */}

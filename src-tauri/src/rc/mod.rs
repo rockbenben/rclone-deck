@@ -190,6 +190,10 @@ impl RcClient {
     /// base_url 单独开口是为了测试打桩；生产代码只用 `new`（只可能打回环）。
     /// 凭据只进 Basic 头，绝不进 URL——URL 会出现在 reqwest 的错误话术里。
     pub fn from_base_url<S: Into<String>>(base: S, user: &str, pass: &str) -> Self {
+        // 建客户端之前先装一个 rustls 提供者：更新那条插件带着 `reqwest/rustls-no-provider`
+        // 进来，全仓的 reqwest 于是都带上了 rustls 后端，而不装提供者的话**建客户端这一步**
+        // 就 panic（理由见 `tls.rs` 顶上那段）。
+        crate::tls::ensure_provider();
         let token = STANDARD.encode(format!("{user}:{pass}"));
         Self {
             http: Client::builder().timeout(REQUEST_TIMEOUT).build().expect("reqwest client"),

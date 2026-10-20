@@ -16,7 +16,14 @@ tauri = { version = "2", features = [] }
 # 插件自己不会去联网——问不问由界面上那个开关决定（默认关，见 `src/updates.ts`）。
 # 装完**不用**另加一个重开插件：Windows 那个安装器自己会把这一个重开
 # （`/R` 那一档，插件源码 `updater.rs` 里写着），面板在装的那一刻就退掉了。
-tauri-plugin-updater = "2"
+#
+# **不开它的 `zip` 特性**：那一条会带进 `zip 4.x`，而 zip 4.x 有三条安全公告
+# （RUSTSEC-2026-0367 / 0368 / 0369，2026-10-10 起），修好的版本是 9.x ——
+# 但插件自己写死的是 `zip = "4"`，9.x 它装不上，于是那条路**在本仓解不开**。
+# 本仓用不上它：面板只发 NSIS 安装包（`tauri.conf.json` 里 `bundle.targets` 就是 `["nsis"]`），
+# 更新走的也是那个 .exe；zip 那条路是给"更新包本身是个 zip"的情形留的。
+# 所以这里只留 https（`rustls-tls`）与代理（`system-proxy`），把 zip 摘掉。
+tauri-plugin-updater = { version = "2", default-features = false, features = ["rustls-tls", "system-proxy"] }
 # rustls 0.23 不会自己挑一个算法提供者：更新那条插件带着 `reqwest/rustls-no-provider` 进来，
 # 而 cargo 的特征是并集 —— 于是全仓的 reqwest 都带上了 rustls 后端，不装一个提供者的话
 # **每一个** reqwest 客户端在建的那一刻就会 panic（理由与装法见 `src/tls.rs`）。

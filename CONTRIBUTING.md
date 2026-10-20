@@ -192,6 +192,20 @@ Rust 编译缓存走 [Swatinem/rust-cache](https://github.com/Swatinem/rust-cach
 3. **把那个 release 发布出去**（草稿 → 发布）。更新端点读的是 `releases/latest`，
    而它**只认已发布的** release：草稿里的 `latest.json` 外面看不到。
    这一步是最后一步，也是唯一需要人按的那一步。
+4. **确认 `releases/latest` 真的指到了新版本**，而不是还停在旧版本上。
+   草稿被发布出来，`releases/latest` **不一定会跟着挪**——2026-10-20 发 v0.1.1 时，
+   release 已经 `draft=false`、`prerelease=false`、`published_at` 也填上了，
+   `releases/latest` 却仍然返回 v0.1.0，端点 `releases/latest/download/latest.json`
+   于是 404（v0.1.0 那个 release 里根本没有 `latest.json`）。
+   判据是**把端点本身拉下来看**，不是看 release 的字段：
+
+   ```powershell
+   (Invoke-WebRequest 'https://github.com/rockbenben/rclone-deck/releases/latest/download/latest.json').Content
+   ```
+
+   里面应当是 `"version": "0.1.1"`。若还是旧版本号，就把这条 release 显式标成 latest：
+   `PATCH /repos/rockbenben/rclone-deck/releases/<id>` 带 `make_latest=true`。
+   标完之后端点会立刻改指；CDN 那层重定向还会再滞后几分钟，属正常。
 
 **私钥在哪儿**：仓里存的是**公钥**（`src-tauri/rclone-deck.pub`，公钥本来就是公开的）。
 私钥只在本机（`src-tauri/.updater/`，那个目录不入库），并且要存成仓的 secret

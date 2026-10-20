@@ -37,8 +37,8 @@ dirs = "7.0.0"
 base64 = "0.23.1"
 reqwest = { version = "0.13.5", default-features = false, features = ["json"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "time", "process", "fs", "io-util", "net"] }
-sysinfo = "0.38.4"
-rand = "0.9"
+sysinfo = "0.39.6"
+rand = "0.10.3"
 # 只要 `clock`：它经 `now -> std -> alloc` 带上 `Local::now()`/`format()`/`to_rfc3339()`，
 # 而默认的 `wasmbind` 会给这个 Windows-only crate 的依赖图加 js-sys / wasm-bindgen。
 chrono = { version = "0.4.45", default-features = false, features = ["clock"] }

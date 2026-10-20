@@ -86,7 +86,7 @@ fn dir_key(src: &Scope, dst: &Scope) -> String {
 /// 非空是 `issue()` 在边界上钉死的断言（空 scopes 的凭证作废不掉），而一次配置写
 /// 没有"关于哪两棵树"可填——填一个假 Scope 去骗守卫，比分开两张表更坏。
 pub(crate) fn new_token() -> String {
-    use rand::Rng;
+    use rand::RngExt;
     format!("prev-{:032x}", rand::rng().random::<u128>())
 }
 

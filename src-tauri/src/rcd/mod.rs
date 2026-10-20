@@ -109,7 +109,7 @@ impl RcdSpec {
 }
 
 pub fn random_credentials() -> (String, String) {
-    use rand::Rng;
+    use rand::RngExt;
     let mut rng = rand::rng();
     let user = format!("deck-{:08x}", rng.random::<u32>());
     let pass = format!("{:032x}", rng.random::<u128>());
@@ -749,9 +749,9 @@ struct ProcInfo {
 }
 
 fn inspect(pid: u32) -> Option<ProcInfo> {
-    // `refresh_processes` 在 sysinfo 0.38 里的 RefreshKind 是
+    // `refresh_processes` 在 sysinfo 0.39 里的 RefreshKind 是
     // `nothing().with_memory().with_cpu().with_disk_usage().with_exe(OnlyIfNotSet).with_tasks()`
-    // （sysinfo-0.38.4 src/common/system.rs:309-318），所以 name / start_time / exe 都有，
+    // （sysinfo-0.39.6 src/common/system.rs:317-322），所以 name / start_time / exe 都有，
     // 孤儿认领的三重身份靠它够了；它**不含 cmd**，要命令行得走下面那条 specifics 路径。
     let mut sys = System::new();
     sys.refresh_processes(ProcessesToUpdate::Some(&[Pid::from_u32(pid)]), true);
@@ -792,7 +792,7 @@ fn same_path(a: Option<&Path>, b: &Path) -> bool {
 /// 不进生产构建。
 ///
 /// 必须走 `refresh_processes_specifics` 并显式要 `cmd`：`System::refresh_processes`
-/// 的 RefreshKind 里根本没有 cmd（sysinfo-0.38.4 src/common/system.rs:309-318），
+/// 的 RefreshKind 里根本没有 cmd（sysinfo-0.39.6 src/common/system.rs:317-322），
 /// 用它读到的命令行永远是空的，那条断言就成了空转。
 #[cfg(feature = "test-helpers")]
 pub fn command_line_of(pid: u32) -> Vec<String> {

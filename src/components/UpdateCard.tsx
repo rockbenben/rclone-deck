@@ -62,8 +62,10 @@ export function UpdateCard() {
             format={() => <Typography.Text className="fs-code">{size}</Typography.Text>} />
         )}
 
-        {/* 有新版时只说"有"与版本号：装不装是下面那颗按钮的事。 */}
-        {s.version !== '' && !s.downloading && (
+        {/* 有新版时只说"有"与版本号：装不装是下面那颗按钮的事。
+            下着的时候这一块**不撤**（撤了又来一次，读起来像"刚才那一下白下了"），
+            只是那颗按钮灰着——下与装都还没完。 */}
+        {s.version !== '' && (
           <Alert type="info" showIcon title="有新版了"
             description={
               <Space orientation="vertical" size={4} style={{ width: '100%' }}>
@@ -71,7 +73,7 @@ export function UpdateCard() {
                   <Typography.Text>版本</Typography.Text>
                   <Typography.Text className="fs-code">{s.version}</Typography.Text>
                 </Space>
-                <Button type="primary" onClick={() => void downloadAndInstall()}>
+                <Button type="primary" disabled={s.downloading} onClick={() => void downloadAndInstall()}>
                   下载并安装
                 </Button>
               </Space>

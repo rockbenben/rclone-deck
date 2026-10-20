@@ -182,30 +182,26 @@ Rust 编译缓存走 [Swatinem/rust-cache](https://github.com/Swatinem/rust-cach
 面板「设置」那面有一项**「版本与更新」**：默认**关着**，开了才会在每次打开时联网问一句有没有新版；
 也可以随时点「立即检查」。有新版时面板只说版本号——下载与安装要人自己按。
 
-它读的是 GitHub 上的 `releases/latest/download/latest.json`，所以发一个版本要走三步：
+它读的是 GitHub 上的 `releases/latest/download/latest.json`，所以发一个版本要走两步：
 
 1. **先把版本号改对**：`src-tauri/tauri.conf.json` 与 `package.json` 里的版本号要一样，
    并且要等于打算打的那个标签（`v0.1.1` 那种）。`release` 那条 job 用的 `tagName: v__VERSION__`
    拿的是配置里那一个版本，对不上 tauri-action 会当场拒——错位的标签会让更新包指向一个装不上的版本。
 2. **打标签**：`git tag v0.1.1` 然后推上去。这一趟 `release` 那条 job 出安装包与更新包
-   （`latest.json` 加各个 `.sig`），并建一个 release。
-3. **把那个 release 发布出去**（草稿 → 发布）。更新端点读的是 `releases/latest`，
-   而它**只认已发布的** release：草稿里的 `latest.json` 外面看不到。
-   这一步是最后一步，也是唯一需要人按的那一步。
-4. **确认 `releases/latest` 真的指到了新版本**，而不是还停在旧版本上。
-   草稿被发布出来，`releases/latest` **不一定会跟着挪**——2026-10-20 发 v0.1.1 时，
-   release 已经 `draft=false`、`prerelease=false`、`published_at` 也填上了，
-   `releases/latest` 却仍然返回 v0.1.0，端点 `releases/latest/download/latest.json`
-   于是 404（v0.1.0 那个 release 里根本没有 `latest.json`）。
-   判据是**把端点本身拉下来看**，不是看 release 的字段：
+   （`latest.json` 加各个 `.sig`），建一个**草稿** release，然后**由 CI 把它发布出去并标成
+   latest**。到这一步就结束了——**不需要人点 Publish**，也不需要人再去确认 `releases/latest`
+   指到谁。
 
-   ```powershell
-   (Invoke-WebRequest 'https://github.com/rockbenben/rclone-deck/releases/latest/download/latest.json').Content
-   ```
+   草稿是这一趟的**重试锚点**：中途出了事重跑同一趟，tauri-action 会找到那个草稿把产物补进去，
+   而不是撞「release already exists」。
 
-   里面应当是 `"version": "0.1.1"`。若还是旧版本号，就把这条 release 显式标成 latest：
-   `PATCH /repos/rockbenben/rclone-deck/releases/<id>` 带 `make_latest=true`。
-   标完之后端点会立刻改指；CDN 那层重定向还会再滞后几分钟，属正常。
+   ⚠️ **为什么发布那一下要显式带 `make_latest`**：草稿转成已发布时，GitHub **不会**重算
+   `releases/latest` 指向谁——2026-10-20 发 v0.1.1 时就是这样：release 已经 `draft=false`、
+   `prerelease=false`、`published_at` 也填上了，`releases/latest` 却仍然返回 v0.1.0，端点
+   `releases/latest/download/latest.json` 于是 404（v0.1.0 那个 release 里根本没有
+   `latest.json`）。所以 CI 那一步是一次 PATCH 同时给 `draft=false` 与 `make_latest=true`，
+   之后**自己查 API 确认** `releases/latest` 指着这个标签，指错就让这一趟红。
+   （CDN 那层重定向会再滞后几分钟，属正常——判据看 API，不看 CDN。）
 
 **私钥在哪儿**：仓里存的是**公钥**（`src-tauri/rclone-deck.pub`，公钥本来就是公开的）。
 私钥只在本机（`src-tauri/.updater/`，那个目录不入库），并且要存成仓的 secret

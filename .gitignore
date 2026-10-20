@@ -72,5 +72,10 @@ tmp-guardprobe/
 *.pem
 *.key
 
+# 更新用的私钥：只落在 `src-tauri/.updater/` 里，不入库、也不进任何工作流文件。
+# 仓里留的是公钥（`src-tauri/rclone-deck.pub`）——公钥本来就是公开的，私钥才是秘密。
+# 点名挡住整个目录：里面的文件名与内容都可能变，挡一条后缀规则不如挡一个目录。
+src-tauri/.updater/
+
 coverage/
 *.tsbuildinfo

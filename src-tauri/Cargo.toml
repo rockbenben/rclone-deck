@@ -12,6 +12,16 @@ tauri-build = { version = "2", features = [] }
 
 [dependencies]
 tauri = { version = "2", features = [] }
+# 更新那条：`updater` 负责问有没有新版与把它装上。
+# 插件自己不会去联网——问不问由界面上那个开关决定（默认关，见 `src/updates.ts`）。
+# 装完**不用**另加一个重开插件：Windows 那个安装器自己会把这一个重开
+# （`/R` 那一档，插件源码 `updater.rs` 里写着），面板在装的那一刻就退掉了。
+tauri-plugin-updater = "2"
+# rustls 0.23 不会自己挑一个算法提供者：更新那条插件带着 `reqwest/rustls-no-provider` 进来，
+# 而 cargo 的特征是并集 —— 于是全仓的 reqwest 都带上了 rustls 后端，不装一个提供者的话
+# **每一个** reqwest 客户端在建的那一刻就会 panic（理由与装法见 `src/tls.rs`）。
+# 装的是 ring：插件自己也是用它那一份。
+rustls = { version = "0.23", default-features = false, features = ["ring"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 toml = "1.1.6"

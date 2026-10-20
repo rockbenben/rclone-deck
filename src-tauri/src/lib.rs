@@ -14,6 +14,7 @@ pub mod rcd;
 pub mod runner;
 pub mod scope;
 pub mod state;
+pub mod tls;
 
 use std::sync::Arc;
 
@@ -38,6 +39,9 @@ pub fn run() {
             app_handle.manage(config::edit::WriteRegistry::default());
             Ok(())
         })
+        // 更新那条插件：问有没有新版与把它装上。插件自己不会去联网——
+        // 问不问由界面上那个开关决定（默认关，见 `src/updates.ts`）。
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { .. } = event {
                 let state = window.state::<AppState>();

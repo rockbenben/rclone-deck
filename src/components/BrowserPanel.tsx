@@ -456,6 +456,9 @@ export function BrowserPanel() {
    * 两种情形长出两套不同的收法。
    */
   const comparing = panes.remote.fs !== null;
+  // 零任务家：左列只剩远端候选（或什么都没有），本地那一栏没有可站的位置。
+  // 这一面不能只显示一张空下拉 —— 用户需要知道**去哪儿建**一个本地位置。
+  const noLocal = !refsLoading && refsError === null && !refs.some((r) => r.isLocal);
 
   return (
     <Space orientation="vertical" size={12} style={{ width: '100%' }}>
@@ -480,8 +483,15 @@ export function BrowserPanel() {
                 // 进比对时**云端站到本地这一栏配对的那一头**（不是随便挑一个远端）——
                 // 这一面存在的意义就是比同一个位置的两面，随便挑一个远端等于把要比的两堆
                 // 放到一起，让人以为那就是结果。
+                // **前缀也要带上**：本地已经进到 `photos/` 而云端回根，两栏就不是同一层了；
+                // 屏上那句「左右是同一个位置的两面」会变成一句假话。没有配对时也一样带前缀：
+                // 至少两边说的是同一个深度，"那一层有没有这个子目录"才是能看的读法。
                 const mate = refs.find((r) => r.id === panes.local.fs)?.pairedWith;
-                void go('remote', { ...EMPTY_PANE, fs: mate != null && mate !== '' ? mate : (firstRemote?.id ?? '') });
+                void go('remote', {
+                  ...EMPTY_PANE,
+                  fs: mate != null && mate !== '' ? mate : (firstRemote?.id ?? ''),
+                  prefix: panes.local.prefix,
+                });
               }}>
               和云端比一比
             </Button>
@@ -499,6 +509,9 @@ export function BrowserPanel() {
             <Button size="small" disabled={refsLoading} onClick={loadRefs}>重新取一次</Button>
           </Space>
         } />
+      )}
+      {noLocal && (
+        <Alert showIcon type="info" title="还没有本地位置" description="先到「配好的位置」点「换一对位置」指一个本地目录，或到「设置」里「任务 → 新加一条」；之后这里才能翻本地文件。" />
       )}
       {/* **单边占满整宽，进比对才并排**（2026-10-11）。
            这一面开着多数时候不是为了比，是为了翻本地那堆图。半宽的网格每行只放得下

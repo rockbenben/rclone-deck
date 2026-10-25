@@ -394,3 +394,15 @@ fn every_select_lets_its_list_wide_enough_for_the_words() {
         assert_eq!(n, w, "{rel} 有 {n} 枚下拉框、只有 {w} 枚让列表按内容宽：剩下的会把选项切掉");
     }
 }
+
+/// 「起过、后来退出了」必须与「一开始就没起来」分开说，且顶栏不许继续写「后台就绪」。
+///
+/// 后台那一侧每秒探一次端口（`commands::backend_accepts`）；界面这一侧要真的读那一枚，
+/// 并给出一张**错误色的常驻条**。旧形状只看 `ok`，进程死了顶栏仍说就绪，直到某次动作失败。
+#[test]
+fn the_bar_does_not_keep_saying_ready_after_the_backend_dies() {
+    let t = strip_comments(&read("src/components/RcdStatusBar.tsx"));
+    assert!(t.contains("!status.alive"), "顶栏不读存活那枚：进程死了仍会说「后台就绪」：{t}");
+    assert!(t.contains("后台已经断开"), "没有「起过、后来退出了」那一档：{t}");
+    assert!(t.contains("后台没能启动"), "一开始就没起来那一档被合并/删掉了：{t}");
+}

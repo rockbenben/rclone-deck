@@ -162,11 +162,15 @@ impl AppState {
 #[serde(rename_all = "camelCase")]
 pub struct RcdStatus {
     pub ok: bool,
+    /// 后台进程现在还应答吗。`ok` 只说"启动那一次成功过"；进程可能在之后退出
+    /// （崩了、被杀、系统回收），而顶栏不能继续写「后台就绪」——那是这一格最贵的谎：
+    /// 操作员要等某次动作失败才知道。`ok=true, alive=false` 就是"起过、现在没了"。
+    pub alive: bool,
     pub port: u16,
     pub pid: u32,
     pub rclone_version: String,
     pub execute_id: String,
-    /// 起不来那一句，**已经分成两段**（`note_for_text`）：顶栏是常驻面，
+    /// 起不来或已经退出那一句，**已经分成两段**（`note_for_text`）：顶栏是常驻面，
     /// 把 `无法启动 rclone rcd：…` 这种原文直接摆上去，等于界面上常驻一个内部名词。
     /// `AppInner` 里存的仍是原文（那一份是记录），转换只在这个边界上做。
     pub startup_error: Option<ShortNote>,

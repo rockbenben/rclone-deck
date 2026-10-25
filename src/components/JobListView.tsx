@@ -39,7 +39,13 @@ const ADD_MODE_NOTE = '「看看会动什么」只告诉你会动哪些，不真
  *  判据是方向那枚框已经摆着的那句话（`directionLabel` 里的「以…为主（删…多余的）」），
  *  这里**读它的方向**而不是重算一遍：哪一侧是全集已经由后台那两枚 `isLocal` 标志判过了。
  *
- * 两个数、`emptyBasis`、`measuredAt` 全部照读后台（`JobView.lastSummary`），一个都不许重算。
+ *  **「会传 N 个」必须把两边都有但对不上的那批一起算进去**（`willUpload`）：只数"本地有、云端没有"
+ *  的话，一次会把云端那份换掉的 copy 会显示成「会传 0 个」——操作员据此按下去，被换掉的是他
+ *  没被告知的那部分。下载方向同理，后台已经按 dst 的方向算好，界面只读。`willUpload` 宁可多报
+ *  （`Unknown`、size-only 下同大小的也在内）；真正会换掉目标端的那批看 `replaces`。
+ *  `replaces` 单独说一句，因为"新增"与"换掉原有的"不是同一件事；它是后台判定的**真会被重传**
+ *  的那一批（`Unknown` 与 size-only 下大小没变的不算），界面不许自己从 `diverged` 再算一遍。
+ * 这几个数、`emptyBasis`、`measuredAt` 全部照读后台（`JobView.lastSummary`），一个都不许重算。
  * `null` 那一档说"还没算过"，但**不解释怎么算** —— 「看差异」就在这一格上，指着一颗看得见的按钮说它是虚的。
  * 这一句也**不**负责去算：列表渲染里发起盘点就是每次开窗几十次计费 LIST（spec §3 那句"列举不自动跑"）。
  */
@@ -52,7 +58,7 @@ function summaryLine(job: JobView, mode: Mode, dstIsLocal: boolean): ReactNode {
   return (
     <Space orientation="vertical" size={2} style={{ width: '100%' }}>
       <Space size={8} wrap>
-        <Typography.Text className="fs-note">会传 {num(s.pendingUpload)}</Typography.Text>
+        <Typography.Text className="fs-note">会传 {num(s.willUpload)}</Typography.Text>
         {mode === 'mirror'
           ? <Typography.Text className="fs-note" style={{ color: MODE_VAR.mirror }}>
             会删{dstIsLocal ? '本机' : '云端'} {num(dstIsLocal ? s.pendingUpload : s.orphans)}
@@ -60,6 +66,13 @@ function summaryLine(job: JobView, mode: Mode, dstIsLocal: boolean): ReactNode {
           : <Typography.Text type="secondary" className="fs-note">不会删</Typography.Text>}
         <Typography.Text type="secondary" className="fs-caption">{s.measuredAt} 算的</Typography.Text>
       </Space>
+      {/* 换掉原有的那份不是"新增"：两边都有、这一趟会重传时，按下去会改写目标端那一份。
+          这句话只说后果，不替操作员判哪边更新——「差异」那一段才说得出哪边新，判不出时也会明说。 */}
+      {s.replaces > 0 && (
+        <Typography.Text type="secondary" className="fs-caption">
+          其中 {num(s.replaces)}：两边都有，目标端那份会被这一趟换掉
+        </Typography.Text>
+      )}
       {/* `emptyBasis`：本地那一侧是空的，于是这两个数**不可信**。它必须跟着这两个数一起摆 ——
           把它撤掉的话，屏上会并排着"会删 0 个"与两个没有意义的数，而这一格恰恰是最容易出事的
           那种（空的一侧 + 镜像 = 一次什么都删不掉的空跑，或者更糟）。措辞照读后台，不改。 */}
@@ -243,15 +256,19 @@ function Field({ label, tone, children }: { label: string; tone?: string; childr
  */
 export function JobListView(props: Props & { choice: Choice }) {
   const { shown, pick, choose, setPairKey, pairs } = props.choice;
-  if (shown === undefined) return null;
-  const picked = pick(shown);
-  if (picked === null) return null;
-  const intents = intentOptions(shown);
-  const current = intents.find((i) => i.mode === picked.mode && i.slot === picked.slot);
+  // 没有任何一对位置时**也要把这条选择条摆出来**：那颗「换一对位置」就在这一行里。
+  // 旧写法整段 `return null`，于是删掉最后一对位置之后，这一面只剩右列一句「先选一个任务」——
+  // 立新卡的那颗按钮跟着那条不存在的卡一起消失了。
+  const picked = shown === undefined ? null : pick(shown);
+  if (shown !== undefined && picked === null) return null;
+  const intents = shown === undefined ? [] : intentOptions(shown);
+  const current = picked === null ? undefined : intents.find((i) => i.mode === picked.mode && i.slot === picked.slot);
   return (
     <div className="surface bar pair-bar">
       <Field label="位置">
-        <Select popupMatchSelectWidth={false} value={shown.key} aria-label="位置"
+        <Select popupMatchSelectWidth={false} value={shown?.key} aria-label="位置"
+          placeholder={shown === undefined ? '还没有位置' : undefined}
+          disabled={shown === undefined}
           className="pair-select" onChange={(k) => setPairKey(k)}
           options={pairs.map((p) => ({
             value: p.key,
@@ -264,7 +281,9 @@ export function JobListView(props: Props & { choice: Choice }) {
           （暖色 = 会删）。一屏只有一枚这样的框，所以它不需要再写一遍"会删除"三遍。 */}
       <Field label="要做什么" tone={current?.tone}>
         <Select<string> popupMatchSelectWidth={false}
-          value={intentKey(picked.mode, picked.slot)} aria-label="要做什么"
+          value={picked === null ? undefined : intentKey(picked.mode, picked.slot)} aria-label="要做什么"
+          placeholder={picked === null ? '先挑一对位置' : undefined}
+          disabled={picked === null}
           className="pair-select" onChange={(k) => {
             const hit = intents.find((i) => intentKey(i.mode, i.slot) === k);
             if (hit) choose(hit.mode, hit.slot);

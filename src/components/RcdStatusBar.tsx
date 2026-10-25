@@ -68,13 +68,16 @@ export function RcdStatusBar({ status, pollError }: { status: RcdStatus | null; 
     );
   }
 
-  if (!status.ok) {
+  // 两档共用一块：**起不来**（ok=false）与**起过、后来退出了**（ok=true, alive=false）。
+  // 后者以前不存在——`rcd_status` 只看 runner 在不在，进程死了顶栏继续写「后台就绪」，
+  // 直到下一次动作失败才露馅。标题分开说，明细都读后台那一份。
+  if (!status.ok || !status.alive) {
     return (
       <div className="surface bar">
         <Alert
           type="error"
           showIcon
-          title="后台没能启动"
+          title={status.ok ? '后台已经断开' : '后台没能启动'}
           description={
             <Space orientation="vertical" size={2}>
               {/* 那一句由后台分成两段交上来（`RcdStatus.startupError`）：顶栏是常驻面，
@@ -85,7 +88,7 @@ export function RcdStatusBar({ status, pollError }: { status: RcdStatus | null; 
                 {status.configPath !== '' && (
                   <>
                     {' '}配置文件在 <Typography.Text className="num" title={status.configPath}>{status.configPath}</Typography.Text>，
-                    改完重开面板就行。
+                    {status.ok ? '重开面板会重新起一个。' : '改完重开面板就行。'}
                   </>
                 )}
               </Typography.Text>

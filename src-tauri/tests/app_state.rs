@@ -223,7 +223,7 @@ fn the_log_dir_reaches_the_wire_so_the_top_bar_can_show_it() {
     let mut locks = std::collections::BTreeMap::new();
     locks.insert("a=>b".into(), "R2 图床上传".into());
     let s = RcdStatus {
-        ok: true, port: 5599, pid: 41024, rclone_version: "v1.75.1".into(),
+        ok: true, alive: true, port: 5599, pid: 41024, rclone_version: "v1.75.1".into(),
         execute_id: "e1".into(), startup_error: None, locks,
         log_dir: "C:\\fixture\\logs".into(),
         config_path: "C:\\fixture\\jobs.toml".into(),
@@ -236,12 +236,13 @@ fn the_log_dir_reaches_the_wire_so_the_top_bar_can_show_it() {
     // "现在有几件事正在做"也必须是后台数好的：界面数 `locks` 的键就是第二份判定（I5），
     // 而键按 Scope 分，一次动作可以申领多个键 —— 数键会把一件事报成两件。
     assert!(json.contains("\"activeCount\":1"), "activeCount 没上线，顶栏只能自己数键：{json}");
+    assert!(json.contains("\"alive\":true"), "存活那枚没上线，顶栏只能永远说「后台就绪」：{json}");
 
     // 反面：读不到落点那一档，空串必须是空串——不许拿一个猜的路径去填。
     // （`rcd_status` 在后台没起来时**会**试着从配置读 log_dir：那一刻正是最需要知道
     //   "面板跑在哪个家"的时候；读不到才留空串，界面仍不说。）
     let down = RcdStatus {
-        ok: false, port: 0, pid: 0, rclone_version: String::new(), execute_id: String::new(),
+        ok: false, alive: false, port: 0, pid: 0, rclone_version: String::new(), execute_id: String::new(),
         startup_error: Some(rclone_deck_lib::note::note_for_text("无法启动 rclone rcd：程序没找到")),
         locks: Default::default(), log_dir: String::new(),
         config_path: String::new(), active_count: 0, size_only: false,
@@ -249,6 +250,7 @@ fn the_log_dir_reaches_the_wire_so_the_top_bar_can_show_it() {
     let json = serde_json::to_string(&down).unwrap();
     assert!(json.contains("\"logDir\":\"\""), "读不到落点那一档不该编一个日志路径：{json}");
     assert!(json.contains("\"activeCount\":0"), "{json}");
+    assert!(json.contains("\"alive\":false"), "起不来那一档也要明确说不在：{json}");
     // 起不来那一句上线时**已经分成两段**：给人看的那一段里不许有内部名词
     // （顶栏是常驻面，原文摆上去就等于界面上常驻一个 `rcd`）。
     let note = down.startup_error.clone().expect("这一档就是起不来那一档");
@@ -266,7 +268,7 @@ fn the_log_dir_reaches_the_wire_so_the_top_bar_can_show_it() {
 fn the_comparison_basis_reaches_the_wire_so_the_top_bar_can_say_it() {
     use rclone_deck_lib::state::RcdStatus;
     let status = |size_only: bool| serde_json::to_string(&RcdStatus {
-        ok: true, port: 5599, pid: 41024, rclone_version: "v1.75.1".into(),
+        ok: true, alive: true, port: 5599, pid: 41024, rclone_version: "v1.75.1".into(),
         execute_id: "e1".into(), startup_error: None, locks: Default::default(),
         log_dir: "C:\\fixture\\logs".into(),
         config_path: "C:\\fixture\\jobs.toml".into(),

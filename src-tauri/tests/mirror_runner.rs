@@ -242,6 +242,9 @@ async fn a_refused_preview_has_already_logged_the_item_by_item_list() {
 #[tokio::test]
 async fn a_mirror_run_deletes_exactly_the_previewed_orphans_and_reports_the_count() {
     let (fx, runner, _g) = mirror("", SHARED, &dst_side(SHARED, ORPHANS)).await;
+    // 跑前先留一份卡面摘要：这一趟真删完之后它必须被作废，否则卡上会继续写着跑前的「会删 2 个」。
+    runner.run_inventory("m").await.unwrap();
+    assert!(runner.last_summary("m").is_some(), "跑过盘点就该有摘要");
     let p = runner.preview_mirror("m").await.unwrap();
     let st = runner.run_mirror("m", &p.token).await.unwrap();
     let TaskState::Done { stats, previewed, dry_run, .. } = st else { panic!("该跑完：{st:?}") };
@@ -249,6 +252,8 @@ async fn a_mirror_run_deletes_exactly_the_previewed_orphans_and_reports_the_coun
     assert_eq!(stats.deletes, 2, "真删的必须就是清单上那批");
     assert_eq!(previewed, Some(2), "预览数要作为数据走出去，界面不许自己重算");
     assert_eq!(files_in(&fx.dst()), vec!["s1.webp", "s2.webp", "s3.webp"], "孤儿没了、共有的还在");
+    assert!(runner.last_summary("m").is_none(),
+        "真删完之后卡面还挂着跑前的「会删 2 个」，就是一句假现状");
     // 界面那一份与日志那一份必须是同一个数，而且是**同一行**上并排的两个字段：那一行同时写着
     // rclone 自己报的 `deletes=` 与面板确认过的 `previewed=`。只要求"日志里某处出现过"是假证人——
     // 开始实删那行本来就写着预览数，删掉终态那行的字段它照样绿。

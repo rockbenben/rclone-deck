@@ -218,7 +218,11 @@ export function BrowserPane(v: PaneProps) {
           而"这一栏还没选位置"这件事反而没有一句正经话在说。
           判据仍在 `hints` 那一组（每颗点不动的理由一个字没少），这里只是不提前摆那一排。 */}
       {v.fs === null ? (
-        <Typography.Text type="secondary" className="fs-note">选一个位置，这一栏会列出那里有什么。</Typography.Text>
+        <Typography.Text type="secondary" className="fs-note">
+          {v.choices.length === 0
+            ? `这一栏还没有可选的${v.title}。`
+            : '选一个位置，这一栏会列出那里有什么。'}
+        </Typography.Text>
       ) : (
         <>
           <Space size={4} wrap>
@@ -276,6 +280,10 @@ export function BrowserPane(v: PaneProps) {
               )}
             </>
           )}
+          {/* 网格把图片都收走了，下面这张表只剩目录与非图片。若它一个都没有，
+              不要再摆一张「暂无数据」——同一屏上「这一层 3 个文件」与它互相打脸。
+              真正空的目录（连网格都是空的）仍由这张表说「暂无数据」。 */}
+          {(grid.length === 0 || rest.length > 0) && (
           <Table size="small" rowKey={(row) => row.name} dataSource={rest}
             loading={v.busy && listing === null}
             pagination={{ pageSize: TABLE_PAGE, hideOnSinglePage: true }}
@@ -337,6 +345,7 @@ export function BrowserPane(v: PaneProps) {
               },
             ]}
           />
+          )}
         </>
       )}
       {v.result && (

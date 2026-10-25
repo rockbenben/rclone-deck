@@ -1114,6 +1114,8 @@ async fn an_inventory_leaves_a_summary_on_the_row_with_a_timestamp() {
     let fx = Fx::new();
     seed(&fx.src(), &["a.webp", "b.webp", "new-comer.webp"]);
     seed(&fx.dst(), &["a.webp", "b.webp", "stale.webp"]);
+    // 同名但内容不同：这是「会传」里最容易被漏掉的那一类（copy/sync 会覆盖它）。
+    std::fs::write(fx.dst().join("a.webp"), b"a different cloud copy").unwrap();
     // `dst` 必须是具名 remote（R30）：两侧都是本地的 job 会被 parse 直接拒，
     // 而那种形状的"远端清单"本来就等于再扫一遍本地（§5.1 那个假绿的入口）。
     let p = job_at("p", JobKind::Copy, &fwd(&fx.src()), &fx.remote(""));
@@ -1126,8 +1128,15 @@ async fn an_inventory_leaves_a_summary_on_the_row_with_a_timestamp() {
 
     let report = r.run_inventory("p").await.unwrap();
     assert!(!report.measured_at.is_empty(), "盘点结果要说得出它是几点算的");
+    // b.webp 两边内容相同、但写入时刻不同，按默认的 size+modtime 也会进这一类 ——
+    // 那正是这一趟会重写它、而旧摘要不会把它算进「会传」的原因。这里至少钉住我们改过的 a。
+    assert!(report.diverged.iter().any(|d| d.name == "a.webp"),
+        "同名不同内容必须进第三类：{:?}", report.diverged);
+    let overwrites = report.diverged.len();
     let s = r.last_summary("p").expect("跑过一次就该有摘要");
     assert_eq!((s.pending_upload, s.orphans), (1, 1), "{s:?}");
+    // 「会传」= 新增 1 + 会覆盖的那批；只报 pending_upload 会让这次覆盖显示成「会传 0 个」。
+    assert_eq!((s.will_upload, s.replaces), (1 + overwrites, overwrites), "{s:?}");
     assert_eq!(s.measured_at, report.measured_at, "行上那个时间必须是这次盘点的时间");
     // 没跑过的任务没有读数 —— 这是"不自动刷"的另一半：不许凭空造一个 0/0 当现状。
     assert!(r.last_summary("nosuch").is_none(), "没跑过的任务不许有一行读数");
@@ -1138,6 +1147,64 @@ async fn an_inventory_leaves_a_summary_on_the_row_with_a_timestamp() {
     assert!(r.last_summary("q").is_none(), "被拒绝的那次不许留下摘要");
     assert_eq!(files_in(&fx.dst()), vec!["a.webp", "b.webp", "stale.webp"],
         "盘点是只读的：一个东西都不该动：{:?}", files_in(&fx.dst()));
+    r.shutdown_rcd().await.unwrap();
+}
+
+/// 「会传 N 个」必须等于 rclone 这一趟真正要写的文件数。
+///
+/// 这是一个跨两层的承诺：卡片上的数来自面板自己的集合差，真正的写入数来自 rclone。
+/// 只数 `pending_upload` 的那一版在这条上会红——rclone 会把同名不同内容的也写过去，
+/// 而卡片写着「会传 0 个」。用 dry-run 取 rclone 的数：一个文件都不动，读数却是真的。
+#[tokio::test]
+async fn the_summary_count_matches_what_a_copy_will_actually_write() {
+    let fx = Fx::new();
+    seed(&fx.src(), &["same.webp", "new.webp"]);
+    seed(&fx.dst(), &["same.webp"]);
+    std::fs::write(fx.dst().join("same.webp"), b"cloud copy with a different size").unwrap();
+    let p = job_at("p", JobKind::Copy, &fwd(&fx.src()), &fx.remote(""));
+    let (r, _g) = setup_with_conf(fx.root(), Some(fx.conf()), vec![p]).await;
+
+    let report = r.run_inventory("p").await.unwrap();
+    assert_eq!(report.pending_upload, vec!["new.webp".to_string()], "{:?}", report.pending_upload);
+    assert_eq!(report.diverged.len(), 1, "{:?}", report.diverged);
+    let s = r.last_summary("p").expect("跑过一次就该有摘要");
+
+    let stats = stats_of(r.run_copy("p", true).await.unwrap());
+    assert_eq!(stats.transfers as usize, s.will_upload,
+        "卡片说会传 {} 个，rclone 实际要写 {} 个；这两个数不同就是在瞒一次覆盖",
+        s.will_upload, stats.transfers);
+    assert_eq!(stats.deletes, 0, "copy 不该删东西");
+    r.shutdown_rcd().await.unwrap();
+}
+
+/// 下载方向的「会传 N 个」必须数**云端有、本地没有**的那一半。
+///
+/// 这是上一条的镜像：卡片上的数按位置命名（`orphans` 是云端多的），而这一趟写的是
+/// dst（本地）。只数 `pending_upload` 会让「以云端为主」那一格显示成「会传 0 个」，
+/// 实际却要下载整棵树；而对齐下载方向还会同时把这批说成「会删本机」。
+#[tokio::test]
+async fn the_summary_count_is_direction_aware_for_downloads() {
+    let fx = Fx::new();
+    // 本地多出两个，远端多出一个，另有一个同名但大小不同。
+    seed(&fx.src(), &["same.webp", "local-a.webp", "local-b.webp"]);
+    seed(&fx.dst(), &["same.webp", "remote-new.webp"]);
+    std::fs::write(fx.src().join("same.webp"), b"local copy with a different size").unwrap();
+    let p = job_at("p", JobKind::Copy, &fx.remote(""), &fwd(&fx.src()));
+    let (r, _g) = setup_with_conf(fx.root(), Some(fx.conf()), vec![p]).await;
+
+    let report = r.run_inventory("p").await.unwrap();
+    assert_eq!(report.pending_upload,
+        vec!["local-a.webp".to_string(), "local-b.webp".to_string()], "{:?}", report.pending_upload);
+    assert_eq!(report.orphans, vec!["remote-new.webp".to_string()], "{:?}", report.orphans);
+    assert_eq!(report.diverged.len(), 1, "{:?}", report.diverged);
+    let s = r.last_summary("p").expect("跑过一次就该有摘要");
+    assert_eq!(s.will_upload, 2, "下载方向要写的是 1 个孤儿 + 1 个同名，不是本地多的那两个");
+
+    let stats = stats_of(r.run_copy("p", true).await.unwrap());
+    assert_eq!(stats.transfers as usize, s.will_upload,
+        "卡片说会传 {} 个，rclone 实际要写 {} 个；下载方向把位置当成了方向",
+        s.will_upload, stats.transfers);
+    assert_eq!(stats.deletes, 0, "copy 不该删东西");
     r.shutdown_rcd().await.unwrap();
 }
 
@@ -1236,5 +1303,54 @@ async fn a_download_direction_confirmation_reuses_the_seen_inventory_list() {
     let token_q = r.confirm_mirror("q").await.expect("上传方向也批得下去");
     let st_q = r.run_mirror("q", &token_q).await.expect("上传方向也该跑得通");
     assert!(matches!(st_q, TaskState::Done { .. }), "期望 Done，实际 {st_q:?}");
+    r.shutdown_rcd().await.unwrap();
+}
+/// 真写过之后，卡上那份「上次盘点」必须作废；试跑与空跑不许把它拿走。
+///
+/// 卡面继续挂着跑前的「会传 2 个」，而这一趟已经把 2 个传完了——那是一句假现状。
+/// 差异面与日志仍留着这一趟的现场；卡面回到「还没算过差异」，要新数字就再点一次。
+#[tokio::test]
+async fn a_real_write_retires_the_pre_run_summary_but_a_trial_does_not() {
+    let fx = Fx::new();
+    seed(&fx.src(), &["new.webp"]);
+    let p = job_at("p", JobKind::Copy, &fwd(&fx.src()), &fx.remote(""));
+    let (r, _g) = setup_with_conf(fx.root(), Some(fx.conf()), vec![p]).await;
+
+    r.run_inventory("p").await.unwrap();
+    assert!(r.last_summary("p").is_some(), "跑过盘点就该有摘要");
+
+    let dry = r.run_copy("p", true).await.unwrap();
+    assert!(matches!(dry, TaskState::Done { dry_run: true, .. }), "试跑终态不对：{dry:?}");
+    assert!(r.last_summary("p").is_some(), "试跑一个字节都没写，跑前摘要仍然成立");
+
+    let real = r.run_copy("p", false).await.unwrap();
+    assert!(matches!(real, TaskState::Done { dry_run: false, .. }), "真跑终态不对：{real:?}");
+    assert!(r.last_summary("p").is_none(), "真写过之后卡面还挂着跑前的会传/会删，就是假现状");
+
+    // 空跑（没有任何文件要写）不碰摘要：它没有让任何一份盘点失真。
+    r.run_inventory("p").await.unwrap();
+    let again = r.run_copy("p", false).await.unwrap();
+    assert!(matches!(again, TaskState::Done { .. }), "{again:?}");
+    assert!(r.last_summary("p").is_some(), "零传输的空跑不该把摘要也拿走");
+    r.shutdown_rcd().await.unwrap();
+}
+
+/// 对账任务的「从哪里来」指向一个不存在的目录时，说人话并指出改哪一格。
+///
+/// 旧句是 `job g 的 src 不是目录：…` —— 两个内部词（job / src），没有下一步；
+/// 而表单只拦空值，不拦"路径写错但格式合法"，所以这一档在新加对账任务时真会碰到。
+#[tokio::test]
+async fn a_gate_with_a_missing_source_directory_says_where_to_fix_it() {
+    let fx = Fx::new();
+    let missing = fx.root().join("no-such-src");
+    let j = gate_job(&fx, &missing);
+    let (r, _g) = setup_with_conf(fx.root(), Some(fx.conf()), vec![j]).await;
+
+    let err = r.run_gate("g").await.unwrap_err().to_string();
+    assert!(err.contains("从哪里来"), "还在用内部的 src 说法：{err}");
+    assert!(err.contains("不是一个可读的目录"), "没说清坏在哪：{err}");
+    assert!(err.contains("改这条"), "只说坏了，没说去哪儿改：{err}");
+    assert!(err.contains("文件清单；到「设置」"), "错误里漂进了源码缩进空格，界面会出现一长串空白：{err}");
+    assert!(!err.contains("job "), "内部词 job 又上屏了：{err}");
     r.shutdown_rcd().await.unwrap();
 }

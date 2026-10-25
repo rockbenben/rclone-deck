@@ -172,6 +172,25 @@ async fn a_typoed_remote_and_an_empty_fs_fail_loudly_instead_of_reading_as_empty
     assert!(runner.browser_list("decklocal:", "a.webp").await.is_err());
 }
 
+/// 本地根被移走/改名时，那一栏必须是"列不出来"，不能是一个漂亮的空目录。
+///
+/// rclone 对本地缺失路径的回法会把两者混成零条；界面于是把「D:\我的图片 不见了」
+/// 显示成「这一层 0 个文件」，还带着一句「暂无数据」。这是出厂示范那条路径最可能的形状。
+#[tokio::test]
+async fn a_missing_local_directory_fails_instead_of_looking_empty() {
+    let fx = Fx::new();
+    seed(&fx.src(), &["a.webp"]);
+    let job = job_at("j", JobKind::Copy, &fwd(&fx.src()), &fx.remote(""));
+    let id = local_fs_id(&fx.src()).expect("源目录是盘符形状的本地 fs");
+    let (runner, _g) = setup_with_conf(fx.root(), Some(fx.conf()), vec![job]).await;
+    std::fs::remove_dir_all(fx.src()).unwrap();
+
+    let err = runner.browser_list(&id, "").await.unwrap_err().to_string();
+    assert!(err.contains("不存在"), "移走的目录必须说它不在，而不是交出 0 条：{err}");
+    assert!(err.contains("改这条") && err.contains("换一对位置"),
+        "只说坏了不够，还要说去哪儿改：{err}");
+}
+
 #[tokio::test]
 async fn the_left_column_offers_named_remotes_plus_the_measured_local_shapes_only() {
     // F3：远端那几行问 rclone 自己，id 带冒号（`config/listremotes` 回来的名字**不带**）。

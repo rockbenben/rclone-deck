@@ -625,6 +625,12 @@ async function clickRailTab(name) {
   return pt;
 }
 
+/** 当前屏上真正占着宽度（不是被隐藏的）的翻页器数。 */
+function pagerCount() {
+  return ev('(() => [...document.querySelectorAll(".ant-pagination")]'
+    + '.filter((e) => e.getBoundingClientRect().width).length)()');
+}
+
 /** 点开着一格选择框之后共用的那三步：数选项、（给了 want 就）点那一格、按 Esc 收掉。
  *  抽出来不是为了少写几行 —— 是为了**只有一份**那条 Esc 的教训（见 `closeDropdown`）。
  *  「层里那两行的选择框」与「卡上那两格」走的是同一条通路，抄第二份就会漏改第二份。 */
@@ -1323,10 +1329,15 @@ const STEPS = [
       await click('开始对账', 0, 0); await sleep(3000);
       const sel = await ev('[...document.querySelectorAll(".ant-segmented-item-selected")].filter((e) => !e.closest(".bar")).map((e) => e.textContent.trim()).join("|")');
       const timed = await ev('document.body.innerText.includes("查的") ? 1 : 0');
-      log(`GATE_FLIP 选中段="${sel}" 报告带时刻=${timed}`);
+      const gateRows = await ev('document.querySelectorAll(".ant-table-tbody tr").length');
+      const gatePagers = await pagerCount();
+      log(`GATE_FLIP 选中段="${sel}" 报告带时刻=${timed} 表格行=${gateRows} 翻页器=${gatePagers}`);
       // 段名 2026-10-09 从「检查」改成「对账」；下面那句「开始对账」是闸门卡上那颗按钮。
       // 两者现在只差一个「开始」，所以这一格读的是**选中段**（右列那一枚），不是"屏上有没有这个词"。
       if (!sel.includes('对账')) throw new Error('跑完对账没把右列翻到那一段：' + sel);
+      // 对账面没有表时，翻页器断言是空断言（`single-page-no-pager` 曾经就是这种绿）。
+      if (gateRows === 0) throw new Error('对账报告没有表格行，翻页器断言没有对象');
+      if (gatePagers !== 0) throw new Error(`只有一两行的对账表还挂着翻页器：${gatePagers}`);
       await shot('pair-gate-flips-rail.png');
     } },
   { id: 'diff-face-one-line', what: '差异面：一句人话 + 「为什么？」展开（旧形状是一个标题 + 四行块 + 三行长文 + 列标题复述方向）', run: async () => {
@@ -1377,26 +1388,22 @@ const STEPS = [
       }
       await shot('inventory-list-file-on-disk.png');
     } },
-  { id: 'single-page-no-pager', what: '只有一两行的表不再挂着「‹ 1 ›」（差异面两张 + 对账面一张 + 浏览器两栏）', run: async () => {
-      const pagers = () => ev('(() => [...document.querySelectorAll(".ant-pagination")]' +
-        '.filter((e) => e.getBoundingClientRect().width).length)()');
+  { id: 'single-page-no-pager', what: '只有一两行的表不再挂着「‹ 1 ›」（差异面两张 + 浏览器两栏）', run: async () => {
       await click('配好的位置', 'any'); await sleep(900);
-      // 两段都走 `clickRailTab` 而不是 `click(段名)`：左列卡上就有「看差异」与「开始对账」两颗，
+      // 走 `clickRailTab` 而不是 `click(段名)`：左列卡上就有「看差异」这颗，
       // 段名一撞名，`click` 按文档顺序取到的就是**卡上那颗**——而这一格量的翻页器数
       // 在"开着一张清单"与"停在右列那一段"下可能都是 0，绿着而量的不是那一件事。
       await clickRailTab('差异');
-      const diff = await pagers();
-      await clickRailTab('对账');
-      const gate = await pagers();
+      const diff = await pagerCount();
       await click('浏览文件', 'any'); await sleep(900);
-      const browser = await pagers();
-      log(`PAGER 差异面=${diff} 对账面=${gate} 浏览器两栏=${browser}`);
+      const browser = await pagerCount();
+      log(`PAGER 差异面=${diff} 浏览器两栏=${browser}`);
       await shot('single-page-no-pager.png');
       // 收尾翻回**配好的位置那一面**：下一步（并发那一条）要在左列点「开始」，
       // 这一条量完还停在浏览器那一档的话，它就找不到自己的按钮（这么红过一次）。
       await click('配好的位置', 'any'); await sleep(800);
-      if (diff !== 0 || gate !== 0 || browser !== 0)
-        throw new Error(`只有一页的表还挂着翻页器：差异 ${diff}、对账 ${gate}、浏览器 ${browser}`);
+      if (diff !== 0 || browser !== 0)
+        throw new Error(`只有一页的表还挂着翻页器：差异 ${diff}、浏览器 ${browser}`);
     } },
   { id: 'busy-while-transfer', what: '并发：一次传输正写着这棵树', run: async () => {
       // 站到那对上、拨回「只补，不删」再点：卡列表撤了之后屏上只有当前那一格，
@@ -1923,9 +1930,11 @@ const STEPS = [
       // 而这一台机器重启之后把 6000 个小文件几秒钟就传完了 —— 那句"有事在跑"根本没机会说出口，
       // 红的其实是驱动没等（与"整遍之前要等界面那道闸放开"同一条）。
       for (;;) {
-        const running = String(await ev('document.body.innerText.includes("正在跑") ? 1 : 0'));
+        // 卡上那一句 2026-10-09 起叫「正在写这棵目录树：X」（`types.ts::runningHint`）：
+        // 旧尺子等的「正在跑」已经不在卡面上了（设置面的拒绝仍用「现在有事正在跑」，见下面那一句）。
+        const running = String(await ev('document.body.innerText.includes("正在写这棵目录树") ? 1 : 0'));
         if (running === '1') break;
-        if (Date.now() - t0 > 20000) throw new Error('点完「开始」等 20 秒，卡上也没写过"正在跑"');
+        if (Date.now() - t0 > 20000) throw new Error('点完「开始」等 20 秒，卡上也没写过"正在写这棵目录树"');
         await sleep(300);
       }
       log('RUNNING 从按下到看见「正在跑」=' + (Date.now() - t0) + ' 毫秒');
@@ -1979,6 +1988,10 @@ const STEPS = [
   // 下面三格量的是这件事在真窗口里真的成立：卡数按对收、换格子屏上跟着换、对齐那一格只剩一颗按钮。
   // （源码证人钉的是形状，这三格钉的是"那个形状排出来之后人看得见什么"。）
   { id: 'pair-card-one-per-position', what: '一张卡=一对位置：夹具那几条任务在左列是两张配对卡，注只并排那一格说一句', run: async () => {
+      // 上一格故意留了一趟两万个文件的传输；它跑完之前卡上那颗是灰的、悬停也只挂锁的那句，
+      // 这一格量的"卡面注"就会被读成"没有"。先等界面自己那道闸放开（与 `settings-surface` 同一条）。
+      const idle = await waitIdle();
+      log('WAIT-IDLE 配对卡之前等到没有任务在跑=' + idle.ms + ' 毫秒');
       await click('配好的位置', 'any'); await sleep(1400);
       // 一列卡换成了一枚位置下拉：数"有几对"就是数那枚下拉里有几项（项面写的就是短名）。
       await openCardSelect(PAIR_C, '只补，不删');   // 那句注只跟着「只补，不删」那一档，先站到那一档上
@@ -2352,7 +2365,7 @@ const STEPS = [
       const body = String(await visibleModalText(900));
       log('DRAFT-MIRROR-LAYER 正文=' + body.replace(/\s+/g, ' ').slice(0, 300));
       if (body === '') throw new Error('那一层没开（卡上写着：' + s.txt.slice(0, 80) + '）');
-      for (const half of ['修剪成', '也会把本地有、云端没有的那批补上去。']) {
+      for (const half of ['修剪成', '也会把本地有、云端没有的那批补上去', '两边都有但内容不一样的']) {
         if (!body.includes(half)) throw new Error('层里少了那一半：' + half);
       }
       await shot('draft-mirror-layer.png');
@@ -2633,7 +2646,7 @@ const STEPS = [
       if (body === '') throw new Error('那一层没开（按下去没开层；卡上写着：' + free.hint + '）');
       // 这一格结束时会把层关掉，所以每步一张的默认那张拍不到层里那两半 —— 趁它还开着补一张。
       await shot('mirror-layer-open.png');
-      for (const half of ['本地是全集：', '也会把本地有、云端没有的那批补上去。']) {
+      for (const half of ['本地是全集：', '也会把本地有、云端没有的那批补上去', '两边都有但内容不一样的']) {
         if (!body.includes(half)) throw new Error('层里少了那一半：' + half);
       }
       // 那两条**完整位置**必须由这一层自己说出来（左列换成选择框之后，卡上不再有"这一行的 src → dst"）。

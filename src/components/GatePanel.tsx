@@ -3,10 +3,11 @@ import { Alert, Button, Space, Table, Typography } from 'antd';
 import { HIT_OFF, LockHint } from './LockHint';
 import { NoteLine } from './NoteLine';
 
-import type { GateReport } from '../types';
+import { KIND_LABEL } from '../types';
+import type { GateReport, JobKind } from '../types';
 
 export function GatePanel({
-  report, running, off, lockHint, onRun,
+  report, running, off, lockHint, onRun, jobKind,
 }: {
   report: GateReport | null;
   running: boolean;
@@ -15,7 +16,21 @@ export function GatePanel({
   off: boolean;
   lockHint: string | null;
   onRun: () => void;
+  /** 右列这一格现在说的是哪条任务。对账任务与复制/对齐任务是**分开的两类**：
+   *  `run_gate` 只认 `kind = gate`，在一条复制任务上摆「开始对账」等于摆一颗必然被拒的按钮。 */
+  jobKind: JobKind;
 }) {
+  // **这一格不是对账任务时不摆那颗按钮**（2026-10-24 用户实测：按下去只说「这是复制任务」）。
+  // 对账任务在左列下面单独一行；要新建一条到设置里「新加一条」。这段话说的是去处，不是拒绝。
+  if (jobKind !== 'gate') {
+    return (
+      <NoteLine note={{
+        short: `这一条是${KIND_LABEL[jobKind]}任务，不是对账任务。`,
+        detail: '对账要用单独建的「对账」任务：在左列下面选那一条，或到「设置」里的「任务」新加一条。'
+          + '这一页现在没有可以按的对账动作。',
+      }} />
+    );
+  }
   // **结论**只从 Rust 给的 verdict 读，不从 `missing.length` 反推 —— 空集是第三种状态，
   // 「一个都没缺」和「没得比」必须长得不一样（裁定 R29）。
   // 同样不许在这里补一个 `report.expectedCount === 0` 的判断（裁定 R56 item 1）：

@@ -632,9 +632,20 @@ fn apply_no_window(cmd: &mut Command) {
 #[cfg(not(windows))]
 fn apply_no_window(_cmd: &mut Command) {}
 
+/// 一次「这个端口现在接不接连接」的探测。**只有真的连上才算在**：
+/// `timeout` 返回 `Ok(Err(...))`（例如 ECONNREFUSED）是"有人拒了"，不是"有人在听"。
+///
+/// 存活读数与孤儿回收必须用同一份判据；以前 `port_in_use` 写的是 `.is_ok()`，
+/// 在拒绝瞬时返回的系统上会把空端口判成占用，只是本机那约 2 秒的 RST 把它盖住了。
+pub async fn port_accepts(port: u16, timeout: Duration) -> bool {
+    matches!(
+        tokio::time::timeout(timeout, TcpStream::connect(("127.0.0.1", port))).await,
+        Ok(Ok(_))
+    )
+}
+
 async fn port_in_use(port: u16) -> bool {
-    tokio::time::timeout(PROBE_TIMEOUT,
-        TcpStream::connect(("127.0.0.1", port))).await.is_ok()
+    port_accepts(port, PROBE_TIMEOUT).await
 }
 
 /// 端口被占时的处置：先自证是不是我们上一次崩溃留下的 rcd，是就终结重开，

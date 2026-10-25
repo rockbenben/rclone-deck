@@ -50,8 +50,9 @@ fn the_mirror_confirmation_states_the_remote_is_the_whole_set_precondition() {
 /// 两句各钉一条，方向不许共用一句（共用一句就在另一个方向上说假话）。
 #[test]
 fn the_mirror_confirmation_says_the_same_run_also_fills_the_missing_side() {
-    const SENTENCE: &str =
-        "这一趟按对齐跑：不只拿走云端多余的那些，也会把本地有、云端没有的那批补上去。";
+    const SENTENCE: &str = concat!(
+        "这一趟按对齐跑：不只拿走云端多余的那些，也会把本地有、云端没有的那批补上去；",
+        "两边都有但内容不一样的，会用本地那份换掉云端原有的。");
     let text = confirm_layer();
     assert!(text.contains(SENTENCE),
         "上传方向那一档没说这一趟也会把缺的补上去：{SENTENCE}");
@@ -63,8 +64,9 @@ fn the_mirror_confirmation_says_the_same_run_also_fills_the_missing_side() {
 /// 另一头：`src` 是云端时，"补"的方向反过来——这句在上传那一档上不许成立，也不许缺席。
 #[test]
 fn the_mirror_confirmation_names_the_download_direction_too() {
-    const SENTENCE: &str =
-        "这一趟按对齐跑：不只拿走本地多余的那些，也会把云端有、本地没有的那批拿下来。";
+    const SENTENCE: &str = concat!(
+        "这一趟按对齐跑：不只拿走本地多余的那些，也会把云端有、本地没有的那批拿下来；",
+        "两边都有但内容不一样的，会用云端那份换掉本地原有的。");
     let text = confirm_layer();
     assert!(text.contains(SENTENCE),
         "下载方向那一档没说这一趟也会把缺的拿下来：{SENTENCE}");

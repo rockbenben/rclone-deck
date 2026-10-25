@@ -455,3 +455,25 @@ fn an_empty_name_says_so_in_the_slot_that_already_exists() {
     assert!(t.contains("okButtonProps={{ disabled: busy || (naming?.value.trim() ?? '') === '' }}"),
         "空值时那颗放开到能点了：{t}");
 }
+
+/// 一个本地位置都没有时，浏览器面要告诉用户去哪儿建，而不是只摆一张空下拉。
+///
+/// 零任务/只剩远端的家不是异常：用户可以把任务删光。配好位置那一面已经有「换一对位置」，
+/// 但浏览器这一面同样要能自己把路指过去（它正是 README 说"看本地文件"的入口）。
+#[test]
+fn the_browser_says_where_to_get_a_local_position_when_it_has_none() {
+    let t = strip_comments(&read("src/components/BrowserPanel.tsx"));
+    assert!(t.contains("还没有本地位置"), "本地候选为空时页面没有一个字说这件事：{t}");
+    assert!(t.contains("换一对位置") && t.contains("新加一条"),
+        "空态没有把两个建位置的入口指出来：{t}");
+    assert!(t.contains("refs.some((r) => r.isLocal)"), "空态没有按本地候选是否存在来判：{t}");
+}
+
+/// 没有候选时，栏里不许再说「选一个位置」——那是一句没有东西可选的选择指令。
+/// 这一档与上面那条面板级提示配套：提示说去哪儿建，栏里只说"这一栏现在没有可选的"。
+#[test]
+fn an_empty_choice_list_does_not_tell_the_operator_to_select_one() {
+    let t = strip_comments(&read("src/components/BrowserPane.tsx"));
+    assert!(t.contains("这一栏还没有可选的"), "空候选仍只说「选一个位置」：{t}");
+    assert!(t.contains("v.choices.length === 0"), "那句空候选的话没按候选数分支：{t}");
+}

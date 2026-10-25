@@ -162,3 +162,28 @@ fn the_face_and_the_rail_tab_survive_a_restart_and_only_those_two() {
     assert!(!tight.contains("useState<View>('pairs')"), "那一面还写死从配对开始：持久层是摆设");
     assert!(!tight.contains("useState<Tab>('progress')"), "右列那段还写死从进度开始：持久层是摆设");
 }
+
+/// 传输 / 试跑 / 对齐跑完之后要说一声，但**不翻右列**。
+///
+/// 这三格的结果住在「进度」；人从「看差异」按「开始」时，如果既没翻面也没有提示，
+/// 屏幕上会一个字都不变。既有判据（`running_the_check_lands_on_the_face_that_holds_its_report`）
+/// 钉着试跑/传输不翻，所以这里用一条会自己消失的成功提示补上反馈，而不是改那条口径。
+#[test]
+fn a_finished_transfer_says_so_without_moving_the_rail() {
+    let t = strip_comments(&read("src/Panel.tsx"));
+    assert!(t.contains("notifyDone("), "跑完没有一声确认：{t}");
+    // `runJob` / `runMirror` 的 rclone 失败是 **resolved 的 `Failed`**，不是 reject；
+    // 完成提示必须读终态，不能只看 `act` 的 promise 有没有落地。
+    assert!(t.contains("if (r.ok) done?.(r.value)"), "完成提示没有区分成功/失败：{t}");
+    assert!(t.contains("if (isDone(value) && value.dry_run) notifyDone('试跑', true)"),
+        "试跑完成提示没读 Done + dry_run：{t}");
+    assert!(t.contains("if (isDone(value) && !value.dry_run) notifyDone('传输')"),
+        "传输完成提示没读 Done：{t}");
+    assert!(t.contains("if (r.ok && isDone(r.value)) notifyDone('对齐')"),
+        "对齐完成提示没读 Done：{t}");
+    assert!(t.contains("finished = await api.runMirror") && t.contains("return finished;"),
+        "对齐把 runMirror 的终态丢了，`.then` 永远读不到 Done：{t}");
+    // 口径不变：不许为了这条提示顺手把右列翻走。
+    assert_eq!(count_in(&t, "setRailTab('progress')"), 0,
+        "试跑/传输开始翻右列了（那条口径另有用例钉着，别在这里改）：{t}");
+}

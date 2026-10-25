@@ -85,7 +85,7 @@ pub async fn rcd_status(state: tauri::State<'_, AppState>) -> Result<RcdStatus, 
     let startup_error = state.startup_error().map(|s| crate::note::note_for_text(&s));
     let Ok(runner) = state.runner() else {
         return Ok(RcdStatus {
-            ok: false, port: 0, pid: 0,
+            ok: false, alive: false, port: 0, pid: 0,
             rclone_version: String::new(), execute_id: String::new(),
             // 后台**没**说出原因时也不留空：界面替它编一句就是第二份话术，
             // 而"没说出原因"那四个字到界面上就断了，操作员对着它没有下一步。
@@ -110,13 +110,19 @@ pub async fn rcd_status(state: tauri::State<'_, AppState>) -> Result<RcdStatus, 
     };
     let rcd = runner.rcd_info();
     let locks = runner.locks().await;
+    // `ok` 是"启动那一次成功过"，不是"现在还活着"。这一条每秒被问一次，顺手探一下端口：
+    // 进程悄悄退出（崩溃 / 被杀 / 系统回收）时，顶栏不能一直写着「后台就绪」，
+    // 让操作员等某次动作失败才发现。探不到就把同一份状态标成 `alive = false`。
+    let alive = backend_accepts(rcd.port).await;
     // 去重后的**持有者**数，不是键数：一次动作可以申领多个键（`acquire_scopes`），
     // 数键会把一件事报成两件（口径写在 `RcdStatus.active_count` 上）。
     let mut owners: Vec<&String> = locks.values().collect();
     owners.sort();
     owners.dedup();
-    Ok(RcdStatus {
+    Ok(with_liveness(RcdStatus {
         ok: true,
+        // 先按"启动成功"填；探针结果由 `with_liveness` 落到 alive + 退出说明上。
+        alive: true,
         port: rcd.port,
         pid: rcd.pid,
         rclone_version: rcd.rclone_version,
@@ -130,7 +136,19 @@ pub async fn rcd_status(state: tauri::State<'_, AppState>) -> Result<RcdStatus, 
         // 这一枚读的是**这台面板启动时**那一份 flags（与 rcd 的 argv 同源），不是磁盘上那份：
         // 面板不热重载，改完没重开之前，在跑的仍是旧比法，屏上说的就得是旧的。
         size_only: runner.size_only(),
-    })
+    }, alive))
+}
+
+/// 把一次端口探测的结果落成顶栏读数。**只有这里**负责 `alive` 与"已经退出"那句，
+/// 命令本身不再各写一份；证人见 `liveness_tests`。
+fn with_liveness(mut status: RcdStatus, alive: bool) -> RcdStatus {
+    status.alive = alive;
+    if !alive {
+        status.startup_error = Some(crate::note::note_for_text(&format!(
+            "后台进程已经退出（端口 {} 连不上）。重开面板会重新起一个；正在跑的那一趟会被终止。",
+            status.port)));
+    }
+    status
 }
 
 #[tauri::command]
@@ -462,4 +480,53 @@ async fn running_names(state: &tauri::State<'_, AppState>) -> Vec<String> {
     names.sort();
     names.dedup();
     names
+}
+
+/// 后台端口现在还接不接连接。**只用于顶栏那一条存活读数**，不参与任何动作的前置判断。
+///
+/// 300ms 是"本机回环 + 已经在听"的上限：连上立刻返回，没人在听时 connect 在这台机器上
+/// 要约 2 秒才回 ECONNREFUSED，所以必须用超时把它压住，不能让一次轮询拖住一秒。
+async fn backend_accepts(port: u16) -> bool {
+    crate::rcd::port_accepts(port, std::time::Duration::from_millis(300)).await
+}
+
+#[cfg(test)]
+mod liveness_tests {
+    use super::{backend_accepts, with_liveness};
+    use crate::state::RcdStatus;
+
+    fn status() -> RcdStatus {
+        RcdStatus {
+            ok: true, alive: true, port: 5599, pid: 41024,
+            rclone_version: "v1.75.1".into(), execute_id: "e1".into(),
+            startup_error: None, locks: Default::default(),
+            log_dir: String::new(), config_path: String::new(),
+            active_count: 0, size_only: false,
+        }
+    }
+
+    /// 探针结果必须真的落到 `alive` 上，并在断开时补一句"已经退出"。
+    /// 以前只有 `RcdStatus` 的字面量测试；把这里写成常量 `true` 时那一族仍然全绿。
+    #[test]
+    fn the_probe_result_is_what_marks_the_backend_dead() {
+        let dead = with_liveness(status(), false);
+        assert!(!dead.alive);
+        assert!(dead.startup_error.is_some(), "断开时没有告诉操作员后台已经退出");
+        let live = with_liveness(status(), true);
+        assert!(live.alive);
+        assert!(live.startup_error.is_none());
+    }
+
+    /// 顶栏那条存活读数的判据：**只有真的接上了才算在**。
+    ///
+    /// 反面那一半尤其重要：本机对一个没人听的回环端口发 connect 要约 2 秒才回
+    /// ECONNREFUSED，所以这里同时钉住了 300ms 超时（测试本身也只该花这么点时间）。
+    #[tokio::test]
+    async fn a_listening_port_reads_alive_and_a_closed_one_does_not() {
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        assert!(backend_accepts(port).await, "有人听着的端口必须读成活着");
+        drop(listener);
+        assert!(!backend_accepts(port).await, "关掉之后必须读成不在，而不是一直「后台就绪」");
+    }
 }

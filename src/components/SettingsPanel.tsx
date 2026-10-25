@@ -85,6 +85,15 @@ const BLANK_JOB: JobFields = {
   id: '', name: '', jobKind: 'copy', src: '', dst: '', openDir: '', manifest: false,
 };
 
+/** 新加一条时先替用户起一个编号：编号是内部身份（会进日志文件名），普通用户没有理由
+ *  自己发明它。字段仍然可编辑；想用自己认得的短名就改掉它。按本地时钟到秒，够区分同一
+ *  分钟里连续新增的两条，且不含路径/中文，日志文件名不会因此出问题。 */
+function suggestedJobId(): string {
+  const d = new Date();
+  const p = (n: number) => String(n).padStart(2, '0');
+  return `job-${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`;
+}
+
 function labelOf(block: RemoteBlock, key: 'type' | 'provider' | 'endpoint' | 'region', fallback: string): string {
   return block.fields.find((f) => f.key === key)?.label ?? fallback;
 }
@@ -214,7 +223,7 @@ export function SettingsPanel(props: {
   }, [ask, defaults]);
 
   const addJob = useCallback(() => {
-    setJob({ id: '', name: '', jobKind: 'copy', src: '', dst: '', openDir: '', manifest: false, isNew: true });
+    setJob({ id: suggestedJobId(), name: '', jobKind: 'copy', src: '', dst: '', openDir: '', manifest: false, isNew: true });
   }, []);
 
   /** 卡上那颗「存成常用」把那一格交过来时，打开的就是**这一张**表单（R97）：
@@ -225,7 +234,7 @@ export function SettingsPanel(props: {
   useEffect(() => {
     const p = props.prefill;
     if (p === null) return;
-    setJob({ ...p, isNew: true });
+    setJob({ ...p, id: p.id === '' ? suggestedJobId() : p.id, isNew: true });
     setFromDraft(true);
   }, [props.prefill]);
 
@@ -253,10 +262,15 @@ export function SettingsPanel(props: {
     return (
       <Card title="改设置" className="surface">
         <Space orientation="vertical" size="small" style={{ width: '100%' }}>
-          {error !== null && (
+          {/* 这一面第一次被点亮时要读两份文件、再 spawn 两次只读 rclone 探针（冷启动实测 2s 以上）。
+              旧写法在**读的过程中**就摆着「再读一次」，看起来像已经失败了；用户会点它，
+              而那时第一次读还在跑。没有错的时候只说"在做什么"，出错了才给重试。 */}
+          {error === null ? (
+            <Typography.Text type="secondary" className="fs-note">正在读那两份文件…</Typography.Text>
+          ) : (
             <Alert type="error" showIcon title="这一栏列不出来" description={<NoteLine note={error} />} />
           )}
-          <Button onClick={load} loading={busy}>再读一次</Button>
+          {error !== null && <Button onClick={load} loading={busy}>再读一次</Button>}
         </Space>
       </Card>
     );
@@ -706,8 +720,11 @@ function JobFields(props: {
 }) {
   const { job, patch, busy, onSave, onCancel } = props;
   const syncName = job.jobKind === 'sync';
-  const kindField = (v: string) => patch({ jobKind: v as JobDraft['jobKind'] });
-  const manifestField = (v: string) => patch({ manifest: v === 'localdir' });
+  // 对账任务**必须有**一个对账基准（`localdir` 是这一版唯一支持的那一种：用 src 目录里的
+  // 文件清单去核对 dst）。所以它不是一组并列的选项：把任务改成「对账」时自动带上，
+  // 改回复制/对齐时自动收起。以前这里摆一枚**没有标签**的「不对账」下拉，选了「对账」
+  // 却忘了拨它，保存时才被后台用「缺少 manifest」打回来——那句话还是个内部词。
+  const kindField = (v: string) => patch({ jobKind: v as JobDraft['jobKind'], manifest: v === 'gate' });
   return (
     <Space orientation="vertical" size={6} style={{ width: '100%' }}>
       <Space orientation="vertical" size={2} style={{ width: '100%' }}>
@@ -715,9 +732,9 @@ function JobFields(props: {
         {/* 编号只在**新加**那一次点得动：它是身份，不是名字。已经存在的那一条要换编号，
             等于把这一块的其余行指到另一条任务上——所以走"删了重建"，两次确认各看一次差异。 */}
         <Input value={job.id} disabled={!job.isNew} onChange={(e) => patch({ id: e.target.value })}
-          placeholder={job.isNew ? '新加时才填，之后不改' : undefined} />
+          placeholder={job.isNew ? '例如 photos-sync（之后不能改）' : undefined} />
         <Typography.Text type="secondary" className="fs-caption">
-          编号是这一条的身份。改它等于把同一批行落到另一条上：要换编号就删了重建。
+          编号是这一条的固定名字，日志里会用它；已经替你起了一个，想换可以改，之后不能改。要换就删了重建。
         </Typography.Text>
       </Space>
       <Space orientation="vertical" size={2} style={{ width: '100%' }}>
@@ -745,9 +762,14 @@ function JobFields(props: {
       <Field label="顺手打开哪个目录" keyName="open_dir" value={job.openDir}
         onChange={(v) => patch({ openDir: v })}
         decides="决定跑完之后顺手打开哪一个目录" ifBlank="空着就是不要那一行（那一行会被拿走）" />
-      <Select popupMatchSelectWidth={false} value={job.manifest ? 'localdir' : 'none'} style={{ minWidth: 200 }}
-        onChange={manifestField}
-        options={[{ value: 'none', label: '不对账' }, { value: 'localdir', label: '这一条要对账' }]} />
+      {job.jobKind === 'gate' && (
+        <Space orientation="vertical" size={2} style={{ width: '100%' }}>
+          <Typography.Text>对账基准</Typography.Text>
+          <Typography.Text type="secondary" className="fs-caption">
+            用「从哪里来」那个本地目录里的文件清单，核对「到哪里去」那一侧还缺哪些。
+          </Typography.Text>
+        </Space>
+      )}
       <Space size={4}>
         <Button disabled={busy} onClick={onSave}>保存这条</Button>
         <Button type="text" disabled={busy} onClick={onCancel}>不要了</Button>

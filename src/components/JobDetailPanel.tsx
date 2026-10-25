@@ -25,7 +25,11 @@ export function JobDetailPanel({
     : null;
   // 试跑的 `deletes` 是 rclone 自己**算出来会删**的数量，一个都没真删。
   // 不区分这一档，同一屏上会同时出现「试跑完成，没有改动任何文件」和「这次对齐删除了 N 个文件」。
-  const dryRun = state?.state === 'done' ? state.dry_run : false;
+  // `running` 也带 `dry_run`：试跑从第一帧起就是计划数，不能等终态才改口。
+  const dryRun =
+    state?.state === 'running' ? state.dry_run
+    : state?.state === 'done' ? state.dry_run
+    : false;
   // 后台带出来的预览数（`TaskState::Done.previewed`）。`null` = 这一次不是走对齐确认进来的，
   // **不许**当 0 用，也不许在这里拿它跟 `stats.deletes` 比——判定是 Rust 的活：
   // 两者不等的这一次早就被 `transfer_invariant_violation` 变成 `Failed` 了，`Done` 里根本等不到。
@@ -134,13 +138,15 @@ export function JobDetailPanel({
           />
           <Descriptions size="small" column={2} bordered>
             {/* 读数一律等宽：数字跳动时列不抖（DESIGN.md 的 metric-md）。 */}
-            <Descriptions.Item label="已传 / 共">
+            {/* 试跑一个字节都没写：读数仍是 rclone 算出来的计划数，但标签不能说「已传」。
+                「做完了 · 这一趟没动任何文件」与「已传 1/1」并排时，后者会被读成真的传了。 */}
+            <Descriptions.Item label={dryRun ? '会传 / 共' : '已传 / 共'}>
               <span className="num">{stats.transfers} / {stats.totalTransfers} 个文件</span>
             </Descriptions.Item>
             <Descriptions.Item label="已核对 / 共">
               <span className="num">{stats.checks} / {stats.totalChecks} 个</span>
             </Descriptions.Item>
-            <Descriptions.Item label="数据量">
+            <Descriptions.Item label={dryRun ? '要动的数据量' : '数据量'}>
               <span className="num">{formatBytes(stats.bytes)} / {formatBytes(stats.totalBytes)}</span>
             </Descriptions.Item>
             <Descriptions.Item label="速度"><span className="num">{formatSpeed(stats.speed)}</span></Descriptions.Item>

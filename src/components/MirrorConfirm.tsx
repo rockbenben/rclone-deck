@@ -54,8 +54,8 @@ export function MirrorConfirm(props: {
   // 红色的那颗现在带两个数（`doomedCount` 与 `pending` 都读后台交出来的，界面不自己减），
   // 因为按下去之前那一刻，人要看的就是"这一趟两头各动多少"。
   const alsoMoves = localWins(job)
-    ? '这一趟按对齐跑：不只拿走云端多余的那些，也会把本地有、云端没有的那批补上去。'
-    : '这一趟按对齐跑：不只拿走本地多余的那些，也会把云端有、本地没有的那批拿下来。';
+    ? '这一趟按对齐跑：不只拿走云端多余的那些，也会把本地有、云端没有的那批补上去；两边都有但内容不一样的，会用本地那份换掉云端原有的。'
+    : '这一趟按对齐跑：不只拿走本地多余的那些，也会把云端有、本地没有的那批拿下来；两边都有但内容不一样的，会用云端那份换掉本地原有的。';
   const doomed = preview?.doomed ?? [];
 
   return (
@@ -119,7 +119,7 @@ export function MirrorConfirm(props: {
         {!preview && (
           // 这一档必须自己把"你批的是什么"说完：没有名单不等于没有担保 ——
           // 动手前那两道拒绝（占比过半 / 这一侧空着）照旧在，而想看逐条名字有一条现成的路。
-          // 「会传 N 个 · 会删 M 个」那两个数读的是后台摘要那一份（界面不自己减）。
+          // 「会传 / 会删 / 其中会被换掉」这几个数都读后台摘要那一份（界面不自己减）。
           // 但措辞是**后果口径**而不是统计口径 —— 这一层是全app最要紧的一刻（"按下去就要删东西"），
           // 而「云端多余」在这个位置上恰恰是**要删掉的那些**，用中性词说它等于把最重的那件事说轻了。
           // 卡面上那一格（`JobListView` 的 `summaryLine`）已经是这个口径，两处说同一件事用同一个词。
@@ -131,11 +131,16 @@ export function MirrorConfirm(props: {
               </Typography.Text>
               <Typography.Text type="secondary">
                 {job.lastSummary
-                  ? `上次核对：会传 ${job.lastSummary.pendingUpload} 个 · 会删
+                  ? `上次核对：会传 ${job.lastSummary.willUpload} 个 · 会删
                     ${job.lastSummary.dstIsLocal ? job.lastSummary.pendingUpload : job.lastSummary.orphans} 个`
                     + ` · ${job.lastSummary.measuredAt} 算的`
                   : '要先看逐条名字，点「重新预览」。'}
               </Typography.Text>
+              {job.lastSummary !== null && job.lastSummary.replaces > 0 && (
+                <Typography.Text type="secondary">
+                  其中 {job.lastSummary.replaces} 个两边都有，目标端那份会被这一趟换掉。
+                </Typography.Text>
+              )}
             </Space>} />
         )}
         {preview && preview.doomedCount === 0 && (

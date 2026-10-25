@@ -56,7 +56,9 @@ pub enum TaskState {
     Queued,
     /// `jobid` 是 `Option`：列清单那一段还没有 rc 的 job 可指，填一个 0 之类的假值
     /// 就是让下一个人拿它去 `job/status` 轮询一个不存在的 job。
-    Running { phase: TaskPhase, jobid: Option<i64>, stats: Option<StatsView> },
+    /// `dry_run` 在**进行中**就要带：试跑的进度读数也是"计划数"，界面从第一帧起
+    /// 就不能把 `transfers` 说成「已传」。只在 `Done` 上带会让整段试跑都说反话。
+    Running { phase: TaskPhase, jobid: Option<i64>, stats: Option<StatsView>, dry_run: bool },
     Done { jobid: i64, stats: StatsView, dry_run: bool, previewed: Option<usize> },
     /// 终态失败。**那一句是两段的**（`ShortNote`）：这一臂有两个生产者，而它们的性质不同——
     /// 一个是 rclone 的原话（`status.error`，带 `operation error S3` / `StatusCode` / JSON 尾巴），
@@ -68,15 +70,28 @@ pub enum TaskState {
 }
 
 /// 行上那一句差异摘要（spec §3）。**只是上一次的结果**：谁去算、几点算都由调用侧决定，
-/// 这条读数不参与任何判定 —— 它的存在就是为了界面上那两个数带着一句"这是几点算的"，
+/// 这条读数不参与任何判定 —— 它的存在就是为了界面上那几个数带着一句"这是几点算的"，
 /// 而不是被当成现状（清单本身不在这里，那是点开之后才要看的东西）。
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SummaryView {
+    /// 本地有、云端没有的那一批（`PruneReport::pending_upload`）。它只是"新增"的一半，
+    /// **不是**这一趟会写的全部 —— 见 `will_upload`；也只有上传方向它才是"新增"。
     pub pending_upload: usize,
     pub orphans: usize,
+    /// 这一趟可能写到目标端的文件数 = 目标端缺的那一半 + 两边都有但对不上的同名文件。
+    /// 目标端缺的那一半按方向换：上传时是 `pending_upload`，下载时是 `orphans`。
+    ///
+    /// 界面那句「会传 N 个」读这个数。只读 `pending_upload` 会在下载方向把
+    /// 「云端有、本地没有」的整棵树漏掉——卡片上写着「会传 0 个」，按下去却要下载全部。
+    /// 这一枚**宁可多报**（`Unknown`、size-only 下同大小的也在内）；真会被重传的那批见 `replaces`。
+    pub will_upload: usize,
+    /// 上面那批里**这一趟会覆盖目标端原有文件**的那几个。
+    /// 不是所有 `diverged` 都算：判不出来的 `Unknown`、以及 `--size-only` 下大小没变的那批
+    /// 不会被重传。界面说「会被这一趟换掉」时必须只数这一批。
+    pub replaces: usize,
     /// 这一次那两个位置里 **dst 那一侧**是不是本地目录（由 `PruneReport` 带过来，这里不重判）。
-    /// 那两个数按位置命名，界面上「会删 N 个」要说的是本档会删的那一半 —— 判据只能在这里给。
+    /// 那几个数按位置命名，界面上「会删 N 个」要说的是本档会删的那一半 —— 判据只能在这里给。
     pub dst_is_local: bool,
     /// 空基准那次盘点的诊断随集合一起带出去（R29）：为真时那两个数不可信，
     /// 而 `run_inventory` 本来就会在这种情形硬拒绝，所以这里通常是 false。
@@ -437,6 +452,38 @@ pub struct PreviewView {
     pub doomed_ratio: String,
 }
 
+/// 这一对同名文件在这一趟的比法下**会不会被重传（换掉目标端那份）**。
+///
+/// 大小不同时 rclone 一定重传（`--size-only` 也不会跳过）；大小相同时只有默认的
+/// size+modtime 比法会因为 mtime 不同而重传。`Unknown` 本身不提供"会重传"的证据，
+/// 只有大小不同那一半另有证据。
+fn counts_as_replacement(
+    verdict: &crate::prune::Verdict,
+    local_size: u64,
+    remote_size: u64,
+    size_only: bool,
+) -> bool {
+    if local_size != remote_size {
+        return true;
+    }
+    !size_only && matches!(verdict, crate::prune::Verdict::Differs { .. })
+}
+
+/// 跑前那份盘点摘要是不是已经**不能再当现状**。
+///
+/// `Done` 且任一写入/删除计数非零：确实动过。`Failed`/`Unknown`：终态不带写入计数，
+/// 但这一趟可能已经写了一部分（失败发生在传输中途、结束时读不到 stats），留着跑前的
+/// 「会传 N」就是在替一个已经变过的世界说话；收回成「还没算过」更诚实。试跑、排队、
+/// 以及"零传输零删除"的空跑都不算（后者没有让任何一份盘点失真）。
+fn summary_is_stale(state: &TaskState) -> bool {
+    match state {
+        TaskState::Done { stats, dry_run: false, .. } =>
+            stats.transfers > 0 || stats.deletes > 0 || stats.deleted_dirs > 0,
+        TaskState::Failed { .. } | TaskState::Unknown { .. } => true,
+        _ => false,
+    }
+}
+
 pub struct Runner {
     rcd: Arc<RcdHandle>,
     app: AppConfig,
@@ -617,7 +664,12 @@ impl Runner {
         // 可比，`None` 意味着"这不是对齐实删"，绝不能当 0（那会把只增的 copy 也误判成违约）。
         let guard = self.acquire(job).await?;
         let log = self.open_log(job).await?;
-        self.transfer(job, method, dry_run, &log, guard, None).await
+        let state = self.transfer(job, method, dry_run, &log, guard, None).await?;
+        // 真写过之后，卡上那份"上次盘点"就不再是现状了：留着它，屏上会继续写
+        // 「会传 N 个」/「会删 M 个」，而这一趟已经把它们用掉了。失败/未知也可能写了一半，
+        // 终态又没有计数可核，所以一并收回；试跑不动任何东西，保留。
+        if summary_is_stale(&state) { self.forget_summary(id); }
+        Ok(state)
     }
 
     pub async fn run_gate(&self, id: &str) -> Result<GateReport, RunError> {
@@ -784,6 +836,10 @@ impl Runner {
         let shared: BTreeSet<String> = local.intersection(remote).cloned().collect();
         let mut diverged_count = 0usize;
         let mut unknown_count = 0usize;
+        // 这一趟的比法读一次就够：卡面那句「会被换掉」只在 rclone 真的会重传时才成立。
+        // 开着 `--size-only` 时，大小没变、只有 mtime 不同的那一批**不会**被重传。
+        let size_only = self.size_only();
+        let mut replaces = 0usize;
         // 这两个提到 `if` 外面：汇总那几行在块外也要读它们（"哈希那一级跑没跑、用哪种哈希"）。
         let mut hash_checked = false;
         let mut hash_type = String::new();
@@ -858,6 +914,13 @@ impl Runner {
             }
 
             for (name, v) in crate::prune::diverged(&lm, &rm, None) {
+                // 只有真会被重传的那一批才算「会被换掉」：Unknown 是判不出来，
+                // 而 size-only 下同大小的 mtime 差异不会触发重传。
+                if let (Some(l), Some(r)) = (lm.get(&name), rm.get(&name)) {
+                    if counts_as_replacement(&v, l.size, r.size, size_only) {
+                        replaces += 1;
+                    }
+                }
                 let entry = match v {
                     crate::prune::Verdict::Differs { newer } => {
                         diverged_count += 1;
@@ -960,6 +1023,16 @@ impl Runner {
         let summary = SummaryView {
             pending_upload: report.pending_upload.len(),
             orphans: report.orphans.len(),
+            // 这一趟真会写到目标端的那些：目标端缺的那一半 + 同名但会被重写的。
+            // 「目标端缺的」按方向换：上传时是 `pending_upload`（本地有、云端没有），
+            // 下载时是 `orphans`（云端有、本地没有）。只认 `pending_upload` 会让
+            // 「以云端为主」那一格显示成「会传 0 个」，而它恰恰要下载整棵树。
+            will_upload: (if report.dst_is_local {
+                report.orphans.len()
+            } else {
+                report.pending_upload.len()
+            }) + report.diverged.len(),
+            replaces,
             dst_is_local: report.dst_is_local,
             empty_basis: report.empty_basis,
             measured_at: report.measured_at.clone(),
@@ -976,6 +1049,12 @@ impl Runner {
     pub fn last_summary(&self, id: &str) -> Option<SummaryView> {
         self.last_summaries.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
             .get(id).cloned()
+    }
+
+    /// 真写过（或失败/未知可能写了一半）之后把那份摘要拿掉：它描述的是写之前的两侧，
+    /// 继续摆在卡上会变成一句假现状。试跑与排队不动任何东西，不碰。
+    fn forget_summary(&self, id: &str) {
+        self.last_summaries.lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(id);
     }
 
     // ---------------------------------------------------------- 对齐：预览（spec §4.1 第 1 步）
@@ -1186,7 +1265,7 @@ impl Runner {
         // 那是一条幽灵任务，一直挂到面板重启（`runner_local.rs` 里 `Running { stats: None }`
         // 那个形状钉的就是这一族）。
         self.set_state(&job.id, TaskState::Running {
-            phase: TaskPhase::Listing, jobid: None, stats: None }).await;
+            phase: TaskPhase::Listing, jobid: None, stats: None, dry_run: false }).await;
         let listed = self.listed_doomed(job).await;
         self.set_state(&job.id, TaskState::Idle).await;
         let (plan, list_requests, list_secs) = listed?;
@@ -1250,7 +1329,11 @@ impl Runner {
 
         // 删除只走 `sync/sync` 这一条正典路径（spec §4.1：绝不靠 filter/include 猜删除范围——
         // 认不出的 rc 参数会 fail-open，把不该删的放进来）。预览数随 transfer 带进终态与日志。
-        self.transfer(job, "sync/sync", false, &log, guard, Some(confirmed)).await
+        let state = self.transfer(job, "sync/sync", false, &log, guard, Some(confirmed)).await?;
+        // 与 `run_copy` 同一条口径：真写过（含删）之后，跑前那份盘点摘要就作废了；
+        // 失败/未知也可能写了一半，一并收回。
+        if summary_is_stale(&state) { self.forget_summary(id); }
+        Ok(state)
     }
 
     // ---------------------------------------------------------- 共用部件
@@ -1440,7 +1523,7 @@ impl Runner {
         // 从这一行起 job 在 rcd 那边已经存在（或至少无法排除它存在）——锁从此不由日志的成败决定。
         let mut inflight = Inflight::new(guard, &self.abandoned);
         self.set_state(&job.id, TaskState::Running {
-            phase: TaskPhase::Transferring, jobid: Some(ack.jobid), stats: None }).await;
+            phase: TaskPhase::Transferring, jobid: Some(ack.jobid), stats: None, dry_run }).await;
         // 裁定 R49 第 2 档（选 (a)：状态先行）：这行"已提交"落在"还不知道结果"的区间里——没有
         // "真结果"可写。日志写不下去时**不许**让 `?` 直接离开 `transfer`：那会把界面冻在
         // `Running { stats: None }`，从此再没人轮询这个 job，直到面板重启。所以先落状态再返回——
@@ -1513,7 +1596,7 @@ impl Runner {
                     retry_warned = true;
                 }
                 self.set_state(&job.id, TaskState::Running {
-                    phase: TaskPhase::Transferring, jobid: Some(ack.jobid), stats: Some(view),
+                    phase: TaskPhase::Transferring, jobid: Some(ack.jobid), stats: Some(view), dry_run,
                 }).await;
             }
 
@@ -1611,5 +1694,48 @@ impl Runner {
                 Err(e) => return Err(e),
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod summary_count_tests {
+    use super::{counts_as_replacement, summary_is_stale, TaskPhase, TaskState};
+    use crate::note::note_for_text;
+    use crate::prune::{Newer, Verdict};
+
+    #[test]
+    fn failed_or_unknown_runs_do_not_leave_a_stale_summary() {
+        assert!(summary_is_stale(&TaskState::Failed {
+            jobid: 1, error: note_for_text("传输中途失败"),
+        }));
+        assert!(summary_is_stale(&TaskState::Unknown { reason: "结束时读不到 stats".into() }));
+        assert!(!summary_is_stale(&TaskState::Queued));
+        assert!(!summary_is_stale(&TaskState::Running {
+            phase: TaskPhase::Transferring, jobid: Some(1), stats: None, dry_run: false,
+        }));
+    }
+
+    #[test]
+    fn a_running_state_carries_the_trial_flag() {
+        let s = TaskState::Running {
+            phase: TaskPhase::Listing, jobid: None, stats: None, dry_run: true,
+        };
+        let json = serde_json::to_string(&s).unwrap();
+        assert!(json.contains("\"dry_run\":true"), "进行中的试跑没把 dry_run 交给界面：{json}");
+    }
+
+    #[test]
+    fn replacement_count_only_includes_files_this_run_will_rewrite() {
+        let differs = Verdict::Differs { newer: Newer::Local };
+        // 大小不同：两种比法下 rclone 都会重传。
+        assert!(counts_as_replacement(&differs, 10, 20, false));
+        assert!(counts_as_replacement(&differs, 10, 20, true));
+        // 大小相同、只有 mtime 不同：默认比法会重传，size-only 不会。
+        assert!(counts_as_replacement(&differs, 10, 10, false));
+        assert!(!counts_as_replacement(&differs, 10, 10, true));
+        // Unknown 本身不是「会重传」的证据；只有大小不同那一半另有证据。
+        assert!(counts_as_replacement(&Verdict::Unknown, 10, 20, false));
+        assert!(!counts_as_replacement(&Verdict::Unknown, 10, 10, false));
+        assert!(!counts_as_replacement(&Verdict::Unknown, 10, 10, true));
     }
 }

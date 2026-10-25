@@ -65,7 +65,7 @@ export type TaskState =
   // `phase` 那一档说的是：列清单那一段一个东西都还没改，而「传输进行中，别关窗」
   // 在那段时间里是个善意的谎。`jobid` 跟着变成可空 —— 列举那一段还没有 rc 的 job 可指，
   // 填个 0 就是让下一个人拿它去轮询一个不存在的 job。
-  | { state: 'running'; phase: 'listing' | 'transferring'; jobid: number | null; stats: StatsView | null }
+  | { state: 'running'; phase: 'listing' | 'transferring'; jobid: number | null; stats: StatsView | null; dry_run: boolean }
   // `previewed` = 这次实删照着预览的那份清单有几个，由后台算好带出来，前端不许自己重算判定
   // （裁定 R66）。`null` 的意思是**这次不是走对齐确认进来的**（复制、或任何一次试跑），
   // 不是"预览了 0 个"——把 null 当 0 就是把"没人核对过"读成"核对过、没问题"。
@@ -91,7 +91,7 @@ export interface JobView {
    *  判定在后台（`Runner::is_draft` 只认那张内存表）——编号前缀 `adhoc-` 是给日志文件名用的
    *  （出事时认得出哪张卡哪一格，R99），拿它当判据就是第二份口径，而猜错的方向是收掉一条真配置项。 */
   isDraft: boolean;
-  /** 上一次盘点的两个数与它是几点算的（spec §3）。`null` = 这条任务还没盘过：
+  /** 上一次盘点的几个数与它是几点算的（spec §3）。`null` = 这条任务还没盘过：
    *  界面要说"还没算过"，不许显示 0/0，也不许因为缺了就去发起一次列举（裁定 R71 那半句）。 */
   lastSummary: SummaryView | null;
   /** 这一条属于哪**对**位置（后台把两侧各走一遍 `Scope` 的键、排序后拼接）。
@@ -107,13 +107,21 @@ export interface JobView {
   aIsLocal: boolean;
 }
 
-/** 行上那一句摘要（Rust 侧 `runner::SummaryView`）。两个数与时刻都由后台算，前端只显示：
+/** 行上那一句摘要（Rust 侧 `runner::SummaryView`）。这些数与时刻都由后台算，前端只显示：
  *  自己重算就是第二份口径，而"几点算的"这句话一漂，旧读数就会被当成现状。
  *  `orphans` / `pendingUpload` 是按**位置**分的两半（云端多出来的 / 本地多出来的），不是方向；
- *  「这一档要删的是哪一半」由 `dstIsLocal` 说（与 `JobView` 上那两枚 `isLocal` 同一判据）。 */
+ *  「这一档要删的是哪一半」由 `dstIsLocal` 说（与 `JobView` 上那两枚 `isLocal` 同一判据）。
+ *  `willUpload` 是这一趟会写到目标端的全部（目标端缺的 + 会被重传的）；目标端缺的那一半
+ *  上传时是 `pendingUpload`、下载时是 `orphans`。`replaces` 是后台判定**真会被重传**的那几个
+ *  （`Unknown` 与 size-only 下大小没变的不算）。 */
 export interface SummaryView {
   pendingUpload: number;
   orphans: number;
+  /** 这一趟可能写到目标端的文件数（目标端缺的 + 两边都有但对不上的；宁可多报）。
+   *  按方向由后台算，界面只读；真会被重传的那批见 `replaces`。 */
+  willUpload: number;
+  /** `willUpload` 里**会被这一趟换掉**的那几个；不是所有 diverged 都算。 */
+  replaces: number;
   /** 这一次 dst 那一侧是不是本地目录（后台判的，随摘要一起带出来）。「这一档要删的是上面
    *  哪一个数」读它，界面不许拿路径再判一遍（R69）。 */
   dstIsLocal: boolean;
@@ -125,12 +133,15 @@ export interface SummaryView {
 
 export interface RcdStatus {
   ok: boolean;
+  /** 后台进程现在还应答吗。`ok` 只说"启动成功过"；这一枚说的是"现在还能不能用"。
+   *  `ok = true, alive = false` 是"起过、后来退出了"。 */
+  alive: boolean;
   port: number;
   pid: number;
   rcloneVersion: string;
   executeId: string;
-  /** 起不来那一句，**后台已经分成两段**（人话 + 原文）。顶栏是常驻面，
-   *  原文直接摆上去就等于界面上常驻一个内部名词。null = 后台起来了。 */
+  /** 起不来或已经退出那一句，**后台已经分成两段**（人话 + 原文）。顶栏是常驻面，
+   *  原文直接摆上去就等于界面上常驻一个内部名词。null = 后台活着。 */
   startupError: ShortNote | null;
   locks: Record<string, string>;
   /** 日志目录。空串 = 连配置都读不到（后台没起来时会**试着**从配置读它：那一刻正是最需要

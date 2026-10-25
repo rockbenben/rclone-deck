@@ -82,7 +82,8 @@ export function JobContextPanel({
           onRefresh={onRunInventory} />
       </div>
       <div style={{ display: tab === 'check' ? 'block' : 'none' }}>
-        <GatePanel report={gate} running={busy} off={locked} lockHint={lockedHint} onRun={onRunGate} />
+        <GatePanel report={gate} running={busy} off={locked} lockHint={lockedHint} onRun={onRunGate}
+          jobKind={job.kind} />
       </div>
       <div style={{ display: tab === 'log' ? 'block' : 'none' }}>
         {/* 那一句以前停在"完整内容在日志文件里"就没了：日志**每次动作新开一个带时间戳的文件**

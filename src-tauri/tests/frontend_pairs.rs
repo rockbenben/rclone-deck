@@ -122,6 +122,10 @@ fn the_pair_row_shows_the_last_difference_and_when_it_was_measured() {
         "「会删 N 个」没说是删哪一边（没有读方向那枚框的结果）：{body}");
     assert!(body.contains("本机") && body.contains("云端"),
         "「会删」那半句没有按本机/云端分叉：{body}");
+    // 「会传」= 新增 + 会被换掉的那批：只读 `pendingUpload` 时一次换掉云端那份的 copy
+    // 会显示成「会传 0 个」。这是 README 里"按上传就把云端那份换掉了"那一类的告知义务。
+    assert!(body.contains("willUpload"), "「会传」又只数新增，漏掉会被换掉的那批：{body}");
+    assert!(body.contains("replaces"), "被换掉的那批没有在卡上单独说一句：{body}");
     // 空基准那一档不许跟着这次重写一起没了：本地是空的 ⇒ 这两个数不可信，而它恰恰是最容易
     // 出事的那种（空的一侧 + 对齐）。上一版摘要把它带在句尾，重写成排版时漏过一次。
     assert!(t.contains("emptyBasis"), "空基准那一档丢了（本地是空的，这两个数不可信）：{t}");
@@ -461,6 +465,10 @@ fn the_local_column_shows_photos_as_a_grid() {
         "点中一张图之后没有逐个处理的动作：{t}");
     assert!(t.contains("const picked ="),
         "那一格点中的东西没有回到动作条上：{t}");
+    // 网格收走全部图片之后，表格不该再摆一个「暂无数据」：同一屏上「这一层 3 个文件」
+    // 与它会互相打脸。真正空的目录（网格也空）仍由表格说那句话。
+    assert!(t.contains("grid.length === 0 || rest.length > 0"),
+        "图片全在网格里时表格还在渲染（空表 + 网格两套读数）：{t}");
 }
 
 /// **摆图的那一格必须同时说得出是哪个名字**（真窗口跑出来的，2026-10-12）。
@@ -512,6 +520,27 @@ fn the_two_browser_columns_follow_one_another() {
     // 导航两处都要跟（进目录 + 面包屑），少一处就留下一道缝
     let enter = t.matches("panesRef.current.remote").count();
     assert!(enter >= 3, "联动只在挑位置时跟，导航（进入 / 面包屑）没跟：{t}");
+    // 从本地子目录进对比：远端必须落到**同一层**，否则两栏不是同一位置的两面。
+    let label = t.find("和云端比一比").expect("找不到那颗进对比的按钮");
+    let before = &t[..label];
+    let at = before.rfind("const mate =").expect("进对比那颗按钮没有读配对关系");
+    let block = &t[at..label];
+    assert!(block.contains("prefix: panes.local.prefix"),
+        "进对比时只换了远端、没带本地前缀：本地在 photos/ 而云端回根，那句「同一个位置的两面」就是假话：{block}");
+}
+
+/// 「对账」那一段在复制/对齐任务上不许摆一颗必然被拒的按钮。
+///
+/// 后台 `run_gate` 只认 `kind = gate`；旧界面在每条任务的右列都摆「开始对账」，
+/// 按下去只会拿到「这是复制任务」的拒绝。对账任务在左列下面单独一行，右键不该再演一遍。
+#[test]
+fn the_check_segment_does_not_offer_a_dead_action_on_a_copy_job() {
+    let t = strip_comments(&read("src/components/GatePanel.tsx"));
+    assert!(t.contains("jobKind !== 'gate'"), "对账段不认任务类型，复制任务上仍会摆那颗按钮：{t}");
+    assert!(t.contains("不是对账任务"), "说清了没有可用的对账动作，但没告诉人去哪里找：{t}");
+    // 对账任务那一支仍要有原来那颗按钮与它的锁（别为了修死按钮把真按钮一起删了）。
+    assert!(t.contains("开始对账") && t.contains("<LockHint") && t.contains("disabled={off}"),
+        "真对账任务那一支的按钮/锁不见了：{t}");
 }
 
 /// 设置里的「任务」那一栏**不许拿任务名当标题**（2026-10-11）。
@@ -1013,4 +1042,36 @@ fn a_cell_is_always_selected_and_the_rail_follows_it() {
     for w in ["localStorage", "sessionStorage", "document.cookie"] {
         assert!(!t.contains(w), "选择走了持久层（{w}）：模式必须每次从「只补，不删」开始");
     }
+}
+
+/// 试跑的进度面不许写「已传」。
+///
+/// 试跑一个字节都没写，读数仍是 rclone 算出来的计划数。屏幕上方已经写着
+/// 「做完了 · 这一趟没动任何文件」，下方若还写「已传 1 / 1 个文件」，同一屏就自相矛盾，
+/// 而"到底传没传"正是操作员按下一步之前要判断的事。标签按 `dry_run` 分叉（`running` 与
+/// `done` 两档都读它，不能等终态才改口）。
+#[test]
+fn a_trial_run_never_says_the_files_were_already_sent() {
+    let detail = strip_comments(&read("src/components/JobDetailPanel.tsx"));
+    assert!(detail.contains("dryRun ? '会传 / 共' : '已传 / 共'"),
+        "试跑与真跑共用「已传」这个标签：{detail}");
+    assert!(detail.contains("dryRun ? '要动的数据量' : '数据量'"),
+        "试跑的数据量标签仍在说已经发生的事：{detail}");
+    assert!(detail.contains("state?.state === 'running' ? state.dry_run"),
+        "试跑进行中没有读后台带的 dry_run（只改终态那一帧等于整段都在说「已传」）：{detail}");
+}
+
+/// 一对位置都没有时，「换一对位置」那颗仍然要在。
+///
+/// 旧写法整条选择条 `return null`，于是删掉最后一对位置之后，这一面只剩右列一句
+/// 「先选一个任务」，而立新卡的唯一入口跟着那条不存在的卡一起消失。选择条必须留下，
+/// 两枚下拉空着（说"还没有位置 / 先挑一对位置"），按钮还在原处。
+#[test]
+fn the_pairs_face_keeps_the_way_in_when_no_pair_exists() {
+    let t = strip_comments(&read("src/components/JobListView.tsx"));
+    assert!(!t.contains("if (shown === undefined) return null"),
+        "一对位置都没有时又把整条选择条撤掉了（入口跟着消失）：{t}");
+    assert!(t.contains("还没有位置"), "空的一位下拉没说自己为什么空：{t}");
+    assert!(t.contains("先挑一对位置"), "空的「要做什么」没给出下一步：{t}");
+    assert_eq!(count_in(&t, "换一对位置"), 1, "那颗入口不止一处/不见了：{t}");
 }

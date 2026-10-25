@@ -14,7 +14,8 @@ pub fn expected_keys(job: &Job, exclude: &[String]) -> Result<BTreeSet<String>, 
     let root = Path::new(&job.src);
     if !root.is_dir() {
         return Err(RunError::Invariant(format!(
-            "job {} 的 src 不是目录：{}", job.id, job.src)));
+            "「从哪里来」不是一个可读的目录：{}。对账要用这个本地目录里的文件清单；到「设置」里的「改这条」换成别的目录。",
+            root.display())));
     }
     normalize_expected(root, &job.prefix(), exclude).map_err(|e| RunError::Io(e.to_string()))
 }
@@ -50,7 +51,9 @@ pub async fn side_set(
         Endpoint::Local(root) => {
             if !root.is_dir() {
                 return Err(RunError::Invariant(format!(
-                    "{} 不是一个可读的目录，算不出这一侧的集合。对齐的两侧得有一侧是 remote、另一侧是这个目录。",
+                    "{} 不是一个可读的目录，算不出这一侧的集合。对齐的两侧得有一侧是 remote、另一侧是这个目录。\
+                     它可能被移走或改名了；要换成别的目录，到「设置」里的「改这条」改这一条，\
+                     或在「配好的位置」上点「换一对位置」临时换一个。",
                     root.display())));
             }
             normalize_expected(root, "", exclude).map_err(|e| RunError::Io(e.to_string()))

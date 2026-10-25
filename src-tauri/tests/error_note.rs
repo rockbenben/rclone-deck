@@ -120,19 +120,23 @@ use common::{count_in, read, strip_comments};
 #[test]
 fn the_terminal_failure_travels_as_two_parts_like_the_other_error_channels() {
     let runner = strip_comments(&read("src-tauri/src/runner/mod.rs"));
+    // 末尾的 `#[cfg(test)]` 模块里也会构造终态供单测用；那些不是生产构造点，
+    // 不能算进下面这条数量判据（否则每次加一条测试都得改这里的常数）。
+    let production = runner.split("#[cfg(test)]").next().unwrap_or(&runner);
     // ① 那一臂的字段类型。取 `Failed { jobid: i64` 起手的 60 个**字符**（不是字节：
     //    后面紧跟的就是中文注释，按字节切会切在字中间）。
-    let at = runner.find("Failed { jobid: i64")
-        .unwrap_or_else(|| panic!("终态那一臂的起手形状变了，判据落不到字段类型上：{runner}"));
-    let arm: String = runner[at..].chars().take(60).collect();
+    let at = production.find("Failed { jobid: i64")
+        .unwrap_or_else(|| panic!("终态那一臂的起手形状变了，判据落不到字段类型上：{production}"));
+    let arm: String = production[at..].chars().take(60).collect();
     assert!(arm.contains("ShortNote") && !arm.contains("error: String"),
         "终态那句又退回裸串（字段类型不是 ShortNote）：{arm}");
     // ② rclone 那一条生产者过分类器，而且**只**在这一处过——构造 `Failed` 的两处里另一处
     //    是自家拼的 `ShortNote`（不变量那一句），它不需要也不能再过一遍。
-    assert_eq!(count_in(&runner, "TaskState::Failed {"), 2,
-        "终态构造点数量变了，下面那两条按位判据就没覆盖了：{runner}");
-    assert_eq!(count_in(&runner, "error: note_for_text(&status.error)"), 1,
-        "rclone 的终态原话没走分类器（或直接塞了原文）：{runner}");
+    //    数 `{ jobid:` 起手的**构造点**；match 臂里的 `{ .. }` 与测试里的构造都不是生产构造点。
+    assert_eq!(count_in(production, "TaskState::Failed { jobid:"), 2,
+        "终态构造点数量变了，下面那两条按位判据就没覆盖了：{production}");
+    assert_eq!(count_in(production, "error: note_for_text(&status.error)"), 1,
+        "rclone 的终态原话没走分类器（或直接塞了原文）：{production}");
     // ③ 界面拿到的必须是那一份两段的，渲染走 `NoteLine`；明面不许出现 `description={state.error}`
     //    那种"把整段递上去"的写法（TS 那一臂同样是 `ShortNote`，见 ④）。
     let detail = strip_comments(&read("src/components/JobDetailPanel.tsx"));

@@ -201,6 +201,12 @@ pub fn preview_pane_image(fs: &str, prefix: &str, name: &str) -> Result<String, 
     super::read_local_image_data_url(&root, name)
 }
 
+/// 本地浏览器的 `prefix` 只能是相对段：`root.join` 对 `C:` / `\foo` 会换掉整个根，
+/// 于是"在哪个位置里列"变成另一棵树。空串是根，允许。
+fn local_prefix_is_relative(prefix: &str) -> bool {
+    !prefix.starts_with('/') && !prefix.starts_with('\\') && !prefix.contains(':')
+}
+
 /// `local_fs_id` 的反函数：`D:/pics` → `Path("D:\\pics")`。**只放行那一个量过的形状**，
 /// 解不出来交 `None`（UNC、盘符相对写法、整块盘——`local_fs_id` 本来就不发它们）。
 fn local_fs_id_to_path(id: &str) -> Option<std::path::PathBuf> {
@@ -396,6 +402,31 @@ impl Runner {
         // （配置侧的 parse 管不到它）：放行下去的话 `..` 可能被解析成另一棵树，而回显那句键写的
         // 还是这一棵——两边各自都不算假话，合起来说的不是同一件事。
         refuse_dot_segments(&[(fs, prefix)])?;
+        // 本地 fs 的根（或当前前缀）不存在时，rclone 会把它答成"零条"—— 于是界面那条
+        // 「列不出来」的通道永远收不到原因，一个被移走/改名的目录看起来就是一个空目录。
+        // 在发请求之前先把这一档分开：这不是读数，是"这一栏根本没有可列的东西"。
+        // 只认盘符形状的 id（`local_fs_id_to_path`）；具名 remote 的 404 仍按 F9/R64 当空集，
+        // 因为"云端还没上传过这个子目录"是正常用法。
+        if let Some(root) = local_fs_id_to_path(fs) {
+            // `prefix` 是界面交回来的自由串；`root.join` 遇到盘符或根前缀会**替换**整个根。
+            // 今天它只由清单里的相对名与面包屑拼出来，但这条通路不该把"根之外"当输入。
+            if !prefix.is_empty() && !local_prefix_is_relative(prefix) {
+                return Err(RunError::Invariant(format!(
+                    "「{prefix}」不是一个可以在这里打开的相对位置（不能从盘符或根开始）。")));
+            }
+            let target = if prefix.is_empty() {
+                root
+            } else {
+                root.join(prefix.replace('/', std::path::MAIN_SEPARATOR_STR))
+            };
+            if !target.is_dir() {
+                let how = if target.exists() { "这个本地位置不是目录" } else { "这个本地位置不存在" };
+                return Err(RunError::Invariant(format!(
+                    "{how}：{}。它可能被移走或改名了；到「设置」里的「改这条」换成别的目录，\
+                     或在「配好的位置」上点「换一对位置」临时换一个。",
+                    target.display())));
+            }
+        }
         // **单层**列举：这一面是两栏文件浏览器，进一层就该只拿一层。
         // 递归那档是集合差与盘点要的（`rc::listing`），两边口径不同是刻意的：
         // 在操作员自己的 vault 根上量过：同一层递归回 6,110 条、单层回 2 条 ——
@@ -1098,4 +1129,18 @@ pub struct RunReport {
     pub agrees: bool,
     pub note: String,
     pub log_path: String,
+}
+
+#[cfg(test)]
+mod prefix_tests {
+    use super::local_prefix_is_relative;
+
+    #[test]
+    fn a_local_browser_prefix_must_stay_below_its_root() {
+        assert!(local_prefix_is_relative(""));
+        assert!(local_prefix_is_relative("sub/dir"));
+        for bad in ["/abs", "\\abs", "C:/Windows", "C:"] {
+            assert!(!local_prefix_is_relative(bad), "{bad} 不该被当成相对前缀");
+        }
+    }
 }

@@ -16,6 +16,12 @@ import type { GateReport, JobDraft, JobView, LogTail, PreviewView, PruneReport, 
 
 const POLL_MS = 1000;
 
+/** `runJob` / `runMirror` 交回的是**终态数据**：rclone 失败时也是 `Ok(Failed)`。
+ *  完成提示只认这一档，不能把「promise 没 reject」当成「做完了」。 */
+function isDone(value: unknown): value is Extract<TaskState, { state: 'done' }> {
+  return typeof value === 'object' && value !== null && (value as TaskState).state === 'done';
+}
+
 /** 顶栏下面那三面。显示条件一律按它**等值**判：两面共用"不是那一面就显示这一面"那种写法，
  *  第三面一出现就会与对子面同时显示（两面上各有一套按钮，点下去动的是看不见的地方）。 */
 type View = 'pairs' | 'browser' | 'settings';
@@ -54,6 +60,17 @@ export function Panel() {
       message: `${label}失败`,
       description: note.detail === '' ? note.short : `${note.short}\n${note.detail}`,
       duration: 10,
+    });
+  }, [notification]);
+  /** 传输 / 试跑 / 对齐跑完之后的那一声。**不翻右列**（那三格自己的读数住在「进度」，
+   *  翻面会把正在看差异的人拽走），用一条会自己消失的提示说结果在哪一段。
+   *  没有这一声时，人从「看差异」按「开始」，屏幕上一个字都不变——做没做、做完没有，
+   *  只能靠自己再翻到「进度」那一段去找。 */
+  const notifyDone = useCallback((label: string, dry = false) => {
+    notification.success({
+      message: dry ? `${label}做完了 · 没有动文件` : `${label}做完了`,
+      description: '结果在右列「进度」里。',
+      duration: 4,
     });
   }, [notification]);
   const [status, setStatus] = useState<RcdStatus | null>(null);
@@ -158,13 +175,18 @@ export function Panel() {
     });
   }, [notification]);
 
-  const act = useCallback(async (label: string, fn: () => Promise<unknown>) => {
+  const act = useCallback(async (
+    label: string,
+    fn: () => Promise<unknown>,
+  ): Promise<{ ok: boolean; value: unknown }> => {
     setBusy(true);
     try {
-      await fn();
+      const value = await fn();
       await refresh();
+      return { ok: true, value };
     } catch (e) {
       say(label, errNote(e));
+      return { ok: false, value: undefined };
     } finally {
       setBusy(false);
     }
@@ -182,9 +204,9 @@ export function Panel() {
    *  操作员只看得见所有按钮一起变灰（`busy` 是全局的），而右栏还在讲上一张卡的事。
    *  操作员报的就是这个。`openInventory`/`openMirror` 本来就自己选中，
    *  它们不走这里（各自还要顺带翻右列那一面）。 */
-  const cardAct = useCallback((id: string, label: string, fn: () => Promise<unknown>) => {
+  const cardAct = useCallback((id: string, label: string, fn: () => Promise<unknown>, done?: (value: unknown) => void) => {
     setSelectedId(id);
-    void act(label, fn);
+    void act(label, fn).then((r) => { if (r.ok) done?.(r.value); });
   }, [act]);
 
   /** 对账的两个入口（卡上那颗 + 右列那一段里那颗）走**同一条路**：选中、把右列翻到「对账」那一段、跑。
@@ -307,8 +329,12 @@ export function Panel() {
           focusPair={focusPair}
           onSaveDraft={saveDraft}
           onFoldPair={foldPair}
-          onTrialRun={(id) => cardAct(id, '试跑', () => api.runJob(id, true))}
-          onStart={(id) => cardAct(id, '传输', () => api.runJob(id, false))}
+          onTrialRun={(id) => cardAct(id, '试跑', () => api.runJob(id, true), (value) => {
+            if (isDone(value) && value.dry_run) notifyDone('试跑', true);
+          })}
+          onStart={(id) => cardAct(id, '传输', () => api.runJob(id, false), (value) => {
+            if (isDone(value) && !value.dry_run) notifyDone('传输');
+          })}
           onPreviewMirror={openMirror}
           onGate={runGate}
           onInventory={openInventory}
@@ -327,8 +353,8 @@ export function Panel() {
               focusPair={focusPair}
               onSaveDraft={saveDraft}
               onFoldPair={foldPair}
-              onTrialRun={(id) => cardAct(id, '试跑', () => api.runJob(id, true))}
-              onStart={(id) => cardAct(id, '传输', () => api.runJob(id, false))}
+              onTrialRun={(id) => cardAct(id, '试跑', () => api.runJob(id, true), () => notifyDone('试跑', true))}
+              onStart={(id) => cardAct(id, '传输', () => api.runJob(id, false), () => notifyDone('传输'))}
               onPreviewMirror={openMirror}
               onGate={runGate}
               onInventory={openInventory}
@@ -373,9 +399,10 @@ export function Panel() {
           onCancel={closeMirror}
           onPreview={doPreview}
           onConfirm={(id, token) => void act('对齐', async () => {
+            let finished: TaskState;
             try {
               // 没名单那一档：凭证要现登记（发起点只有这一处，两处就有两处话术）。
-              await api.runMirror(id, token ?? await api.confirmMirror(id));
+              finished = await api.runMirror(id, token ?? await api.confirmMirror(id));
             } catch (e) {
               // 后台那句拒绝（清单变了 / 这份确认不作数 / 复核不过）要留在眼前这份清单上：
               // toast 自己会消失，而人正对着同一屏的清单决定要不要再来一次。
@@ -388,7 +415,9 @@ export function Panel() {
             closeMirror();
             // 这份确认已经交出去了（单次消费），留着它就是一份再也换不来任何东西的旧清单。
             setPreview((p) => { const n = { ...p }; delete n[id]; return n; });
-          })}
+            // 终态必须交回去给下面的 `.then` 判完成；丢了它，成功提示就永远读不到 Done。
+            return finished;
+          }).then((r) => { if (r.ok && isDone(r.value)) notifyDone('对齐'); })}
         />
       )}
       {/* 「换一对位置」那一层。立卡那一次调用与它带回来的那句拒绝都住在层里（同一屏上看得见，

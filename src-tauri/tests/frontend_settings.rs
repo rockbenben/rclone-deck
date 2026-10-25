@@ -321,3 +321,43 @@ fn the_settings_face_says_which_cells_are_unsaved() {
     // 那句要指得出路：说出保存那颗在哪儿，而不是只报"有 N 处"。
     assert!(tight.contains("重开面板就回到磁盘"), "那句没说出后果（重开会怎样）：{clip}");
 }
+
+/// 对账任务的对账基准由「算哪类」带出来，不再是一枚没有标签的「不对账」开关。
+///
+/// 旧形状：表单底部一枚裸 `Select`，选项是「不对账 / 这一条要对账」。选了「对账」却没拨它，
+/// 保存时后台回「gate 任务 X 缺少 manifest」——一个普通用户既不知道 manifest 是什么，
+/// 也不知道刚才那枚裸下拉就是它的开关。现在 `manifest` 跟着 kind 走，表单只给一句说明。
+#[test]
+fn a_gate_job_gets_its_manifest_from_the_kind_not_a_bare_toggle() {
+    let t = strip_comments(&read(PANEL));
+    assert!(t.contains("manifest: v === 'gate'"),
+        "「对账」没有自动带上对账基准（用户还得自己找那枚开关）：{t}");
+    assert!(t.contains("对账基准"), "对账任务没有一句说明基准从哪来：{t}");
+    assert!(!t.contains("'不对账'"), "那枚没有标签的「不对账」开关又回来了：{t}");
+    assert!(!t.contains("manifestField"), "旧的无标签开关处理器还在：{t}");
+}
+
+/// 新加一条时面板先替用户起一个编号，不让人凭空发明内部身份。
+///
+/// 编号会进日志文件名，普通用户没有理由自己想一个；字段仍然可编辑，想用短名就改。
+/// 这一条钉的是"新表单打开时已经有值"和"临时卡带过来也有值"，不是钉具体生成的格式。
+#[test]
+fn a_new_job_starts_with_a_ready_id() {
+    let t = strip_comments(&read(PANEL));
+    assert!(t.contains("function suggestedJobId"), "没有生成建议编号的那一处：{t}");
+    assert!(t.contains("id: suggestedJobId()"), "新加一条没带上建议编号：{t}");
+    assert!(t.contains("id: p.id === '' ? suggestedJobId() : p.id"),
+        "从临时卡带过来的表单没带上建议编号：{t}");
+    assert!(t.contains("已经替你起了一个"), "用户不知道这个编号是替他起的、能不能改：{t}");
+}
+
+/// 设置面第一次打开时是在读文件，不是已经失败；读的过程中不许摆「再读一次」。
+///
+/// 冷启动实测：两份文件 + 两次只读 rclone 探针会超过 2 秒，旧界面在这段时间里只有
+/// 「改设置」和一个「再读一次」按钮，用户会以为坏了或读到空配置。
+#[test]
+fn the_settings_face_says_it_is_loading_instead_of_offering_retry() {
+    let t = strip_comments(&read(PANEL));
+    assert!(t.contains("正在读那两份文件"), "第一次读的时候没有一个「正在读」：{t}");
+    assert!(t.contains("error !== null && <Button"), "读失败时没有重试按钮（或反过来又常驻了）：{t}");
+}

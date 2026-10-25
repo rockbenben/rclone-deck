@@ -253,11 +253,13 @@ jobs:
           retention-days: 30
 
   release:
-    name: 发布：出安装包与更新包
-    # 只在打上 `v*` 标签时跑。**标签上的版本号要等于 `tauri.conf.json` 里那一个**
-    # （`tagName: v__VERSION__` 拿的是配置里那个版本），对不上 tauri-action 会当场拒——
-    # 这道拒是好的：错位的标签会让更新包指向一个装不上的版本。
-    if: startsWith(github.ref, 'refs/tags/v')
+    name: 发布：出安装包与更新包（草稿）
+    # 标签是唯一版本源：第一步先断言 tag 与 package/tauri/Cargo 一致，然后 tauri-action
+    # 直接使用**推送的 tag** 建唯一草稿；不再用 v__VERSION__ 让 action 按配置版本命名
+    # （那会让错位标签落到另一个 release 名下）。
+    # 测试门禁：frontend / rust 两条 job 全绿之后才启动这一条。
+    needs: [frontend, rust]
+    if: github.ref_type == 'tag' && startsWith(github.ref, 'refs/tags/v')
     runs-on: windows-latest
     # 建 release 要写权限：仓里默认给的是 `contents: read`（`permissions` 那块）。
     permissions:
@@ -269,6 +271,22 @@ jobs:
         with:
           node-version: 24
           cache: npm
+
+      - name: 断言 tag 与三处版本一致
+        shell: bash
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$ ]] || { echo "::error::$TAG 不是 vX.Y.Z"; exit 1; }
+          v="${TAG#v}"
+          pkg="$(node -p "require('./package.json').version")"
+          conf="$(node -p "require('./src-tauri/tauri.conf.json').version")"
+          cargo="$(node -e "const fs=require('fs');const s=fs.readFileSync('src-tauri/Cargo.toml','utf8');const m=s.match(/^version = \"([^\"]+)\"/m);if(!m)process.exit(2);process.stdout.write(m[1])")"
+          [ "$pkg" = "$v" ] || { echo "::error::version mismatch: package.json $pkg != tag $v"; exit 1; }
+          [ "$conf" = "$v" ] || { echo "::error::version mismatch: tauri.conf.json $conf != tag $v"; exit 1; }
+          [ "$cargo" = "$v" ] || { echo "::error::version mismatch: Cargo.toml $cargo != tag $v"; exit 1; }
+          echo "version $v asserted in package.json / tauri.conf.json / Cargo.toml"
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -295,55 +313,102 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
-          tagName: v__VERSION__
-          releaseName: rclone-deck v__VERSION__
+          tagName: ${{ github.ref_name }}
+          releaseName: rclone-deck ${{ github.ref_name }}
           releaseBody: |
             rclone-deck 桌面版（Windows）。
 
             面板在「设置」那面有一项「版本与更新」：**默认关着**，开了才会在每次打开时联网问一句
             有没有新版；也可以随时点「立即检查」。有新版时面板只说版本号，下载与安装要人自己按。
+
+            **这个安装包没有做 Windows 代码签名**，首次运行会出现「未知发布者」/SmartScreen 提示；
+            校验和与来源证明见 release 里的 `SHA256SUMS` 与 GitHub attestation。
           generateReleaseNotes: true
-          # **草稿先建、后由 CI 自动发布**：草稿是这一趟的**重试锚点**——中途出了事
-          # 重跑同一趟，tauri-action 会找到这个草稿把产物补进去，而不是撞
-          # 「release already exists」。但草稿里的 `latest.json` 外面看不到
-          # （更新端点读 `releases/latest`，它只认已发布的 release），所以下面那一步
-          # 「发布出去并标成 latest」才是真正把更新推到装好的那些面板上的那一下——
-          # 它由 CI 做，**不需要人按**。
+          # **草稿先建、后由下面的 publish job 自动发布**：发布之前，草稿是这一趟的
+          # **重试锚点**——中途出了事重跑同一趟，tauri-action 会找到这个草稿把产物补进去，
+          # 而不是撞「release already exists」。发布之后的重跑由 publish job 找回同 tag 的
+          # 已发布 release，重新校验/覆盖校验和与 attestation；本 job 只出包与上传草稿。
           releaseDraft: true
           prerelease: false
 
-      # 把草稿发布出去，并显式把它标成 latest。
-      #
-      # ⚠️ **为什么不能只发草稿了事**：草稿转成已发布时，GitHub **不会**重算
-      # `releases/latest` 指向谁——2026-10-20 发 v0.1.1 时就是这样：release 已经
-      # `draft=false`、`prerelease=false`、`published_at` 也填上了，`releases/latest`
-      # 却仍然返回 v0.1.0，端点 `releases/latest/download/latest.json` 于是 404
-      # （v0.1.0 那个 release 里根本没有 `latest.json`）。所以这里一次 PATCH 同时给
-      # `draft=false` 与 `make_latest=true`，不靠 GitHub 自己挪。
-      #
-      # 判据是**看 API 指到谁**，不是看 release 的字段：字段全对而指针没挪，端点照样 404。
-      # CDN 那层重定向还会再滞后几分钟，属正常——这里判 API，不判 CDN。
-      - name: 发布这个 release，并把 latest 指到它
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        shell: bash
+      # 草稿由下面的 publish job 统一校验、计算 SHA256SUMS、生成 attestation、
+      # 发布并标成 latest，再做一次匿名 feed 核验；本 job 只负责出包与上传草稿。
+
+  publish:
+    name: 发布：校验、SHA256SUMS、attestation、匿名核验
+    needs: [release]
+    if: github.ref_type == 'tag' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    # 自动发布是本仓的显式取舍（.desktop-policy.json 的 release-auto-publish 有 reason/revisitWhen）；
+    # 测试门禁由 release.needs [frontend, rust] 保证。
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+      artifact-metadata: write
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      REPO: ${{ github.repository }}
+      TAG: ${{ github.ref_name }}
+    steps:
+      - name: 取回这一趟的草稿资产
         run: |
           set -euo pipefail
-          tag="${GITHUB_REF_NAME}"
-          # ⚠️ **不能用 `releases/tags/<tag>` 找这条 release**：那个端点**不返回草稿**
-          # （`GET /releases/{id}` 才返回）。草稿只能从 release 列表里捞——列表按创建
-          # 时间倒序，新建的草稿总在第一页。
-          id="$(gh api "repos/${GITHUB_REPOSITORY}/releases?per_page=100" \
-                 --jq "first(.[] | select(.tag_name == \"${tag}\") | .id)")"
-          if [ -z "$id" ]; then
-            echo "::error::没找到 tag ${tag} 对应的 release"
-            exit 1
+          rm -rf dist
+          gh release download "$TAG" -R "$REPO" -D dist
+      - name: 校验 updater feed 与 Windows 安装包
+        run: |
+          set -euo pipefail
+          v="${TAG#v}"
+          jq -e --arg v "$v" '.version == $v' dist/latest.json
+          url="$(jq -r '.platforms["windows-x86_64"].url // empty' dist/latest.json)"
+          sig="$(jq -r '.platforms["windows-x86_64"].signature // empty' dist/latest.json)"
+          [ -n "$url" ] && [ -n "$sig" ] || { echo "::error::latest.json 缺 windows-x86_64 的 url/signature"; exit 1; }
+          # tauri-action 的 feed 历史上用过 API asset URL（/releases/assets/<id>），
+          # 不能只拿 basename 当文件名；两种形状都解析到真正的资产名再查盘。
+          if [[ "$url" == *"api.github.com/repos/"*"/releases/assets/"* ]]; then
+            asset_id="${url%%\?*}"; asset_id="${asset_id##*/}"
+            name="$(gh api "repos/${REPO}/releases/assets/${asset_id}" --jq .name)"
+          else
+            name="$(basename "${url%%\?*}")"
           fi
-          gh api --method PATCH "repos/${GITHUB_REPOSITORY}/releases/${id}" \
-            -F draft=false -f make_latest=true > /dev/null
-          latest="$(gh api "repos/${GITHUB_REPOSITORY}/releases/latest" --jq .tag_name)"
-          if [ "$latest" != "$tag" ]; then
-            echo "::error::releases/latest 指着 ${latest}，不是 ${tag}"
-            exit 1
-          fi
-          echo "release ${tag} 已发布，releases/latest 指向它"
+          [ -n "$name" ] && [ -f "dist/$name" ] || { echo "::error::feed 指向不存在的资产 $url"; exit 1; }
+          ls dist/*-setup.exe >/dev/null
+          ls dist/*.sig >/dev/null
+          echo "feed version=$v asset=$name"
+      - name: 生成并上传 SHA256SUMS（LF）
+        run: |
+          set -euo pipefail
+          cd dist
+          rm -f SHA256SUMS
+          sha256sum -- * > SHA256SUMS
+          cat SHA256SUMS
+          gh release upload "$TAG" -R "$REPO" SHA256SUMS --clobber
+      - uses: actions/attest@v4
+        with:
+          subject-checksums: dist/SHA256SUMS
+      - name: 发布这条 release 并标成 latest
+        run: |
+          set -euo pipefail
+          # 不限定 draft：发布成功后匿名核验失败时，重跑必须能找回这条已发布的 release
+          # 重新校验并覆盖 SHA256SUMS/attestation。对已发布的 release，draft=false 是 no-op。
+          id="$(gh api "repos/${REPO}/releases?per_page=100"                  --jq "first(.[] | select(.tag_name == \"${TAG}\") | .id)")"
+          [ -n "$id" ] || { echo "::error::没找到 ${TAG} 的 release"; exit 1; }
+          gh api --method PATCH "repos/${REPO}/releases/${id}" -F draft=false -f make_latest=true >/dev/null
+          latest="$(gh api "repos/${REPO}/releases/latest" --jq .tag_name)"
+          [ "$latest" = "$TAG" ] || { echo "::error::releases/latest 指着 ${latest}，不是 ${TAG}"; exit 1; }
+      - name: 匿名核验 updater feed
+        run: |
+          set -euo pipefail
+          v="${TAG#v}"
+          url="https://github.com/${REPO}/releases/latest/download/latest.json"
+          for i in $(seq 1 10); do
+            body="$(curl -fsSL "$url" 2>/dev/null || true)"
+            if [ -n "$body" ] && printf '%s' "$body" | jq -e --arg v "$v"               '.version == $v and (.platforms["windows-x86_64"].url != null)' >/dev/null; then
+              echo "anonymous latest.json version=$v"
+              exit 0
+            fi
+            echo "latest.json 尚未就绪（第 ${i}/10 次），60 秒后重试"
+            sleep 60
+          done
+          echo "::error::10 分钟后匿名 latest.json 仍不是 $v"; exit 1

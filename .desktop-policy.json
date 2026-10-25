@@ -1,0 +1,47 @@
+{
+  "schemaVersion": 2,
+  "status": "house-style-default",
+  "verifiedOn": "2026-10-24",
+  "framework": "tauri",
+  "channel": "stable",
+  "platforms": [
+    "windows-x64"
+  ],
+  "packageManager": "npm",
+  "node": "24 (Active LTS)",
+  "distribution": {
+    "primary": "github-releases",
+    "secondary": [],
+    "windows": "nsis"
+  },
+  "updater": "in-app, mandatory",
+  "signing": {
+    "tauriUpdaterKey": "mandatory; private key only in GitHub secrets",
+    "windows": "unsigned until a code-signing certificate/Azure Artifact Signing is available; release body carries SmartScreen warning"
+  },
+  "versionSource": "git tag vX.Y.Z; package.json, src-tauri/tauri.conf.json and src-tauri/Cargo.toml are asserted equal in the release job",
+  "release": "CI auto-publish is an explicit project choice; release job waits for frontend + rust tests; publish job validates updater feed, writes LF SHA256SUMS, creates attestation, publishes with make_latest, then anonymously verifies latest.json",
+  "actionPins": "major tags (@v7/@v4); no full SHA",
+  "immutableReleases": "not enabled yet",
+  "deviations": [
+    {
+      "rule": "platforms",
+      "value": [
+        "windows-x64"
+      ],
+      "reason": "README and CI scope: Windows 10/11 x64 only; Rust side and tools/*.cmd/*.ps1 contain Windows-specific behavior, and no macOS/Linux/arm64 test hardware is available.",
+      "revisitWhen": "a macOS/Linux/arm64 user request appears, or the Windows-specific tooling is made cross-platform"
+    },
+    {
+      "rule": "windows-unsigned",
+      "reason": "No Windows code-signing certificate/Azure Artifact Signing is available yet; release notes carry the SmartScreen warning.",
+      "revisitWhen": "Azure Artifact Signing or a Windows signing certificate becomes available"
+    },
+    {
+      "rule": "release-auto-publish",
+      "reason": "Operator explicitly chose CI auto-publish in commit 45cfe60 instead of leaving a draft for a manual click; release is still gated by frontend + rust tests and the publish job feed/checksum/attestation checks.",
+      "revisitWhen": "first release that would have been stopped by human approval, or when protected-environment approval is added"
+    }
+  ],
+  "notes": "audit.mjs reads platforms and deviations only. Every deviation has reason + revisitWhen. release-auto-publish documents the deliberate auto-publish choice. Everything else is guidance."
+}

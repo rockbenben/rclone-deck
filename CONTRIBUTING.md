@@ -29,18 +29,22 @@ npm run tauri build         # 出安装包：src-tauri/target/release/bundle/nsi
 | `npm run typecheck` | `tsc --noEmit` | frontend |
 | `npm run build` | typecheck + `vite build` | frontend（打包也走它） |
 | `npm run copy:scan` | 文案标点（直引号括中文 / 中文句中的半角冒号） | frontend |
+| `npm run copy:ascii` | 纯英文界面文案（漏翻） | frontend |
+| `npm run copy:ascii:selftest` | 上一条闸门的自检（退化就红） | frontend |
 | `npm audit --audit-level=high` | npm 侧已知漏洞 | frontend |
 | `npm run lint:rust` | `cargo clippy --all-targets --features test-helpers` | rust |
 | `npm test` | 全套 Rust 测试（含真后台） | rust |
 | `cargo audit --file src-tauri/Cargo.lock` | Rust advisory 数据库 | security |
 
-一次性跑完：`npm run build`、`npm run copy:scan`、`npm run lint:rust`、`npm test`。
+一次性跑完：`npm run build`、`npm run copy:scan`、`npm run copy:ascii`、`npm run copy:ascii:selftest`、`npm run lint:rust`、`npm test`。
 
 ### 文案扫描：它是闸门，但它只扫界面
 
 `npm run copy:scan` 现在**标点有违规就退 1**（清单条数不算违规 —— 那是活儿没干完，不是规矩破了），并已接进 `ci.yml` 的 `frontend` job。在这之前它永远退 0，`DESIGN.md` 那句「标点机械保证零违规」只能靠人读输出。
 
 **射程要说清楚**：它只读 `src/**` 与 `src-tauri/src/**` 的 `.ts/.tsx/.rs`——界面文案。**README、`docs/`、配置文件都不在里面**。2026-10-09 通盘时量到 `DESIGN.md` 自己就有 134 处 ASCII 直引号（叙述性行文，与界面文案是两回事）。**界面零违规 ≠ 全仓零违规。**
+
+另一半是 `npm run copy:ascii`：它只报**纯英文界面话**（两词以上且含常见功能/状态词），CSS 值与标识符不算；`copy:ascii:selftest` 拿一份故意写错的英文文案当靶子，靶子不红就说明闸门瞎了。两道扫描都只读界面源码，README 与 docs 不在射程里。
 
 改界面上的一句话想看差在哪：清单每轮重生成，与上一份对一遍（生成命令在脚本头部；落点在 `docs/superpowers/` 下，**不入库**）。改一条就在差份里记一条。）
 
@@ -52,7 +56,7 @@ node tools/ui-acceptance.mjs --home=A --from=0 --to=20 --out=docs/superpowers/ev
 
 它在**真窗口**里逐动作走一遍，每屏一张 PNG 加一行 DOM 读数，判定必须读 `<out>/readings.txt` 而不是 stdout（含中文的行会被终端回显吞掉，`Read` 那个文件是唯一可信的读法）。
 
-接不进 CI 的原因是硬的：它要一个起着的面板（CDP）、一个夹具家（`%TEMP%\deck-ui-A` / `-B`），而脚本里那两处是**本机绝对路径**，远端名按夹具家写死成操作员配置里的 `fxa` / `fxb`。先按 `tools/ui-launch.cmd` 的规矩起面板（`RCLONE_DECK_HOME` 必须写在启动命令自己的环境里，见 `evidence/acceptance.md` 记的那两次误启动）。
+接不进 CI 的原因是硬的：它要一个起着的面板（CDP）、一个本地临时夹具家（`%TEMP%\deck-ui-A` / `-B`），而这两样都活在这台机器上，远端名又按夹具家写成 `fxa` / `fxb`。先按 `tools/ui-launch.cmd` 的规矩起面板（`RCLONE_DECK_HOME` 必须写在启动命令自己的环境里，见 `evidence/acceptance.md` 记的那两次误启动）。
 
 **跑它之前有三个坑（2026-10-09 每一个都踩了）：**
 
@@ -139,12 +143,11 @@ node tools/ui-acceptance.mjs --home=A --from=0 --to=20 --out=docs/superpowers/ev
 
 ## 依赖怎么进
 
-**现在没有依赖自动更新**：仓里没有 `.github/dependabot.yml`（只有 `ci.yml`），升级靠人跑。
-要开自动 PR 再补那份配置；届时的分组口径先记在这里，免得开的时候现编：devDependencies 一组、运行期依赖一组、Rust 生态一组 —— 前两组各自内部互相咬合（`vite` / `@vitejs/plugin-react` / `typescript` 是同一波发版），拆开只会让人手工排版本组合。
+**依赖升级靠人跑**：仓里没有自动依赖更新工作流。升级时先量（`npm run build`、`npm test`、`npm run lint:rust`），锁文件入库，别删。
 
 两条锁文件都**入库**，别删：`package-lock.json` 与 [src-tauri/Cargo.lock](src-tauri/Cargo.lock)。CI 走 `npm ci`，锁文件与 `package.json` 不一致会直接红。
 
-> **`typescript` 已经迁到 `^7`**（7.0.2，Go 原生重写那一支）。这次是一次独立迁移，不是混在依赖更新里升的：`tsc --noEmit` 与 `vite build` 都验过，Rust 侧那七条读前端源码的证人（`frontend_*`）也重跑过（当时全绿；条数别抄在这里，跑一次 `npm test` 现量）。`@types/react@19` 与 TS 7 实测相容，没动。
+> **`typescript` 已经迁到 `^7`**（7.0.2，Go 原生重写那一支）。这次是一次独立迁移，不是混在依赖更新里升的：`tsc --noEmit` 与 `vite build` 都验过，Rust 侧那组读前端源码的证人（`frontend_*`）也重跑过（当时全绿；条数别抄在这里，跑一次 `npm test` 现量）。`@types/react@19` 与 TS 7 实测相容，没动。
 >
 > 升之前**先量**、升之后**照样量**：TS 7 是大版本，`tsc` 的检查项与诊断措辞都可能变，真红了要能说清是「代码本来就有问题」还是「新版本查得更严」。
 
@@ -160,7 +163,7 @@ node tools/ui-acceptance.mjs --home=A --from=0 --to=20 --out=docs/superpowers/ev
 
 ## CI 跑在哪
 
-`.github/workflows/ci.yml`，五条 job：
+`.github/workflows/ci.yml`，六条 job：
 
 | job | 跑在哪 | 什么时候 | 装什么 |
 | --- | --- | --- | --- |
@@ -168,14 +171,15 @@ node tools/ui-acceptance.mjs --home=A --from=0 --to=20 --out=docs/superpowers/ev
 | `rust` | windows-latest | 每个 push / PR | Rust + **rclone**（五条测试目标要起真后台） |
 | `security` | ubuntu-latest | 每个 push / PR | `cargo-audit` |
 | `bundle` | windows-latest | 推 main / 手动 | 出 NSIS 安装包并传成 artifact |
-| `release` | windows-latest | 打 `v*` 标签 | 出安装包**与更新包**，并建一个 release |
+| `release` | windows-latest | 打 `v*` 标签 | 出安装包与更新包，建一个草稿 |
+| `publish` | ubuntu-latest | 打 `v*` 标签、`release` 成功后 | 校验 feed/资产、LF `SHA256SUMS`、attestation；发布并匿名核验 |
 
 两点说明：
 
-- **只有 Windows runner。** 本仓只支持 Windows（README「支持范围」写死），加 linux/macos 绿了也证明不了任何事。
+- **构建产物只在 Windows runner。** 本仓只支持 Windows（README「支持范围」写死），加 linux/macos 构建绿了也证明不了任何事；`security` 与 `publish` 跑在 ubuntu 上，只做检查和发布编排，不产出应用包。
 - **`bundle` 不在 PR 上跑。** NSIS 要现下、release 模式要重编全量 Rust；PR 上「能编过」由 `rust` 那条 job 兜住。手动触发（workflow_dispatch）可以单独出安装包。
 
-Rust 编译缓存走 [Swatinem/rust-cache](https://github.com/Swatinem/rust-cache)，工作区显式指成 `src-tauri -> .` —— `Cargo.toml` 不在仓根，不指的话每轮都要从头编 tauri。
+Rust 编译缓存走 [Swatinem/rust-cache](https://github.com/Swatinem/rust-cache)，工作区显式指成 `src-tauri -> target`（`target` 是相对工作区给的；写成 `-> .` 会把整棵源码树装进缓存）—— `Cargo.toml` 不在仓根，不指的话每轮都要从头编 tauri。
 
 ### 发一个版本：安装包与更新包
 
@@ -184,22 +188,23 @@ Rust 编译缓存走 [Swatinem/rust-cache](https://github.com/Swatinem/rust-cach
 
 它读的是 GitHub 上的 `releases/latest/download/latest.json`，所以发一个版本要走两步：
 
-1. **先把版本号改对**：`src-tauri/tauri.conf.json` 与 `package.json` 里的版本号要一样，
-   并且要等于打算打的那个标签（`v0.1.1` 那种）。`release` 那条 job 用的 `tagName: v__VERSION__`
-   拿的是配置里那一个版本，对不上 tauri-action 会当场拒——错位的标签会让更新包指向一个装不上的版本。
-2. **打标签**：`git tag v0.1.1` 然后推上去。这一趟 `release` 那条 job 出安装包与更新包
-   （`latest.json` 加各个 `.sig`），建一个**草稿** release，然后**由 CI 把它发布出去并标成
-   latest**。到这一步就结束了——**不需要人点 Publish**，也不需要人再去确认 `releases/latest`
-   指到谁。
+1. **先把版本号改对**：`package.json`、`src-tauri/tauri.conf.json`、`src-tauri/Cargo.toml`
+   三处要相等，并且要等于打算打的那个标签（`v0.1.1` 那种）。`release` job 先断言这三处，
+   再用**推送的 tag**（`tagName: ${{ github.ref_name }}`）建草稿；对不上就让这一趟红在第一步。
+2. **打标签**：`git tag v0.1.1` 然后推上去。这一趟 `release` job 出安装包与更新包
+   （`latest.json` 加各个 `.sig`），建一个**草稿**；随后 `publish` job 取回草稿资产，
+   校验 `latest.json` 与安装包、生成 LF `SHA256SUMS`、attestation，再
+   `draft=false make_latest=true` 发布，最后匿名核验 `latest.json`。到这一步就结束了——**不需要人点 Publish**。
 
-   草稿是这一趟的**重试锚点**：中途出了事重跑同一趟，tauri-action 会找到那个草稿把产物补进去，
-   而不是撞「release already exists」。
+   发布之前，草稿是这一趟的**重试锚点**：中途出了事重跑同一趟，tauri-action 会找到那个草稿
+   把产物补进去，而不是撞「release already exists」。发布之后重跑 `publish` 会找回同 tag
+   的已发布 release，重新校验并覆盖 `SHA256SUMS`/attestation。
 
    ⚠️ **为什么发布那一下要显式带 `make_latest`**：草稿转成已发布时，GitHub **不会**重算
    `releases/latest` 指向谁——2026-10-20 发 v0.1.1 时就是这样：release 已经 `draft=false`、
    `prerelease=false`、`published_at` 也填上了，`releases/latest` 却仍然返回 v0.1.0，端点
    `releases/latest/download/latest.json` 于是 404（v0.1.0 那个 release 里根本没有
-   `latest.json`）。所以 CI 那一步是一次 PATCH 同时给 `draft=false` 与 `make_latest=true`，
+   `latest.json`）。所以 `publish` job 那一步是一次 PATCH 同时给 `draft=false` 与 `make_latest=true`，
    之后**自己查 API 确认** `releases/latest` 指着这个标签，指错就让这一趟红。
    （CDN 那层重定向会再滞后几分钟，属正常——判据看 API，不看 CDN。）
 

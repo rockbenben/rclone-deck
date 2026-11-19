@@ -16,6 +16,172 @@ use rclone_deck_lib::config::jobs::{Job, JobKind, Manifest};
 use rclone_deck_lib::runner::{transfer_invariant_violation, RunError, Runner, TaskState};
 use rclone_deck_lib::scope::Scope;
 
+#[tokio::test]
+#[ignore = "real rclone performance fixture"]
+async fn inventory_benchmark_six_thousand_shared_files() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+    use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System};
+
+    let fx = Fx::new();
+    let roots = [fx.src(), fx.dst().join("album")];
+    let base = std::time::UNIX_EPOCH + Duration::from_secs(1_750_000_000);
+    for (side, root) in roots.iter().enumerate() {
+        for dir in 0..60 {
+            std::fs::create_dir_all(root.join(format!("{dir:02}"))).unwrap();
+        }
+        for i in 0..6000 {
+            let name = format!("{:02}/{i:04}.webp", i / 100);
+            let file = root.join(name);
+            let changed = side == 1 && i % 500 == 0;
+            std::fs::write(&file, if changed { b"more bytes".as_slice() } else { b"baseline" }).unwrap();
+            let modified = base + Duration::from_secs(if changed { 2 } else { 0 });
+            std::fs::File::options().write(true).open(&file).unwrap()
+                .set_times(std::fs::FileTimes::new().set_modified(modified)).unwrap();
+        }
+        seed(root, &[if side == 0 { "local-only.webp" } else { "remote-only.webp" }]);
+    }
+    let job = job_at("bench-inventory", JobKind::Copy, &fwd(&roots[0]), &fx.remote("album"));
+    let (handle, app, defaults, _guard) = start_fixture(
+        fx.root(), Some(fx.conf()), vec![], vec![], false,
+    ).await;
+    let handle = Arc::new(handle);
+    let runner = Runner::new(handle.clone(), app, defaults, vec![job]);
+    let pids = [Pid::from_u32(std::process::id()), Pid::from_u32(runner.rcd_info().pid)];
+    for sample in 1..=3 {
+        let stop = Arc::new(AtomicBool::new(false));
+        let signal = stop.clone();
+        let (ready, wait) = std::sync::mpsc::sync_channel(0);
+        let sampler = std::thread::spawn(move || {
+            let mut system = System::new();
+            let mut read = || {
+                system.refresh_processes_specifics(
+                    ProcessesToUpdate::Some(&pids), false, ProcessRefreshKind::nothing().with_memory(),
+                );
+                pids.map(|pid| system.process(pid).unwrap().memory())
+            };
+            let before = read();
+            let mut peak = before;
+            ready.send(()).unwrap();
+            loop {
+                for (max, current) in peak.iter_mut().zip(read()) {
+                    *max = (*max).max(current);
+                }
+                if signal.load(Ordering::Relaxed) { break; }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            (before, peak)
+        });
+        wait.recv().unwrap();
+        let (requests, stats) = handle.client.test_request_counts();
+        let lists = handle.client.list_request_count();
+        let start = std::time::Instant::now();
+        let report = runner.run_inventory("bench-inventory").await;
+        let ms = start.elapsed().as_secs_f64() * 1000.0;
+        stop.store(true, Ordering::Relaxed);
+        let (before, peak) = sampler.join().unwrap();
+        let (all_after, stats_after) = handle.client.test_request_counts();
+        let report = report.unwrap();
+        assert_eq!(report.local_count, 6001);
+        assert_eq!(report.remote_count, 6001);
+        assert_eq!(report.orphans, ["remote-only.webp"]);
+        assert_eq!(report.pending_upload, ["local-only.webp"]);
+        let expected = (0..6000).step_by(500).map(|i| format!("{:02}/{i:04}.webp", i / 100)).collect::<Vec<_>>();
+        assert_eq!(report.diverged.iter().map(|e| &e.name).collect::<Vec<_>>(), expected.iter().collect::<Vec<_>>());
+        assert!(report.diverged.iter().all(|e| e.verdict == "differs" && e.newer == Some("remote")));
+        eprintln!("BENCH-G {sample} ms={ms:.2} rc={} list={} stat={} runner_before={} runner_peak={} rclone_before={} rclone_peak={}",
+            all_after - requests, handle.client.list_request_count() - lists, stats_after - stats,
+            before[0], peak[0], before[1], peak[1]);
+    }
+}
+
+#[tokio::test]
+async fn inventory_collects_list_metadata_and_stats_only_missing_shared_names() {
+    use rclone_deck_lib::rc::RcClient;
+    use serde_json::json;
+    use wiremock::{matchers::{method, path}, Mock, MockServer, Request, ResponseTemplate};
+
+    let fx = Fx::new();
+    let names = ["complete.webp", "size.webp", "time.webp", "unknown.webp"];
+    let now = "2025-06-15T15:06:40.123Z";
+    let newer = "2025-06-15T15:06:42.123Z";
+    let timestamp = std::time::UNIX_EPOCH + Duration::from_millis(1_750_000_000_123);
+    for name in names {
+        let file = fx.src().join(name);
+        std::fs::write(&file, b"same").unwrap();
+        std::fs::File::options().write(true).open(file).unwrap()
+            .set_times(std::fs::FileTimes::new().set_modified(timestamp)).unwrap();
+    }
+    let row = |name, size, time: serde_json::Value| json!({
+        "Name": name, "Path": name, "IsDir": false, "Size": size, "ModTime": time,
+    });
+    let server = MockServer::start().await;
+    Mock::given(path("/operations/fsinfo"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"Features": {"SlowModTime": false, "DuplicateFiles": false}})))
+        .mount(&server).await;
+    Mock::given(method("POST")).and(path("/operations/list"))
+        .and(|r: &Request| !String::from_utf8_lossy(&r.body).contains("noModTime"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"list": [
+            row("complete.webp", 4, json!(now)), row("size.webp", -1, json!(newer)),
+            row("time.webp", 4, json!(null)), row("unknown.webp", 4, json!("invalid")),
+            row("remote-only.webp", -1, json!(null)),
+        ]}))).expect(1).mount(&server).await;
+    for (name, item) in [
+        ("size.webp", row("size.webp", 5, json!(newer))),
+        ("time.webp", row("time.webp", 4, json!(now))),
+        ("unknown.webp", json!(null)),
+    ] {
+        Mock::given(path("/operations/stat"))
+            .and(move |r: &Request| String::from_utf8_lossy(&r.body).contains(&format!("remote={name}")))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"item": item})))
+            .expect(1).mount(&server).await;
+    }
+    let (mut handle, app, defaults, _guard) = start_fixture(fx.root(), Some(fx.conf()), vec![], vec![], false).await;
+    handle.client = RcClient::from_base_url(server.uri(), "fixture", "fixture");
+    let handle = std::sync::Arc::new(handle);
+    let job = job_at("p", JobKind::Copy, &fwd(&fx.src()), &fx.remote("album"));
+    let runner = Runner::new(handle.clone(), app, defaults, vec![job]);
+    let report = runner.run_inventory("p").await.unwrap();
+    assert_eq!(handle.client.test_request_counts(), (5, 3));
+    assert_eq!(report.orphans, ["remote-only.webp"]);
+    assert_eq!(report.diverged.iter().map(|entry| (entry.name.as_str(), entry.verdict, entry.newer)).collect::<Vec<_>>(),
+        [("size.webp", "differs", Some("remote")), ("unknown.webp", "unknown", None)]);
+}
+
+#[tokio::test]
+async fn inventory_keeps_names_only_listing_on_a_slow_metadata_backend() {
+    use rclone_deck_lib::rc::RcClient;
+    use serde_json::json;
+    use wiremock::{matchers::path, Mock, MockServer, Request, ResponseTemplate};
+
+    let fx = Fx::new();
+    seed(&fx.src(), &["shared.webp", "local-only.webp"]);
+    let server = MockServer::start().await;
+    Mock::given(path("/operations/fsinfo"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"Features": {"SlowModTime": true, "DuplicateFiles": false}})))
+        .mount(&server).await;
+    Mock::given(path("/operations/list"))
+        .and(|r: &Request| String::from_utf8_lossy(&r.body).contains("noModTime"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"list": [
+            {"Path": "shared.webp", "Name": "shared.webp", "IsDir": false, "Size": 4},
+            {"Path": "remote-only.webp", "Name": "remote-only.webp", "IsDir": false, "Size": 4},
+        ]}))).expect(1).mount(&server).await;
+    Mock::given(path("/operations/stat"))
+        .and(|r: &Request| String::from_utf8_lossy(&r.body).contains("remote=shared.webp"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"item": null})))
+        .expect(1).mount(&server).await;
+    let (mut handle, app, defaults, _guard) = start_fixture(fx.root(), Some(fx.conf()), vec![], vec![], false).await;
+    handle.client = RcClient::from_base_url(server.uri(), "fixture", "fixture");
+    let handle = std::sync::Arc::new(handle);
+    let job = job_at("p", JobKind::Copy, &fwd(&fx.src()), &fx.remote("album"));
+    let runner = Runner::new(handle.clone(), app, defaults, vec![job]);
+    let report = runner.run_inventory("p").await.unwrap();
+    assert_eq!(handle.client.test_request_counts(), (3, 1));
+    assert_eq!(report.orphans, ["remote-only.webp"]);
+    assert_eq!(report.pending_upload, ["local-only.webp"]);
+    assert_eq!((report.diverged[0].name.as_str(), report.diverged[0].verdict), ("shared.webp", "unknown"));
+}
+
 /// 把这次任务自己那份日志变成写不下去。`TaskLog::write` 每行都
 /// `OpenOptions::append(true).open(path)`，Windows 上对只读文件开写就是 ACCESS_DENIED——
 /// 这是 R48 I-1 说的"盘满 / ACL / 路径过长"那一类在本机唯一既不需要管理员权限、也不需要
@@ -95,26 +261,57 @@ async fn take_over_the_dead_port() -> tokio::net::TcpListener {
 
 /// 在已经占住的端口上答**一次** 400。回的是固定字面量，**不回显请求**（读到的字节直接丢掉），
 /// 所以凭据不可能经由错误话术回流。监听者随本函数落地，端口随即空出来。
-async fn answer_once_with_a_400(l: tokio::net::TcpListener) {
-    let (mut sock, _) = l.accept().await.expect("runner 的提交会连上来");
-    let mut buf = [0u8; 4096];
-    let mut seen = Vec::new();
-    while let Ok(n) = tokio::io::AsyncReadExt::read(&mut sock, &mut buf).await {
-        if n == 0 { break; }
-        seen.extend_from_slice(&buf[..n]);
-        // 等头部结束再答：半程断开会让 reqwest 拿到 Transport，那就变成另一档了。
-        if seen.windows(4).any(|w| w == b"\r\n\r\n") { break; }
-    }
-    let body = "{\"error\":\"一个不是 rclone 的监听者拒了这个请求\"}";
-    let resp = format!(
-        "HTTP/1.1 400 Bad Request\r\ncontent-type: application/json\r\ncontent-length: {}\
-         \r\nconnection: close\r\n\r\n{}", body.len(), body);
-    tokio::io::AsyncWriteExt::write_all(&mut sock, resp.as_bytes()).await
-        .expect("把 400 写回去");
-    drop(sock);
+async fn setup_with_submit_reply(
+    fx: &Fx, jobs: Vec<Job>, status: u16, body: serde_json::Value,
+) -> (Runner, DaemonGuard, wiremock::MockServer) {
+    use rclone_deck_lib::rc::RcClient;
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    let (mut handle, app, defaults, guard) = start_fixture(
+        fx.root(), Some(fx.conf()), vec![], vec![], false,
+    ).await;
+    let server = MockServer::start().await;
+    Mock::given(method("POST")).and(path("/sync/copy"))
+        .respond_with(ResponseTemplate::new(status).set_body_json(body))
+        .expect(1).mount(&server).await;
+    handle.client = RcClient::from_base_url(server.uri(), "test", "test");
+    (Runner::new(std::sync::Arc::new(handle), app, defaults, jobs), guard, server)
 }
 
 // --------------------------------------------------------------- 纯函数
+
+#[tokio::test]
+async fn a_success_response_without_a_job_id_keeps_conflicting_writes_blocked() {
+    let fx = Fx::new();
+    seed(&fx.src(), &["a.txt"]);
+    let (runner, _guard, _server) = setup_with_submit_reply(&fx, vec![
+        job("up", JobKind::Copy, &fx.src(), &fx.dst()),
+        job("down", JobKind::Copy, &fx.dst(), &fx.src()),
+    ], 200, serde_json::json!({})).await;
+    let result = runner.run_copy("up", false).await;
+    assert!(matches!(result, Ok(TaskState::Unknown { .. })), "{result:?}");
+    assert!(matches!(runner.run_copy("down", false).await, Err(RunError::Busy { .. })));
+    assert!(matches!(runner.state("down").await, TaskState::Idle));
+}
+
+#[tokio::test]
+async fn a_listener_replacing_the_original_daemon_does_not_receive_writes() {
+    let fx = Fx::new();
+    seed(&fx.src(), &["a.txt"]);
+    let (runner, guard) = setup(fx.root(), vec![
+        job("copy", JobKind::Copy, &fx.src(), &fx.dst()),
+    ]).await;
+    guard.kill_daemon();
+    let listener = take_over_the_dead_port().await;
+    let (result, accepted) = tokio::join!(
+        runner.run_copy("copy", false),
+        tokio::time::timeout(Duration::from_millis(750), listener.accept()),
+    );
+    assert!(matches!(result, Ok(TaskState::Unknown { .. })), "{result:?}");
+    assert!(accepted.is_err(), "a write was sent to the replacement listener");
+    assert!(files_in(&fx.dst()).is_empty());
+}
 
 #[test]
 fn the_invariant_flags_any_deletion_reported_under_a_copy_kind() {
@@ -242,7 +439,7 @@ async fn the_same_fixture_under_sync_kind_reports_the_orphan_as_a_delete_in_the_
 ///
 /// "根本没碰 daemon" 是这么证的：把本用例自己的 daemon 杀掉、端口由测试接管成一个
 /// 只会记账的监听者，`run_copy` 返回之后再问它收没收到过连接（同一个两段式夹具
-/// 见 `a_submit_that_rcd_answered_releases_the_key_and_leaves_queued`）。
+/// 见 `a_definite_rejection_releases_the_key_and_restores_idle`）。
 #[tokio::test]
 async fn a_refused_real_mirror_touches_neither_the_lock_nor_the_log_nor_the_daemon() {
     let fx = Fx::new();
@@ -261,7 +458,7 @@ async fn a_refused_real_mirror_touches_neither_the_lock_nor_the_log_nor_the_daem
     // 预先占住这对目录的**整组**键（两侧各一把）：闸门若在 `acquire` 之后就会在这里拿到 `Busy` 而不是 `Invariant`。
     let held = r.mutex().acquire_all(&keys_of(&r, "m"), "手动占用").await.unwrap();
     g.kill_daemon();
-    // 僵尸连接那一段同 `a_submit_that_rcd_answered_releases_the_key_and_leaves_queued`：
+    // 僵尸连接那一段同 `a_definite_rejection_releases_the_key_and_restores_idle`：
     // 不等这一圈，提交可能落进健康检查留下的那条池化连接里，端口上就什么都看不见。
     tokio::time::sleep(Duration::from_millis(200)).await;
     let l = take_over_the_dead_port().await;
@@ -604,9 +801,10 @@ async fn an_unwritable_task_log_after_submit_still_holds_the_key() {
 #[tokio::test]
 async fn an_unwritable_submit_ack_log_goes_to_unknown_instead_of_freezing_running() {
     let fx = Fx::new();
-    std::fs::write(fx.src().join("a.txt"), b"x").unwrap();
+    std::fs::write(fx.src().join("a.txt"), vec![b'x'; 512 * 1024]).unwrap();
     let up = job("up", JobKind::Copy, &fx.src(), &fx.dst());
-    let (r, _g) = setup(fx.root(), vec![up]).await;
+    let down = job("down", JobKind::Copy, &fx.dst(), &fx.src());
+    let (r, _g) = setup_with_flags(fx.root(), vec![up, down], vec!["--bwlimit".into(), "128k".into()]).await;
 
     let (res, ()) = tokio::join!(
         r.run_copy("up", false),
@@ -621,13 +819,36 @@ async fn an_unwritable_submit_ack_log_goes_to_unknown_instead_of_freezing_runnin
         other => panic!(
             "状态冻在 {other:?}：'已提交'那行日志写不下去却没人再轮询这个 job（R49 的靶子）"),
     }
-    // 选 (a) 的代价，钉死在这里：日志目录坏 = 这一对 (src,dst) 锁到重启/force_release
-    // （`Inflight` 仍握着 guard，那个 `return Err` 只走"存进 abandoned"）。
-    // 整组键都在：少一把就说明存起来的不是这一次申领的那一批。
     for key in keys_of(&r, "up") {
         assert!(r.locks().await.contains_key(&key),
             "'已提交'失败却把 {key} 放开了：{:?}", r.locks().await.keys().collect::<Vec<_>>());
     }
+    assert!(matches!(r.run_copy("down", true).await, Err(RunError::Busy { .. })));
+    assert!(matches!(r.state("down").await, TaskState::Idle));
+    tokio::time::timeout(Duration::from_secs(12), async {
+        while !r.locks().await.is_empty() {
+            tokio::time::sleep(Duration::from_millis(150)).await;
+        }
+    }).await.expect("同一个 daemon 确认任务结束后应释放锁");
+    assert!(matches!(r.run_copy("down", true).await, Ok(TaskState::Done { .. })));
+}
+
+#[tokio::test]
+async fn an_empty_configured_log_dir_uses_the_resolved_directory_for_both_write_paths() {
+    let fx = Fx::new();
+    seed(&fx.src(), &["a.txt"]);
+    let (handle, app, mut defaults, _guard) = start_fixture(
+        fx.root(), Some(fx.conf()), vec![], vec![], false,
+    ).await;
+    defaults.log_dir.clear();
+    let resolved = app.log_dir.clone();
+    let runner = Runner::new(std::sync::Arc::new(handle), app, defaults, vec![
+        job("copy", JobKind::Copy, &fx.src(), &fx.dst()),
+    ]);
+    assert!(matches!(runner.run_copy("copy", true).await, Ok(TaskState::Done { .. })));
+    assert_eq!(runner.last_log("copy").await.unwrap().parent(), Some(resolved.as_path()));
+    let browser = runner.browser_mkdir("decklocal:", "test-directory").await.unwrap();
+    assert_eq!(Path::new(&browser.log_path).parent(), Some(resolved.as_path()));
 }
 
 /// 裁定 R49 证人 (b)：**知道结果的 terminal 臂**（这里走成功那条 → `Done`）在 `finished == true`
@@ -687,7 +908,7 @@ async fn a_submit_with_no_answer_holds_the_key_and_names_the_consequence() {
         other => panic!("提交没有答复应该走 Unknown，实际 {other:?}"),
     };
     assert!(reason.contains("没有得到答复"), "{reason}");
-    assert!(reason.contains("force_release"), "话术没交代这把键锁到什么时候为止：{reason}");
+    assert!(reason.contains("重新核验后台"), "{reason}");
     // 凭据只进 Basic 头、不进 URL（`rc/mod.rs` 的 `from_base_url`），所以这里的 `{e}`
     // 顶多带出 `http://127.0.0.1:<现挑的那个号>/sync/copy`；反向的断言留着当回归绊线。
     assert!(!reason.to_lowercase().contains("authorization"), "话术里出现了请求头：{reason}");
@@ -708,25 +929,13 @@ async fn a_submit_with_no_answer_holds_the_key_and_names_the_consequence() {
 /// 起来 = 正常放开锁，但状态**不许**冻在 `Queued`。上一条是"没有答复"，这一条是"有答复、
 /// 答复是错的"——两档必须由这两个夹具分别钉住，否则实现里把两个 `Err` 写成一档也测不出来。
 #[tokio::test]
-async fn a_submit_that_rcd_answered_releases_the_key_and_leaves_queued() {
+async fn a_definite_rejection_releases_the_key_and_restores_idle() {
     let fx = Fx::new();
     std::fs::write(fx.src().join("a.txt"), b"x").unwrap();
     let up = job("up", JobKind::Copy, &fx.src(), &fx.dst());
-    let (r, g) = setup(fx.root(), vec![up]).await;
-    g.kill_daemon();
-    // 让 runtime 先转一圈再发请求：`RcdSupervisor::start` 那次健康检查在 reqwest 的连接池里
-    // 留下一条 keep-alive 连接，daemon 死了它不会立刻被回收（hyper 的池驱动任务要靠 runtime
-    // 轮询才发现连接关闭）。不睡这一下，那次提交会被写进那条僵尸连接、直接报 Transport，
-    // 接管者永远收不到 SYN——那是夹具的坑，不是被测行为。
-    tokio::time::sleep(Duration::from_millis(200)).await;
-
-    // 先接管端口，再让 runner 发那唯一的一次提交（顺序反了就是夹具死锁，见
-    // `take_over_the_dead_port`）。
-    let l = take_over_the_dead_port().await;
-    let (res, ()) = tokio::time::timeout(
-        Duration::from_secs(20),
-        async { tokio::join!(r.run_copy("up", false), answer_once_with_a_400(l)) },
-    ).await.unwrap_or_else(|_| panic!("20 秒内这次提交没和接管者完成握手：夹具不成立"));
+    let (r, _guard, _server) = setup_with_submit_reply(&fx, vec![up], 400,
+        serde_json::json!({"error": "请求在排队前被拒绝"})).await;
+    let res = r.run_copy("up", false).await;
 
     let e = match res {
         Err(e) => e,
@@ -735,7 +944,7 @@ async fn a_submit_that_rcd_answered_releases_the_key_and_leaves_queued() {
     assert!(matches!(e, RunError::Rc(..)), "答了的错被分到了另一档：{e}");
     // 认这句话术而不是只认"有个错"：它同时钉住 ① 这是 rcd 那一侧回的字面量（不是 reqwest
     // 的连接故障），② 错误串里没有回显、没有凭据。
-    assert!(e.to_string().contains("一个不是 rclone 的监听者"), "{e}");
+    assert!(e.to_string().contains("请求在排队前被拒绝"), "{e}");
     assert!(r.locks().await.is_empty(),
         "rcd 答了的提交失败却把键留在表里：{:?}", r.locks().await.keys().collect::<Vec<_>>());
     assert!(matches!(r.state("up").await, TaskState::Idle),
@@ -805,6 +1014,23 @@ async fn gate_names_exactly_the_keys_the_destination_is_missing() {
     assert_eq!(report.actual_count, 1);
     assert!(!report.summary().is_empty());
     r.shutdown_rcd().await.unwrap();
+}
+
+#[tokio::test]
+async fn gate_applies_anchored_rules_at_the_nested_job_root_and_keeps_bucket_keys() {
+    let fx = Fx::new();
+    let expected = fx.src();
+    let target = fx.dst().join("ideahub/covers");
+    seed(&expected, &["extra.webp", "missing.webp"]);
+    seed(&target, &["extra.webp", "keep.webp"]);
+    let (r, _guard) = setup_with_conf_and_exclude(
+        fx.root(), Some(fx.conf()), vec![gate_job(&fx, &expected)],
+        vec!["/covers/extra.webp".into(), "/keep.webp".into()],
+    ).await;
+
+    let report = r.run_gate("g").await.unwrap();
+    assert_eq!(report.missing, ["covers/missing.webp"], "{report:?}");
+    assert_eq!(report.actual_count, 1, "{report:?}");
 }
 
 #[tokio::test]
@@ -935,6 +1161,33 @@ async fn inventory_refuses_an_empty_local_basis_instead_of_offering_the_whole_re
     assert!(log.contains("盘点被拒绝"), "{log}");
     assert!(!log.contains("孤儿 "), "空基准被逐条列了出来：{log}");
     r.shutdown_rcd().await.unwrap();
+}
+
+#[tokio::test]
+async fn download_inventory_lists_remote_names_for_an_empty_or_new_local_destination() {
+    let fx = Fx::new();
+    seed(&fx.dst(), &["nested/002.webp", "001.webp"]);
+    let empty = fx.src();
+    let missing = empty.join("new-destination");
+    let file = fx.root().join("not-a-directory");
+    std::fs::write(&file, b"unchanged").unwrap();
+    let remote = fx.remote("");
+    let jobs = [&empty, &missing, &file].into_iter().enumerate().map(|(i, target)| {
+        job_at(&format!("download-{i}"), JobKind::Sync, &remote, &fwd(target))
+    }).collect();
+    let (r, _g) = setup_with_conf(fx.root(), Some(fx.conf()), jobs).await;
+    for id in ["download-0", "download-1"] {
+        let report = r.run_inventory(id).await.unwrap();
+        assert!(report.dst_is_local && !report.empty_basis);
+        assert_eq!(report.orphans, ["001.webp", "nested/002.webp"]);
+        assert_eq!(report.local_count, 0);
+        assert_eq!(r.last_summary(id).unwrap().will_upload, 2);
+    }
+    assert!(r.run_inventory("download-2").await.is_err());
+    assert!(!missing.exists());
+    assert_eq!(std::fs::read_dir(empty).unwrap().count(), 0);
+    assert_eq!(std::fs::read(file).unwrap(), b"unchanged");
+    assert_eq!(files_in(&fx.dst()), ["001.webp", "nested/002.webp"]);
 }
 
 /// 名单落在日志旁边的 `lists/` 里，与那份日志**同名**（只换扩展名）：拿着日志就能找到它。
@@ -1282,7 +1535,7 @@ async fn a_download_direction_confirmation_reuses_the_seen_inventory_list() {
     // （第一版就是这么错过：读到的尾巴根本没有那一行，而行为是对的）。
     let confirm_log = r.last_log("p").await.expect("确认那一步的日志路径");
     let confirm_text = std::fs::read_to_string(&confirm_log).expect("读确认那一份日志");
-    assert!(confirm_text.contains("基准取自「看差异」那一份"),
+    assert!(confirm_text.contains("授权=逐名"),
         "这次确认没用上「看差异」那份基准（那条出口在界面上就是死的）：{confirm_text}");
     let state = r.run_mirror("p", &token).await.expect("对齐被挡下了：改之前这一句红在「清单变了」");
     match state {

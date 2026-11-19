@@ -352,14 +352,15 @@ fn the_two_sides_normalize_to_the_same_string_for_the_same_instant() {
 
 /// **调用点**也得钉住 —— 只测 `normalize_stamp` 这个纯函数是不够的（2026-10-11 补）。
 ///
-/// 实测过：把 `side_meta` 里的 `d.subsec_millis()` 改回字面量 `0`，
-/// 上面那条证人**照样绿** —— 因为它只喂了手写的 `(秒, 毫秒)`，压根没经过 `side_meta`。
+/// 实测过：把本地元数据读取里的毫秒改回字面量 `0`，
+/// 上面那条证人**照样绿** —— 因为它只喂了手写的 `(秒, 毫秒)`。
 /// 也就是说那个洞可以在证人全绿的情况下回来。这条钉住本地那一侧真的把毫秒交进去了。
 #[test]
 fn the_local_side_really_passes_millis_into_the_shared_normalizer() {
     let src = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/runner/checks.rs")).unwrap();
-    assert!(src.contains("normalize_stamp(d.as_secs() as i64, d.subsec_millis())"),
+    let local = src.split("fn local_metadata").nth(1).unwrap().split("fn inventory_remote").next().unwrap();
+    assert!(local.contains(".subsec_millis()") && local.contains("normalize_stamp("),
         "本地那一侧没把毫秒交给归一化：本地截到整秒、远端留毫秒，同一时刻会被读成不同 \
          （而纯函数那条证人抓不到这个，它只测函数本身）");
     // 远端那一侧也要走同一个函数 —— 两处各拼各的，就是那个洞的来路。

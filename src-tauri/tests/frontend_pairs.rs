@@ -256,7 +256,7 @@ fn the_four_faces_share_one_empty_state() {
     let tight = rail.split_whitespace().collect::<Vec<_>>().join("");
     // 未选中那一句只在右列那一层出现**一次**（每段自己再说一遍就是四种说法回来了）。
     assert_eq!(count_in(&rail, "先选一个任务"), 1, "「先选一个任务」出现了不止一处：{rail}");
-    assert!(tight.contains("if(job===null)"), "没有选中任务时不进四段这一档：{rail}");
+    assert!(tight.contains("{job===null?("), "没有选中任务时不进四段这一档：{rail}");
     // 进度面不再自己演空态：`Empty` 整个从界面消失（它以前是四段里唯一的图标版）。
     assert!(!rail.contains("Empty") , "右列又请回了图标版空态：{rail}");
     let detail = strip_comments(&read("src/components/JobDetailPanel.tsx"));
@@ -414,10 +414,10 @@ fn browsing_defaults_to_local_and_gives_it_the_whole_width() {
     let t = strip_comments(&raw);
 
     // 默认站到第一个本地目录，且**不**自动站云端那一栏（替人挑"要比谁"比多一次点击更贵）
-    assert!(t.contains("r.find((x) => x.isLocal)"),
+    assert!(t.contains("roots.find((root) => root.isLocal)"),
         "打开这一面没有默认站到本地：{t}");
-    assert!(t.contains("p.local.fs !== null"),
-        "默认那一步会覆盖操作员已经挑好的位置：{t}");
+    assert!(t.contains("if (!roots.some((root) => root.isLocal && root.id === local.fs))"),
+        "默认那一步应保留依然可选的本地位置：{t}");
 
     // **本地为主、云端是可切换的比对**（2026-10-11 再改一版）：单边占满并收起动作族，
     // 进比对才并排且把动作放出来。原来那条「对面空就满宽」只是形状的一半，
@@ -439,13 +439,9 @@ fn browsing_defaults_to_local_and_gives_it_the_whole_width() {
 fn the_local_column_shows_photos_as_a_grid() {
     let raw = read("src/components/BrowserPane.tsx");
     let t = strip_comments(&raw);
-    assert!(t.contains("looksLikeImage"),
-        "图片与非图片没有分开：网格里每格都得是一张能看的图：{t}");
-    // 网格里已经列过的，表格里**不再摆一遍**（同一张图在屏上出现两次是白占地方）。
-    // 钉的是那份排除本身 —— 以前这里钉的是渲染分支里的一句 `grid.includes(row)`，
-    // 而那句在 `rest` 已经排除之后恒为假，钉着它等于给一条走不到的分支作保。
-    assert!(t.contains("!grid.includes(e)"),
-        "网格列过的图在表格里又摆了一遍：{t}");
+    // 逐项分组和顺序由 tools/browser-entries-check.mjs 验证。
+    assert!(t.contains("const { grid, rest } = useMemo(() => classifyBrowserEntries(entries, showGrid)"),
+        "网格和表格应共享一次分类：{t}");
     // 网格与表格式共用 `ThumbCell`，而不是另写一个 —— 两处各画一次，
     // "点得动但读不出"的那一格就会出现两次（一次能看、一次不能）。
     assert!(t.contains("thumb-grid") && t.contains("<ThumbCell"),

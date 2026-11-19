@@ -238,7 +238,7 @@ fn the_refusal_is_relayed_not_copied_into_the_ui() {
     // ④片之后那份句子从 `layerError` 变成层的 prop `error`，钉的还是同一件事：拒绝在层里渲染。
     // 错误话术分两层之后，那一份是 `{ short, detail }`，渲染走 `NoteLine`（摘要 + 「为什么？」）：
     // 只钉"渲染了 error"的话，把 detail 那半段丢掉也是绿的，所以两段都要钉到。
-    assert!(t.contains("title=\"没改成\" description={<NoteLine note={error} />}"),
+    assert!(t.contains("title=\"操作未完成\" description={<NoteLine note={error} />}"),
         "确认层里没有渲染拒绝的地方，或者那一份没走两段的渲染：{t}");
     assert!(t.contains("<Modal open={open}"), "那句拒绝没有挂在层里：{t}");
     let tight = t.split_whitespace().collect::<Vec<_>>().join("");
@@ -369,7 +369,8 @@ fn a_failed_endpoint_lookup_stays_on_screen_with_one_way_to_retry() {
     let t = read("src/components/BrowserPanel.tsx");
     assert!(t.contains("{refsError !== null && ("), "取不到位置那句不再常驻：{t}");
     assert!(t.contains("disabled={refsLoading} onClick={loadRefs}"), "那颗重试按钮能连点：{t}");
-    assert!(t.contains(".finally(() => setRefsLoading(false));"), "按下了没有放开的那一半：{t}");
+    assert!(t.contains("if (request === refsRequest.current) setRefsLoading(false);"),
+        "只由当前请求结束位置加载：{t}");
     // 反面：退回"只飘一条 toast"。
     assert!(!t.contains("message.error(`取端点列表失败"), "又回到只飘一条 toast：{t}");
 }

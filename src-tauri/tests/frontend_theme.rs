@@ -96,9 +96,9 @@ fn the_group_labels_take_palette_vars_and_only_one_stays_warm() {
     assert_eq!(vars.len(), 2, "两格模式没都取 CSS 变量：{block}");
     let warm = vars.iter().filter(|p| p.contains("--kind-warm")).count();
     assert_eq!(warm, 1, "暖色必须只给「会删除」那一格，现在数到 {warm} 枚：{block}");
-    // 整面一枚：段标题那些标签走中性墨，别再长第二处暖色。
+    // 整面一枚。段标题交给共享的标题样式。
     assert_eq!(t.matches("--kind-warm").count(), 1, "暖色在这张卡上出现了不止一处：{t}");
-    assert!(t.contains("const INK = 'var(--ink-2)'"), "段标题那两枚没取中性墨：{t}");
+    assert!(t.contains("className=\"pane-title\">{KIND_LABEL.gate}"), "对账标题没有使用共享样式：{t}");
 }
 
 /// 深色已放出来，所以这一条钉的从"不许出现"换成**形状**：

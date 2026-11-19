@@ -34,11 +34,7 @@ pub async fn list_files_recursive(
         .collect())
 }
 
-/// 实际侧：`Path` 已经是"相对 fs 根"的完整 key（实测 `remote="ideahub"` 拿到的就是
-/// `ideahub/covers/a.webp`），**不能再拼一次前缀**。
-/// 所以这个函数压根不收 `prefix`：拼不了，也就拼不错。坐标系是"相对桶根、正斜杠、
-/// 无前导斜杠"，rc 替我们拼好了前半段；期望侧必须自己拼（见 `normalize_expected`）。
-/// 这个不对称是有意的——本地扫描从映射目录起步，远端列举从桶起步。
+/// 收集相对 RC 请求 `fs` 根的文件名。任务列举把完整根传给 `fs`，因此得到任务相对名。
 pub fn normalize_actual(entries: &[ListEntry]) -> BTreeSet<String> {
     entries.iter()
         .filter(|e| !e.is_dir)
@@ -49,13 +45,7 @@ pub fn normalize_actual(entries: &[ListEntry]) -> BTreeSet<String> {
 
 /// 对齐的坐标系：**相对列举根自己**的名字，不是桶全 key。
 ///
-/// 为什么与 `normalize_actual` 故意不同：gate 交出去的是发布许可，它要比"桶里有没有这个完整 key"，
-/// 所以两侧都拼到桶全 key（§5.1）。对齐要圈定删除范围——`sync` 删的是**目标端那一行的名字**，
-/// 操作员在目标端能看见的也正是它。用桶全 key，下载方向就得把桶前缀翻译回本地路径，
-/// 而那一步正是 §4.1 记着的那次假清单事故。
-///
-/// `root` 是列举根（`remote=` 那一段，可以为空）。回来的 `Path` 不以它开头就是坐标系对不上：
-/// **报错**。少剥或多剥一个分隔符，交出的就是一份范围错的删除清单。
+/// 将带有独立 `remote` 参数的旧列表结果转换成相对 `remote` 的名字。
 pub fn normalize_relative(root: &str, entries: &[ListEntry]) -> Result<BTreeSet<String>, ListError> {
     let root = root.trim_matches('/');
     let prefix = if root.is_empty() { String::new() } else { format!("{root}/") };

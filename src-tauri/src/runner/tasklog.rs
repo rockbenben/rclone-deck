@@ -1,6 +1,8 @@
 use std::fs::{File, OpenOptions};
-use std::io::{Read, Seek, SeekFrom, Write};
+use std::io::{ErrorKind, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
+
+use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Level {
@@ -36,15 +38,24 @@ impl TaskLog {
     pub fn create(log_dir: &Path, job_id: &str, secrets: &[String]) -> std::io::Result<Self> {
         std::fs::create_dir_all(log_dir)?;
         let stamp = chrono::Local::now().format("%Y%m%d-%H%M%S").to_string();
-        let mut path = log_dir.join(format!("{job_id}-{stamp}.log"));
-        for n in 1.. {
-            if !path.exists() {
-                break;
+        let prefix = if !job_id.is_empty() && job_id.len() <= 96
+            && job_id.chars().all(|c| c.is_alphanumeric() || matches!(c, '-' | '_')) {
+            job_id.to_owned()
+        } else {
+            let bytes = job_id.as_bytes();
+            // Bound the encoded prefix and reserve colliding names atomically.
+            format!("legacy-{}", URL_SAFE_NO_PAD.encode(&bytes[..bytes.len().min(60)]))
+        };
+        for n in 0.. {
+            let suffix = if n == 0 { String::new() } else { format!("-{n}") };
+            let path = log_dir.join(format!("{prefix}-{stamp}{suffix}.log"));
+            match OpenOptions::new().write(true).create_new(true).open(&path) {
+                Ok(_) => return Ok(Self { path, secrets: secrets.to_vec() }),
+                Err(error) if error.kind() == ErrorKind::AlreadyExists => continue,
+                Err(error) => return Err(error),
             }
-            path = log_dir.join(format!("{job_id}-{stamp}-{n}.log"));
         }
-        File::create(&path)?;
-        Ok(Self { path, secrets: secrets.to_vec() })
+        unreachable!()
     }
 
     pub fn path(&self) -> &Path {

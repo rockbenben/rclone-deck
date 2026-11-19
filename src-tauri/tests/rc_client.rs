@@ -194,7 +194,7 @@ async fn missing_jobid_in_a_200_is_an_error_not_a_panic() {
     let s = MockServer::start().await;
     mount_json(&s, "/sync/copy", serde_json::json!({})).await;
     let err = client(&s).submit_async("sync/copy", &[("srcFs", "a".into())], false).await.unwrap_err();
-    assert!(matches!(err, RcError::Rc { .. }), "{err:?}");
+    assert!(matches!(err, RcError::SubmissionUnknown { .. }), "{err:?}");
 }
 
 #[tokio::test]
@@ -527,8 +527,8 @@ fn each_browser_action_lists_the_range_it_actually_touches() {
     // 两个包装各自把 recurse 定死；这是全部判据的根。
     assert!(body(&ms, "layer_files").contains("listed_files(fs, prefix, ListShape::Level)"),
         "layer_files 不再是单层：{}", body(&ms, "layer_files"));
-    assert!(body(&ms, "prefix_files").contains("listed_files(fs, prefix, ListShape::Tree)"),
-        "prefix_files 不再是整棵前缀：{}", body(&ms, "prefix_files"));
+    assert!(body(&ms, "purge_listing").contains("ListShape::TreeWithDirectories"),
+        "清空要递归列出授权范围及其中目录：{}", body(&ms, "purge_listing"));
     // 显示给人看的那一份也是单层。
     assert!(body(&ms, "browser_list").contains("operations_list(fs, prefix, ListShape::Level)"),
         "浏览器显示的不是单层：{}", body(&ms, "browser_list"));
@@ -537,12 +537,12 @@ fn each_browser_action_lists_the_range_it_actually_touches() {
     for name in ["browser_preview_delete", "run_delete_visible"] {
         let b = body(&ms, name);
         assert!(b.contains("layer_files("), "{name} 不再列这一层：{b}");
-        assert!(!b.contains("prefix_files("), "{name} 混进了整棵前缀的清单（范围会比按钮上说的大）：{b}");
+        assert!(!b.contains("purge_listing("), "{name} 混进了整棵前缀的清单（范围会比按钮上说的大）：{b}");
     }
     // 清空那一族用整棵前缀：purge 删的就是整棵，报小的数就是假读数。
     for name in ["browser_preview_purge", "run_purge"] {
         let b = body(&ms, name);
-        assert!(b.contains("prefix_files("), "{name} 不再列整棵前缀（会删的比报的多）：{b}");
+        assert!(b.contains("purge_listing("), "{name} 不再列整棵前缀（会删的比报的多）：{b}");
         assert!(!b.contains("layer_files("), "{name} 混进了单层清单：{b}");
     }
 
@@ -809,6 +809,18 @@ async fn movefile_sends_the_same_four_names_as_copyfile() {
 }
 
 #[tokio::test]
+async fn a_delete_with_an_unrecognizable_response_has_an_unknown_result() {
+    for status in [200, 503] {
+        let server = MockServer::start().await;
+        Mock::given(method("POST")).and(path("/operations/deletefile"))
+            .respond_with(ResponseTemplate::new(status).set_body_string("unrecognized response"))
+            .mount(&server).await;
+        let error = client(&server).operations_deletefile("deckb:", "dir/a.webp").await.unwrap_err();
+        assert!(matches!(error, ListError::Other(RcError::SubmissionUnknown { .. })), "{error:?}");
+    }
+}
+
+#[tokio::test]
 async fn deletefile_sends_fs_and_remote_and_nothing_else() {
     let s = MockServer::start().await;
     mount_json(&s, "/operations/deletefile", serde_json::json!({})).await;
@@ -1005,24 +1017,31 @@ async fn size_and_check_read_the_measured_keys_and_never_treat_an_empty_error_ar
 
     mount_json(&s, "/operations/check", serde_json::json!({
         "success": true, "error": [], "missingOnSrc": ["only-dst.webp"], "missingOnDst": [], "differ": [] })).await;
-    let c = client(&s).operations_check(("decka:", ""), ("deckb:", "")).await.unwrap();
+    let c = client(&s).operations_check("decka:", "deckb:").await.unwrap();
     assert!(c.success, "空数组不是失败：{:?}", c);
     assert_eq!(c.missing_on_src, vec!["only-dst.webp".to_string()]);
     assert!(c.differ.is_empty(), "`differ: []` 是'没有差异'：{:?}", c.differ);
+    assert!(c.errors.is_empty());
+
+    let s = MockServer::start().await;
+    mount_json(&s, "/operations/check", serde_json::json!({
+        "success": false, "error": ["unreadable.webp"], "hashType": "none"
+    })).await;
+    let c = client(&s).operations_check("decka:", "deckb:").await.unwrap();
+    assert!(!c.success);
+    assert_eq!(c.errors, ["unreadable.webp"]);
+    assert_eq!(c.hash_type.as_deref(), Some("none"));
 }
 
-/// 上面那条只读**回来的字段**，没有一条断言 `operations/check` **上线的字节**。
-/// 实测（Task 6 破坏 (a2)）：把 `operations_check` 里的 `srcRemote` 写成 `srcremote`，
-/// 那 44 条全绿——rc 对不认识的参数静默丢弃（F2），"比对这一个前缀"就变成"比对整个远端"，
-/// 而且没有一句报错。同一条危害、同一种钉法，所以这里补一条字节证人。
+/// check 只读取 srcFs/dstFs，任务前缀必须包含在这两个根里。
 #[tokio::test]
-async fn check_sends_the_same_four_names_as_copyfile() {
+async fn check_sends_only_the_two_complete_roots() {
     let s = MockServer::start().await;
     mount_json(&s, "/operations/check", serde_json::json!({"success": true})).await;
-    client(&s).operations_check(("decka:", "sub"), ("deckb:", "box/sub")).await.unwrap();
+    client(&s).operations_check("decka:sub", "deckb:box/sub").await.unwrap();
     assert_eq!(
         body_sent_to(&s, "/operations/check").await,
-        "srcFs=decka%3A&srcRemote=sub&dstFs=deckb%3A&dstRemote=box%2Fsub");
+        "srcFs=decka%3Asub&dstFs=deckb%3Abox%2Fsub");
 }
 
 #[tokio::test]

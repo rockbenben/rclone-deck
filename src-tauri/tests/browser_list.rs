@@ -197,7 +197,7 @@ fn a_browsed_local_tree_is_the_same_scope_the_locks_use() {
     assert!(browser_scope("D:/vault/img", "2026").conflicts(&job), "点进下一层还是那棵树");
     assert!(!browser_scope("D:/vault/imgprompt", "").conflicts(&job), "长得像的邻居不是同一棵树");
 
-    let cloud = Scope::of_endpoint(&Endpoint::Remote { fs: "r2:img".into(), remote: "2026".into() });
+    let cloud = Scope::of_endpoint(&rclone_deck_lib::endpoint::endpoint_of("r2:img/2026"));
     assert_eq!(browser_scope("r2:img", "2026").key(), cloud.key(), "桶名要在 prefix 里（R84）");
     // 回显那句照旧读得出完整路径（I1），两种根形都不多一个斜杠。
     assert_eq!(browser_scope("r2:img", "2026").describe(), "r2:img/2026");

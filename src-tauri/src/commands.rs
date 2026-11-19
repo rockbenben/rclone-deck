@@ -36,6 +36,7 @@ pub struct LogTail {
 #[tauri::command]
 pub async fn get_jobs(state: tauri::State<'_, AppState>) -> Result<Vec<JobView>, AppError> {
     let runner = state.runner()?;
+    runner.refresh_unconfirmed_writes().await;
     // locked_by 只从登记表派生，绝不从 `TaskState::Unknown` 的 reason
     // 文本里猜"锁没锁"。`TaskState::Unknown` 有五处构造点：提交没答复、`已提交` 那行日志写不下去、
     // 轮询连续读不到 `job/status`、限流警告那行日志写不下去 —— 这四处的键**都还握着**（guard 在
@@ -113,7 +114,7 @@ pub async fn rcd_status(state: tauri::State<'_, AppState>) -> Result<RcdStatus, 
     // `ok` 是"启动那一次成功过"，不是"现在还活着"。这一条每秒被问一次，顺手探一下端口：
     // 进程悄悄退出（崩溃 / 被杀 / 系统回收）时，顶栏不能一直写着「后台就绪」，
     // 让操作员等某次动作失败才发现。探不到就把同一份状态标成 `alive = false`。
-    let alive = backend_accepts(rcd.port).await;
+    let alive = runner.rcd_owner_is_live() && backend_accepts(rcd.port).await;
     // 去重后的**持有者**数，不是键数：一次动作可以申领多个键（`acquire_scopes`），
     // 数键会把一件事报成两件（口径写在 `RcdStatus.active_count` 上）。
     let mut owners: Vec<&String> = locks.values().collect();
@@ -320,9 +321,9 @@ pub async fn browser_copy(
     dst_fs: String,
     dst_remote: String,
 ) -> Result<RunReport, AppError> {
-    Ok(state.runner()?
-        .browser_copy(&src_fs, &src_remote, &dst_fs, &dst_remote)
-        .await?)
+    let runner = state.runner()?;
+    runner.check_browser_roots(&[&src_fs, &dst_fs]).await?;
+    Ok(runner.browser_copy(&src_fs, &src_remote, &dst_fs, &dst_remote).await?)
 }
 
 /// "删掉这一层看到的 N 个"（R75）与"删这一个"的**预览**：交出的是一份清单加一张凭证，
@@ -334,7 +335,9 @@ pub async fn browser_preview_delete(
     prefix: String,
     names: Vec<String>,
 ) -> Result<BrowserPreview, AppError> {
-    Ok(state.runner()?.browser_preview_delete(&fs, &prefix, names).await?)
+    let runner = state.runner()?;
+    runner.check_browser_roots(&[&fs]).await?;
+    Ok(runner.browser_preview_delete(&fs, &prefix, names).await?)
 }
 
 /// 改名 / 移动到目录 / 跨远端移动的**预览**（发凭证，什么都没搬）。
@@ -348,9 +351,9 @@ pub async fn browser_preview_move(
     dst_fs: String,
     dst_remote: String,
 ) -> Result<BrowserPreview, AppError> {
-    Ok(state.runner()?
-        .browser_preview_move(&src_fs, &src_remote, &dst_fs, &dst_remote)
-        .await?)
+    let runner = state.runner()?;
+    runner.check_browser_roots(&[&src_fs, &dst_fs]).await?;
+    Ok(runner.browser_preview_move(&src_fs, &src_remote, &dst_fs, &dst_remote).await?)
 }
 
 
@@ -361,7 +364,9 @@ pub async fn browser_mkdir(
     fs: String,
     remote: String,
 ) -> Result<RunReport, AppError> {
-    Ok(state.runner()?.browser_mkdir(&fs, &remote).await?)
+    let runner = state.runner()?;
+    runner.check_browser_roots(&[&fs]).await?;
+    Ok(runner.browser_mkdir(&fs, &remote).await?)
 }
 
 /// 删一个**空**目录的**预览**（发凭证，一个字节都不删）。
@@ -373,7 +378,9 @@ pub async fn browser_preview_rmdir(
     fs: String,
     remote: String,
 ) -> Result<BrowserPreview, AppError> {
-    Ok(state.runner()?.browser_preview_rmdir(&fs, &remote).await?)
+    let runner = state.runner()?;
+    runner.check_browser_roots(&[&fs]).await?;
+    Ok(runner.browser_preview_rmdir(&fs, &remote).await?)
 }
 
 /// 清空整个前缀的**预览**（发凭证，一个字节都不删）。两道闸在前面：排除规则非空即拒
@@ -385,7 +392,9 @@ pub async fn browser_preview_purge(
     fs: String,
     prefix: String,
 ) -> Result<BrowserPreview, AppError> {
-    Ok(state.runner()?.browser_preview_purge(&fs, &prefix).await?)
+    let runner = state.runner()?;
+    runner.check_browser_roots(&[&fs]).await?;
+    Ok(runner.browser_preview_purge(&fs, &prefix).await?)
 }
 
 /// **唯一的动手入口**（R78）：只认 token，做什么由那份预览自己说。

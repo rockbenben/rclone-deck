@@ -61,9 +61,7 @@ pub struct Defaults {
     /// 盘点时**要不要跑哈希那一级**（2026-10-11 新增，默认关）。
     ///
     /// 默认关是硬理由，不是保守：第一级（大小 + 修改时间）已经能抓到绝大多数，
-    /// 而第二级是 `operations/check` —— 后端不支持该哈希时它要**下载每一个文件**。
-    /// 一个几千张图的库开着它就是分钟级的等待，而绝大多数时候第一级已经说清了。
-    /// 所以它必须由人显式打开，而不是默认承担那份代价。
+    /// 第二级的 `operations/check` 会扫描整个任务根并读取文件哈希，由用户显式打开。
     pub check_by_hash: bool,
 }
 
@@ -103,7 +101,7 @@ struct RawDefaults {
     #[serde(default)]
     log_dir: String,
     /// 哈希那一级的开关（2026-10-11 新增）。**`default` = false**：旧配置文件里没有这一项，
-    /// 而"没有"读成"不开"才是安全的默认 —— 这一级可能要下载每一个文件（见 `Defaults::check_by_hash`）。
+    /// 未配置时保持关闭（见 `Defaults::check_by_hash`）。
     #[serde(default)]
     check_by_hash: bool,
 }
@@ -597,21 +595,17 @@ impl Job {
 
     /// 列举用的 fs。`r2:img/ideahub/covers` -> `r2:img`；本地路径原样返回（换成正斜杠）。
     pub fn fs_for_list(&self) -> String {
-        match self.endpoint_dst() {
-            Endpoint::Remote { fs, .. } => fs,
-            // 这一档留着只为兼容旧调用方。新代码别用它判"是不是 remote"——
-            // `endpoint_dst().remote_target()` 才是会说话的那一个。
-            Endpoint::Local(p) => p.to_string_lossy().replace('\\', "/"),
-        }
+        let endpoint = self.endpoint_dst();
+        endpoint.remote_target().map(|(bucket, _)| bucket.to_string())
+            .unwrap_or_else(|| endpoint.rclone_root().replace('\\', "/"))
     }
 
     /// 列举用的 remote 部分，不会失败。`r2:img/ideahub/covers/` -> `"ideahub/covers"`；
     /// `r2:img` 和本地路径都 -> `""`。
     pub fn remote_part(&self) -> String {
-        match self.endpoint_dst() {
-            Endpoint::Remote { remote, .. } => remote.replace('\\', "/"),
-            Endpoint::Local(_) => String::new(),
-        }
+        self.endpoint_dst().remote_target()
+            .map(|(_, remote)| remote.replace('\\', "/"))
+            .unwrap_or_default()
     }
 
     /// 与 `remote_part` 同值，但要求 `dst` 确实是个 remote——

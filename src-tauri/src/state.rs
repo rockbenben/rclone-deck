@@ -10,7 +10,7 @@ use crate::error::AppError;
 // 与 `runner::drafts`（这张卡上还缺哪几格）读着。视图层与它们共用一份，界面上那张卡才与锁同坐标系。
 use crate::pair::{pair_key_of, pair_slot_of};
 use crate::note::ShortNote;
-use crate::rcd::{RcdSpec, RcdSupervisor};
+use crate::rcd::{DaemonHome, RcdSpec, RcdSupervisor};
 use crate::runner::Runner;
 
 /// 出厂配置：**别人装上时拿到的第一份**。2026-10-09 起它只留一条示范任务。
@@ -96,6 +96,7 @@ pub fn shared_defaults(app: &AppConfig, defaults: Defaults, jobs: Vec<Job>)
 /// 而「绑不上又没人听」（动态排除区）那一档由 `deck_port()` 现挑一个号，那不算静默：
 /// 顶栏「详情」与实际端口同源（判据见 `config::AppConfig::pick_port`）。
 pub async fn bootstrap() -> Result<Arc<Runner>, AppError> {
+    let home = DaemonHome::claim(&AppConfig::daemon_pid_path()?)?;
     ensure_jobs_toml()?;
     let file: JobsFile = AppConfig::load_jobs()?;
     let app = AppConfig::from_defaults(&file.defaults)?;
@@ -120,7 +121,7 @@ pub async fn bootstrap() -> Result<Arc<Runner>, AppError> {
     // 只解析这一次（`AppConfig::load_jobs`），`file.defaults` 一个值同时喂给 rcd 与 runner：
     // `shared_defaults` 从这份 `Defaults` 导出 spec，并把**同一个** `Defaults` 交回给 Runner。
     let (spec, defaults, jobs) = shared_defaults(&app, file.defaults, file.jobs);
-    let handle = Arc::new(RcdSupervisor::start(spec).await?);
+    let handle = Arc::new(RcdSupervisor::start_owned(spec, home).await?);
     Ok(Arc::new(Runner::new(handle, app, defaults, jobs)))
 }
 

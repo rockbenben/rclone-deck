@@ -27,7 +27,7 @@ fn the_third_view_is_a_card_of_three_blocks_named_by_what_it_does() {
         "还在用『不是浏览器那一面就显示对子』的写法：第三档会让两面同时显示");
 
     let t = surface_text(&strip_comments(&read(PANEL)));
-    for block in ["这台机器上", "你的远端", "任务"] {
+    for block in ["本机配置", "远端", "任务"] {
         assert!(t.contains(block), "少了一块卡片：{block}");
     }
     // 内部词不许当称呼（这一面最容易顺手把配置文件名与英文键名写上屏）。

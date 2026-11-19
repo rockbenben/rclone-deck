@@ -32,7 +32,9 @@ fn a_remote_on_either_side_parses_the_same_way() {
         ("qiniu:7zj5r8/sub/deep", "qiniu:7zj5r8", "sub/deep"),
     ];
     for (raw, fs, remote) in cases {
-        assert_eq!(endpoint_of(raw), Endpoint::Remote { fs: fs.into(), remote: remote.into() }, "{raw}");
+        let endpoint = endpoint_of(raw);
+        assert_eq!(endpoint.remote_target(), Some((fs, remote)), "{raw}");
+        assert_eq!(endpoint.rclone_root(), raw);
     }
 }
 
@@ -46,11 +48,12 @@ fn a_windows_drive_letter_is_not_a_remote() {
 }
 
 #[test]
-fn a_trailing_slash_never_reaches_the_listing_root() {
-    // 实测：`remote` 结尾带斜杠 → 200 + **空列表**，不是 404。于是"这一侧什么都没有"，
-    // 对齐的 doomed 会变成对端的全部。不报错，所以必须在这一层就剥掉。
-    let Endpoint::Remote { remote, .. } = endpoint_of("r2:img/imgprompt/") else { panic!("该是 remote") };
-    assert_eq!(remote, "imgprompt", "结尾斜杠没剥掉：{remote:?}");
+fn legacy_bucket_keys_trim_slashes_but_the_task_root_preserves_them() {
+    let endpoint = endpoint_of("r2:img/imgprompt/");
+    assert_eq!(endpoint.remote_target(), Some(("r2:img", "imgprompt")));
+    assert_eq!(endpoint.rclone_root(), "r2:img/imgprompt/");
+    assert_eq!(endpoint_of("sftp:/").rclone_root(), "sftp:/");
+    assert_eq!(endpoint_of("sftp:/absolute/sub").rclone_root(), "sftp:/absolute/sub");
 }
 
 #[test]

@@ -81,12 +81,12 @@ fn replacing_one_line_leaves_every_other_byte_identical() {
 fn deleting_a_job_block_keeps_the_comment_lines_that_follow_it() {
     // 删一块 = 从 `[[job]]` 那一行到**这一块最后一个键行**。块尾之后的注释行留着：
     // 那些正是"为什么这么配"的落点，宁可留下一段没了主人的说明，也不许吃掉。
-    let old = lines_of(JOBS_COMMENTS);
-    let span = job_span(&old, "b").expect("id = \"b\" 那一块找得到");
-    let plan = deletion_plan(&old, span);
-    let new = apply_plan(&old, &plan);
-    only_these_changed(&old, &new, &plan).unwrap();
-    let text = join_lines(&new);
+    let dir = tempfile::tempdir().unwrap();
+    let jobs = format!("{JOBS_COMMENTS}\n# 保留块后的注释\n");
+    let files = files_in(dir.path(), &jobs, CONF_CRLF);
+    let plan = plan_bytes(&Intent::RemoveJob { id: "b".into() }, &files).unwrap();
+    let text = String::from_utf8(plan.bytes).unwrap();
+    assert!(text.ends_with("\n# 保留块后的注释\n"));
     assert!(text.contains("这几行注释说的是它为什么危险"), "删任务把注释吃了");
     assert!(!text.contains("id = \"b\""), "那一块没删掉");
     assert!(text.contains("id = \"a\""), "另一块被顺手改了");
@@ -355,6 +355,54 @@ fn files_in(dir: &Path, jobs: &str, conf: &str) -> Files {
     // rclone_bin 这一份**不存在**：plan 这条通路不起进程，而"改路径要指着真存在的文件"
     // 那一档只在真的动了这一项时才检查（见 changing_the_binary_…那条）。
     Files { jobs: j, conf: Some(c), rclone_bin: PathBuf::from(r"C:\rclone\rclone.exe") }
+}
+
+#[test]
+fn a_commented_job_is_edited_by_its_decoded_id_without_rewriting_its_neighbors() {
+    let dir = tempfile::tempdir().unwrap();
+    let jobs = JOBS_COMMENTS
+        .replace("[[job]]\nid = \"b\"", "[[ job ]] # keep this\n\"id\" = \"\\u0062\" # stable ID")
+        .replace("name = \"镜像：删多余的\"", "name = '''\n镜像：删多余的''' # keep this too")
+        .replace("dst = \"r2:two\"", "dst = 'r2:two' # do not reformat\ncustom = [1, 2]");
+    let jobs = jobs.trim_end().replace('\n', "\r\n");
+    let files = files_in(dir.path(), &jobs, CONF_CRLF);
+    let intent = Intent::JobSet {
+        id: "b".into(), name: "镜像：删旧文件".into(), job_kind: JobKindWire::Sync,
+        src: r"D:\two".into(), dst: "r2:two".into(), open_dir: String::new(), manifest: false,
+    };
+    let plan = plan_bytes(&intent, &files).unwrap();
+    assert_eq!(plan.bytes, jobs.replace(
+        "name = '''\r\n镜像：删多余的'''", "name = \"镜像：删旧文件\""
+    ).as_bytes());
+    assert_eq!(plan.changes.iter().map(|c| c.key.as_str()).collect::<Vec<_>>(), ["name"]);
+}
+
+#[test]
+fn removing_a_job_keeps_the_commented_next_job_and_other_tables() {
+    let dir = tempfile::tempdir().unwrap();
+    let jobs = JOBS_COMMENTS
+        .replace("[[job]]\nid = \"b\"", "[[job]] # job B\nid = \"b\" # keep this")
+        .replace("dst = \"r2:one\"", "dst = \"r2:one\"\ncustom = [\n    1,\n    2,\n]");
+    let jobs = format!("{jobs}\n[extra] # keep this\nflag = true");
+    let files = files_in(dir.path(), &jobs, CONF_CRLF);
+    let plan = plan_bytes(&Intent::RemoveJob { id: "a".into() }, &files).unwrap();
+    let start = jobs.find("[[job]]\nid = \"a\"").unwrap();
+    let end = jobs.find("\n\n# 下面这条").unwrap() + 1;
+    let expected = format!("{}{}", &jobs[..start], &jobs[end..]);
+    assert_eq!(plan.bytes, expected.as_bytes());
+}
+
+#[test]
+fn adding_a_field_at_eof_preserves_crlf_and_the_absent_final_newline() {
+    let dir = tempfile::tempdir().unwrap();
+    let jobs = JOBS_COMMENTS.trim_end().replace('\n', "\r\n");
+    let files = files_in(dir.path(), &jobs, CONF_CRLF);
+    let intent = Intent::JobSet {
+        id: "b".into(), name: "镜像：删多余的".into(), job_kind: JobKindWire::Sync,
+        src: r"D:\two".into(), dst: "r2:two".into(), open_dir: r"D:\two\sub".into(), manifest: false,
+    };
+    let plan = plan_bytes(&intent, &files).unwrap();
+    assert_eq!(plan.bytes, format!("{jobs}\r\nopen_dir = 'D:\\two\\sub'").as_bytes());
 }
 
 fn defaults_intent(bin: &str, flags: &[&str], exclude: &[&str]) -> Intent {
@@ -792,6 +840,74 @@ async fn a_file_changed_by_someone_else_after_the_plan_refuses_the_write() {
     assert!(tmp_leftovers(dir.path()).is_empty(), "被拒的一次留下了临时文件：{:?}", tmp_leftovers(dir.path()));
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn simultaneous_conflicting_plans_commit_once_and_the_loser_must_repreview() {
+    let dir = tempfile::tempdir().unwrap();
+    let files = files_in(dir.path(), JOBS_COMMENTS, CONF_CRLF);
+    let reg = std::sync::Arc::new(WriteRegistry::default());
+    let first = defaults_intent(r"C:\rclone\rclone.exe", &["--fast-list"], &["*.one"]);
+    let second = defaults_intent(r"C:\rclone\rclone.exe", &["--fast-list"], &["*.two"]);
+    for _ in 0..8 {
+        std::fs::write(&files.jobs, JOBS_COMMENTS).unwrap();
+        let barrier = std::sync::Arc::new(tokio::sync::Barrier::new(2));
+        let mut writers = Vec::new();
+        for (intent, suffix) in [(&first, "*.one"), (&second, "*.two")] {
+            let view = reg.plan(intent, &files, &[]).await.unwrap();
+            let (reg, files, barrier) = (reg.clone(), files.clone(), barrier.clone());
+            writers.push(tokio::spawn(async move {
+                barrier.wait().await;
+                (suffix, reg.apply(&view.token, &files, &[]).await)
+            }));
+        }
+        let mut committed = Vec::new();
+        for writer in writers {
+            let (suffix, result) = writer.await.unwrap();
+            match result {
+                Ok(_) => committed.push(suffix),
+                Err(error) => assert!(error.to_string().contains("重新看一遍"), "{error}"),
+            }
+        }
+        assert_eq!(committed.len(), 1);
+        assert_eq!(std::fs::read_to_string(&files.jobs).unwrap(),
+            JOBS_COMMENTS.replace("*.log", committed[0]));
+        assert!(tmp_leftovers(dir.path()).is_empty());
+    }
+}
+
+#[tokio::test]
+async fn the_confirmation_cannot_be_reused_for_an_identical_file_at_another_path() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut files = files_in(dir.path(), JOBS_COMMENTS, CONF_CRLF);
+    let reg = WriteRegistry::default();
+    let intent = defaults_intent(r"C:\rclone\rclone.exe", &["--fast-list"], &["*.tmp"]);
+    let view = reg.plan(&intent, &files, &[]).await.unwrap();
+    let original_path = files.jobs.clone();
+    files.jobs = dir.path().join("other-jobs.toml");
+    std::fs::write(&files.jobs, JOBS_COMMENTS).unwrap();
+    assert!(reg.apply(&view.token, &files, &[]).await.is_err());
+    for path in [&original_path, &files.jobs] {
+        assert_eq!(std::fs::read(path).unwrap(), JOBS_COMMENTS.as_bytes());
+    }
+}
+
+#[cfg(windows)]
+#[tokio::test]
+async fn a_failed_replacement_leaves_the_original_and_removes_its_temp_file() {
+    use std::os::windows::fs::OpenOptionsExt;
+    let dir = tempfile::tempdir().unwrap();
+    let files = files_in(dir.path(), JOBS_COMMENTS, CONF_CRLF);
+    let reg = WriteRegistry::default();
+    let intent = defaults_intent(r"C:\rclone\rclone.exe", &["--fast-list"], &["*.tmp"]);
+    let view = reg.plan(&intent, &files, &[]).await.unwrap();
+    // Permit reads but deny replacing the open file.
+    let lock = std::fs::OpenOptions::new().read(true).share_mode(1).open(&files.jobs).unwrap();
+    let result = reg.apply(&view.token, &files, &[]).await;
+    drop(lock);
+    assert!(matches!(result, Err(EditError::Write(_))), "{result:?}");
+    assert_eq!(std::fs::read(&files.jobs).unwrap(), JOBS_COMMENTS.as_bytes());
+    assert!(tmp_leftovers(dir.path()).is_empty());
+}
+
 #[tokio::test]
 async fn a_running_job_refuses_the_plan_and_the_apply_before_anything_is_issued() {
     let dir = tempfile::tempdir().unwrap();
@@ -876,7 +992,7 @@ fn every_place_that_writes_to_disk_is_on_the_named_list() {
     assert!(stale.is_empty(), "名单上这几条已经不写文件了，删掉它们：{stale:?}");
     // 而配置文件那一条必须**确实**在写：不然整条证人是在证明"什么都没做"。
     let edit = std::fs::read_to_string(root.join("config/edit.rs")).unwrap();
-    assert!(edit.contains("fs::write("), "edit.rs 里已经没有写盘通路了，这条证人随之失效");
+    assert!(edit.contains("write_all("), "edit.rs 里已经没有写盘通路了，这条证人随之失效");
 }
 
 const WRITER_NEEDLES: &[&str] = &["fs::write(", "File::create(", "write_all("];
@@ -903,7 +1019,8 @@ fn the_write_path_inside_edit_is_one_function_called_only_from_apply() {
     let named = |needle: &str| -> Vec<String> {
         bodies.iter().filter(|(_, b)| b.contains(needle)).map(|(n, _)| n.clone()).collect()
     };
-    assert_eq!(named("fs::write("), ["write_atomically"], "写盘通路不止一条");
+    assert!(named("fs::write(").is_empty(), "绕过了独占临时文件");
+    assert_eq!(named("write_all("), ["write_atomically"], "写盘通路不止一条");
     assert_eq!(named("fs::rename("), ["write_atomically"], "rename 出现在别处");
     // 调用点：只有 `apply` 那一条。函数自己那一行当然写着它自己的名字，先排掉。
     let callers: Vec<String> = bodies.iter()
@@ -914,6 +1031,7 @@ fn the_write_path_inside_edit_is_one_function_called_only_from_apply() {
     let body = bodies.iter().find(|(n, _)| n == "write_atomically").map(|(_, b)| b.clone())
         .expect("write_atomically 不在了");
     assert!(body.contains("with_file_name"), "临时文件名不是从目标文件派生的：{body}");
+    assert!(body.contains("create_new(true)"), "临时文件没有独占创建：{body}");
     assert!(!body.contains("env::temp_dir") && !body.contains("tempfile"),
         "临时文件落在了别处的目录里：跨卷 rename 不是原子替换");
 }

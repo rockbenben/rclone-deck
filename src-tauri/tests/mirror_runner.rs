@@ -22,6 +22,288 @@ use rclone_deck_lib::runner::{RunError, TaskState};
 const SHARED: &[&str] = &["s1.webp", "s2.webp", "s3.webp"];
 const ORPHANS: &[&str] = &["gone.webp", "stale.webp"];
 
+#[tokio::test]
+async fn a_mirror_preserves_files_added_or_renamed_after_recheck() {
+    for (review_names, renamed) in [(true, None), (true, Some("outside.webp")),
+                                      (true, Some("APPROVED.webp")), (false, None)] {
+        let fx = Fx::new();
+        seed(&fx.src(), SHARED);
+        seed(&fx.dst(), &dst_side(SHARED, &["approved.webp"]));
+        let dst = fx.dst();
+        let job = job_at("mirror", JobKind::Sync, &fwd(&fx.src()), &fx.remote(""));
+        let (runner, _guard, relay) = relay_fixture(&fx, vec![job], move |method, _| {
+            if matches!(method, "sync/copy" | "sync/sync") {
+                if let Some(name) = renamed {
+                    std::fs::rename(dst.join("approved.webp"), dst.join("staged.webp")).unwrap();
+                    std::fs::rename(dst.join("staged.webp"), dst.join(name)).unwrap();
+                } else {
+                    seed(&dst, &["outside.webp"]);
+                }
+            }
+            true
+        }).await;
+
+        let token = if review_names {
+            runner.preview_mirror("mirror").await.unwrap().token
+        } else {
+            runner.confirm_mirror("mirror").await.unwrap()
+        };
+        let state = runner.run_mirror("mirror", &token).await.unwrap();
+        let names: Vec<_> = std::fs::read_dir(fx.dst()).unwrap()
+            .map(|entry| entry.unwrap().file_name()).collect();
+        assert!(names.iter().any(|name| name == renamed.unwrap_or("outside.webp")),
+            "an unauthorized name was deleted");
+        assert!(!names.iter().any(|name| name == "approved.webp"));
+        if renamed.is_some() {
+            assert!(matches!(state, TaskState::Failed { .. }), "{state:?}");
+            assert!(runner.confirm_mirror("mirror").await.is_err(), "retry requires a new preview");
+        } else {
+            assert!(matches!(state, TaskState::Done { previewed: Some(1), .. }), "{state:?}");
+            assert_eq!(stats_of(state).deletes, 1);
+        }
+        relay.abort();
+    }
+}
+
+#[tokio::test]
+async fn a_real_copy_failure_does_not_start_deletion_and_requires_repreview() {
+    let fx = Fx::new();
+    seed(&fx.src(), SHARED);
+    seed(&fx.dst(), &dst_side(SHARED, ORPHANS));
+    let source = fx.src();
+    let parked = fx.root().join("offline");
+    let job = job_at("mirror", JobKind::Sync, &fwd(&fx.src()), &fx.remote(""));
+    let (runner, _guard, relay) = relay_fixture(&fx, vec![job], move |method, _| {
+        if matches!(method, "sync/copy" | "sync/sync") {
+            std::fs::rename(&source, &parked).unwrap();
+        }
+        assert_ne!(method, "operations/deletefile", "deletion started after the copy failed");
+        true
+    }).await;
+    let preview = runner.preview_mirror("mirror").await.unwrap();
+    let state = runner.run_mirror("mirror", &preview.token).await.unwrap();
+    assert!(matches!(state, TaskState::Failed { .. }), "{state:?}");
+    assert!(ORPHANS.iter().all(|name| fx.dst().join(name).is_file()));
+    assert!(runner.confirm_mirror("mirror").await.is_err());
+    relay.abort();
+}
+
+#[tokio::test]
+async fn a_lost_copy_reply_voids_overlapping_reviews_before_any_delete() {
+    let fx = Fx::new();
+    seed(&fx.src(), &dst_side(SHARED, &["copy-me.webp"]));
+    seed(&fx.dst(), &dst_side(SHARED, ORPHANS));
+    // A write is still possible even when the client loses the submit reply.
+    let job = job_at("mirror", JobKind::Sync, &fwd(&fx.src()), &fx.remote(""));
+    let (runner, _guard, relay) = relay_fixture(&fx, vec![job], |method, _| {
+        assert_ne!(method, "operations/deletefile");
+        method != "sync/copy"
+    }).await;
+    runner.run_inventory("mirror").await.unwrap();
+    let mirror = runner.preview_mirror("mirror").await.unwrap();
+    let overlapping = runner.browser_preview_delete("decklocal:", "", vec!["gone.webp".into()]).await.unwrap();
+    let state = runner.run_mirror("mirror", &mirror.token).await.unwrap();
+    assert!(matches!(state, TaskState::Unknown { .. }), "{state:?}");
+    assert!(runner.last_summary("mirror").is_none());
+    assert!(runner.browser_run(&overlapping.token).await.unwrap_err().to_string().contains("不作数"));
+    assert!(ORPHANS.iter().all(|name| fx.dst().join(name).is_file()));
+    relay.abort();
+}
+
+#[tokio::test]
+async fn a_copy_that_matches_a_differently_cased_destination_keeps_that_file() {
+    let fx = Fx::new();
+    seed(&fx.src(), &dst_side(SHARED, &["Photo.webp"]));
+    seed(&fx.dst(), &dst_side(SHARED, &["PHOTO.webp"]));
+    let stamp = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_750_000_000);
+    for path in [fx.src().join("Photo.webp"), fx.dst().join("PHOTO.webp")] {
+        std::fs::File::options().write(true).open(path).unwrap()
+            .set_times(std::fs::FileTimes::new().set_modified(stamp)).unwrap();
+    }
+    let job = job_at("mirror", JobKind::Sync, &fwd(&fx.src()), &fx.remote(""));
+    let (runner, _guard) = setup_with_conf(fx.root(), Some(fx.conf()), vec![job]).await;
+    let preview = runner.preview_mirror("mirror").await.unwrap();
+    assert_eq!(preview.doomed, ["PHOTO.webp"]);
+    let result = runner.run_mirror("mirror", &preview.token).await.unwrap();
+    assert!(matches!(result, TaskState::Failed { .. }), "{result:?}");
+    assert!(fx.dst().join("PHOTO.webp").is_file());
+}
+
+#[tokio::test]
+async fn a_partial_mirror_reports_each_completed_name_and_the_first_failure() {
+    let fx = Fx::new();
+    seed(&fx.src(), K5);
+    seed(&fx.dst(), &dst_side(K5, &["a.webp", "b.webp", "c.webp", "d.webp"]));
+    let dst = fx.dst();
+    let job = job_at("mirror", JobKind::Sync, &fwd(&fx.src()), &fx.remote(""));
+    let peer = job_at("peer", JobKind::Copy, &fwd(&fx.src()), &fx.remote(""));
+    let (runner, _guard, relay) = relay_fixture(&fx, vec![job, peer], move |method, payload| {
+        if method == "operations/deletefile" && payload.contains("remote=c.webp") {
+            std::fs::rename(dst.join("c.webp"), dst.join("renamed.webp")).unwrap();
+        }
+        true
+    }).await;
+    runner.run_inventory("peer").await.unwrap();
+    let preview = runner.preview_mirror("mirror").await.unwrap();
+    let related = runner.browser_preview_delete("decklocal:", "", vec!["d.webp".into()]).await.unwrap();
+    let state = runner.run_mirror("mirror", &preview.token).await.unwrap();
+    let TaskState::Failed { error, .. } = state else { panic!("expected a partial failure: {state:?}") };
+    let message = format!("{} {}", error.short, error.detail);
+    assert!(message.contains("已删除 2") && message.contains("c.webp"), "{message}");
+    let log = std::fs::read_to_string(runner.last_log("mirror").await.unwrap()).unwrap();
+    for name in ["a.webp", "b.webp"] {
+        assert!(log.lines().any(|line| line.contains("已删除文件") && line.contains(name)), "{log}");
+        assert!(!fx.dst().join(name).exists());
+    }
+    assert!(log.lines().any(|line| line.contains("删除失败") && line.contains("c.webp")), "{log}");
+    assert!(fx.dst().join("d.webp").is_file());
+    assert!(fx.dst().join("renamed.webp").is_file());
+    assert!(runner.last_summary("peer").is_none());
+    assert!(runner.browser_run(&related.token).await.unwrap_err().to_string().contains("不作数"));
+    assert!(runner.confirm_mirror("mirror").await.is_err());
+    runner.run_inventory("mirror").await.unwrap();
+    assert!(runner.confirm_mirror("mirror").await.is_err(), "inventory must not reopen a spent confirmation");
+    let refreshed = runner.preview_mirror("mirror").await.unwrap();
+    assert_eq!(refreshed.doomed, ["d.webp", "renamed.webp"]);
+    relay.abort();
+}
+
+#[tokio::test]
+async fn a_mirror_log_failure_reports_the_deleted_item_and_stops_before_the_next() {
+    let fx = Fx::new();
+    seed(&fx.src(), SHARED);
+    seed(&fx.dst(), &dst_side(SHARED, ORPHANS));
+    let logs = fx.root().join("logs");
+    let job = job_at("mirror", JobKind::Sync, &fwd(&fx.src()), &fx.remote(""));
+    let (runner, _guard, relay) = relay_fixture(&fx, vec![job], move |method, payload| {
+        if method == "operations/deletefile" && payload.contains("remote=gone.webp") {
+            let run_log = std::fs::read_dir(&logs).unwrap().flatten().map(|entry| entry.path()).find(|path| {
+                path.is_file() && std::fs::read_to_string(path)
+                    .is_ok_and(|contents| contents.contains("对齐复核完成"))
+            }).unwrap();
+            let mut permissions = std::fs::metadata(&run_log).unwrap().permissions();
+            permissions.set_readonly(true);
+            std::fs::set_permissions(run_log, permissions).unwrap();
+        }
+        true
+    }).await;
+    let preview = runner.preview_mirror("mirror").await.unwrap();
+    let outcome = runner.run_mirror("mirror", &preview.token).await;
+    let current_log = runner.last_log("mirror").await.unwrap();
+    let mut permissions = std::fs::metadata(&current_log).unwrap().permissions();
+    permissions.set_readonly(false);
+    std::fs::set_permissions(current_log, permissions).unwrap();
+
+    let result = outcome.unwrap();
+    let TaskState::Failed { error, .. } = result else { panic!("{result:?}") };
+    assert!(error.short.contains("已删除 1") && error.short.contains("记录结果失败"), "{error:?}");
+    assert!(error.detail.contains("gone.webp") && error.detail.contains("已删除"), "{error:?}");
+    assert!(!fx.dst().join("gone.webp").exists());
+    assert!(fx.dst().join("stale.webp").is_file());
+    assert!(runner.locks().await.is_empty());
+    relay.abort();
+}
+
+#[tokio::test]
+async fn nested_job_roots_match_rclone_dry_run_and_sync_in_both_directions() {
+    for download in [false, true] {
+        let fx = Fx::new();
+        let remote_dir = fx.dst().join("bucket/album/2026");
+        let local_dir = fx.src();
+        let (src_dir, dst_dir) = if download { (&remote_dir, &local_dir) } else { (&local_dir, &remote_dir) };
+        let common = ["a.webp", "b.webp", "c.webp", "d.webp", "e.webp"];
+        seed(src_dir, &common);
+        seed(dst_dir, &common);
+        seed(src_dir, &["new/add.webp"]);
+        seed(dst_dir, &["extra.webp", "nested/orphan.webp", "keep.webp"]);
+        if download { seed(src_dir, &["extra.webp"]); }
+        seed(&fx.dst(), &["outside.webp"]);
+        let exclude = ["/album/2026/extra.webp", "/keep.webp"];
+        let local = fwd(&local_dir);
+        let remote = if download { fx.remote("bucket/album/2026/") } else { fx.remote("bucket/album/2026") };
+        let (src, dst) = if download { (&remote, &local) } else { (&local, &remote) };
+        let (runner, _guard) = setup_with_conf_and_exclude(
+            fx.root(), Some(fx.conf()), vec![job_at("mirror", JobKind::Sync, src, dst)],
+            exclude.iter().map(|rule| rule.to_string()).collect(),
+        ).await;
+
+        let before = files_in(dst_dir);
+        let deletions = fx.root().join("dry-run-deletes.txt");
+        let copies = fx.root().join("dry-run-copies.txt");
+        let output = std::process::Command::new(rclone_bin())
+            .args(["sync", src, dst, "--dry-run", "--config"])
+            .arg(fx.conf())
+            .arg("--missing-on-src").arg(&deletions)
+            .arg("--missing-on-dst").arg(&copies)
+            .args(exclude.into_iter().flat_map(|rule| ["--exclude", rule]))
+            .output().unwrap();
+        assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+        let mut dry_run_deletions: Vec<_> = std::fs::read_to_string(deletions).unwrap()
+            .lines().map(str::to_owned).collect();
+        dry_run_deletions.sort();
+        let expected_deletions = if download { vec!["nested/orphan.webp"] }
+            else { vec!["extra.webp", "nested/orphan.webp"] };
+        assert_eq!(dry_run_deletions, expected_deletions, "download={download}");
+        assert_eq!(std::fs::read_to_string(copies).unwrap().trim(), "new/add.webp");
+
+        let preview = runner.preview_mirror("mirror").await.unwrap();
+        assert_eq!(preview.doomed, dry_run_deletions, "download={download}");
+        let trial = runner.run_copy("mirror", true).await.unwrap();
+        assert!(matches!(&trial, TaskState::Done { dry_run: true, .. }), "{trial:?}");
+        assert_eq!(stats_of(trial).deletes, dry_run_deletions.len() as u64);
+        assert_eq!(files_in(dst_dir), before, "dry-run changed the destination");
+
+        let applied = runner.run_mirror("mirror", &preview.token).await.unwrap();
+        assert!(matches!(&applied, TaskState::Done { dry_run: false, .. }), "{applied:?}");
+        let after = files_in(dst_dir);
+        let removed: Vec<_> = before.into_iter().filter(|name| !after.contains(name)).collect();
+        assert_eq!(removed, dry_run_deletions, "download={download}");
+        let mut expected_after = vec!["a.webp", "b.webp", "c.webp", "d.webp", "e.webp", "keep.webp", "new/add.webp"];
+        if download { expected_after.insert(5, "extra.webp"); }
+        assert_eq!(after, expected_after);
+        assert!(fx.dst().join("outside.webp").is_file());
+    }
+}
+
+#[tokio::test]
+async fn inventory_hash_reports_equal_size_and_time_content_changes_at_the_nested_job_root() {
+    let fx = Fx::new();
+    let remote_dir = fx.dst().join("bucket/album/2026");
+    let local_dir = fx.src();
+    let changed = "album/2026/changed.webp";
+    let stamp = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_750_000_000);
+    for (dir, bytes) in [(&local_dir, b"aaaa"), (&remote_dir, b"bbbb")] {
+        seed(dir, &[changed, "same.webp", "keep.webp"]);
+        std::fs::write(dir.join(changed), bytes).unwrap();
+        std::fs::write(dir.join("keep.webp"), bytes).unwrap();
+        for name in [changed, "same.webp", "keep.webp"] {
+            std::fs::File::options().write(true).open(dir.join(name)).unwrap()
+                .set_times(std::fs::FileTimes::new().set_modified(stamp)).unwrap();
+        }
+    }
+    let local = local_dir.to_str().unwrap();
+    let remote = fx.remote("bucket/album/2026");
+    let (runner, _guard) = setup_with_hash_check(fx.root(), fx.conf(), vec![
+        job_at("up", JobKind::Sync, local, &remote),
+        job_at("down", JobKind::Sync, &remote, local),
+    ], vec!["/keep.webp".into()]).await;
+
+    for (id, src, dst) in [("up", local, remote.as_str()), ("down", remote.as_str(), local)] {
+        let report = runner.run_inventory(id).await.unwrap();
+        assert!(report.orphans.is_empty() && report.pending_upload.is_empty(), "{id}: {report:?}");
+        let names: Vec<_> = report.diverged.iter()
+            .map(|row| (row.name.as_str(), row.verdict, row.newer)).collect();
+        assert_eq!(names, [(changed, "unknown", None)], "{id}");
+
+        let differences = fx.root().join(format!("{id}-dry-run-differ.txt"));
+        let output = std::process::Command::new(rclone_bin())
+            .args(["sync", src, dst, "--dry-run", "--checksum", "--exclude", "/keep.webp", "--config"])
+            .arg(fx.conf()).arg("--differ").arg(&differences).output().unwrap();
+        assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+        assert_eq!(std::fs::read_to_string(differences).unwrap().trim(), changed, "{id}");
+    }
+}
+
 /// 逐条比对那几条用例的底座：5 个共享 + 1 个孤儿，改完仍然够不到"一半"那条线（见上面那段）。
 const K5: &[&str] = &["k1.webp", "k2.webp", "k3.webp", "k4.webp", "k5.webp"];
 
@@ -393,6 +675,7 @@ async fn a_run_that_cannot_get_the_lock_has_already_consumed_the_confirmation() 
         Err(RunError::Busy { owner }) => assert!(owner.contains("手动占用"), "{owner}"),
         other => panic!("这一对目录被人占着，实删却跑成了 {other:?}"),
     }
+    assert!(matches!(runner.state("m").await, TaskState::Idle));
     drop(held);
     let err = runner.run_mirror("m", &p.token).await.unwrap_err().to_string();
     assert!(err.contains("不作数"), "拿不到锁的那一次把授权留回了桌上：{err}");
@@ -400,6 +683,19 @@ async fn a_run_that_cannot_get_the_lock_has_already_consumed_the_confirmation() 
         files_in(&fx.dst()),
         vec!["gone.webp", "s1.webp", "s2.webp", "s3.webp", "stale.webp"],
         "被拒之后对端不该有任何变化：{:?}", files_in(&fx.dst()));
+}
+
+#[tokio::test]
+async fn a_mirror_log_creation_failure_does_not_leave_a_queued_task() {
+    let (fx, runner, _guard) = mirror("", SHARED, &dst_side(SHARED, ORPHANS)).await;
+    let preview = runner.preview_mirror("m").await.unwrap();
+    let directory = fx.root().join("logs");
+    std::fs::rename(&directory, fx.root().join("previous-logs")).unwrap();
+    std::fs::write(&directory, "blocking file").unwrap();
+    assert!(matches!(runner.run_mirror("m", &preview.token).await, Err(RunError::Io(_))));
+    assert!(matches!(runner.state("m").await, TaskState::Idle));
+    assert!(runner.locks().await.is_empty());
+    assert_eq!(files_in(&fx.dst()), ["gone.webp", "s1.webp", "s2.webp", "s3.webp", "stale.webp"]);
 }
 
 /// 同一对目录上**两条任务**：对齐 `m`（本地→云端）与复制 `up`（同方向）。

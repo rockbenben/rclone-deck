@@ -15,10 +15,11 @@ pub mod localdaemon;
 use localdaemon::*;
 
 use rclone_deck_lib::config::jobs::JobKind;
+use rclone_deck_lib::runner::RunError;
 use rclone_deck_lib::runner::browser::{
     browser_clear_refused_by_rules_refusal, browser_list_changed_refusal, browser_prefix_root_refusal,
     browser_scope, browser_target_exists_refusal, browser_target_label, local_fs_id,
-    purge_deleted_dirs, purge_done_count, BrowserListing, ShortNote,
+    BrowserListing, ShortNote,
 };
 
 // ---------------------------------------------------------------- 四句话术（纯函数）
@@ -189,6 +190,133 @@ async fn a_missing_local_directory_fails_instead_of_looking_empty() {
     assert!(err.contains("不存在"), "移走的目录必须说它不在，而不是交出 0 条：{err}");
     assert!(err.contains("改这条") && err.contains("换一对位置"),
         "只说坏了不够，还要说去哪儿改：{err}");
+}
+
+#[tokio::test]
+async fn a_download_only_job_pairs_each_column_with_the_opposite_endpoint() {
+    let fx = Fx::new();
+    let local = fwd(&fx.src());
+    let remote = fx.remote("bucket/album/2026");
+    let (runner, _guard) = setup_with_conf(fx.root(), Some(fx.conf()),
+        vec![job_at("download", JobKind::Copy, &remote, &local)]).await;
+    let refs = runner.browser_remotes().await.unwrap();
+    let left = refs.iter().find(|r| r.id == local && r.is_local).unwrap();
+    let right = refs.iter().find(|r| r.id == left.paired_with && !r.is_local)
+        .expect("the local column must point to a remote choice");
+    assert_eq!(right.id, remote);
+    assert_eq!(right.paired_with, left.id);
+    assert!(refs.iter().any(|r| r.id == "decklocal:" && !r.is_local));
+}
+
+#[tokio::test]
+async fn two_local_job_endpoints_do_not_pair_into_a_remote_column() {
+    let fx = Fx::new();
+    let local = fwd(&fx.src());
+    let second_local = fwd(&fx.dst());
+    let (runner, _guard) = setup_with_conf(fx.root(), Some(fx.conf()),
+        vec![job_at("local", JobKind::Copy, &local, &second_local)]).await;
+    let refs = runner.browser_remotes().await.unwrap();
+    for id in [local, second_local] {
+        let entry = refs.iter().find(|r| r.id == id && r.is_local).unwrap();
+        assert!(entry.paired_with.is_empty(), "{entry:?}");
+    }
+}
+
+#[tokio::test]
+async fn browser_write_roots_include_named_remotes_configured_jobs_and_drafts() {
+    let fx = Fx::new();
+    let local = fwd(&fx.src());
+    let configured = fx.remote("bucket/album/2026");
+    let draft_local = fwd(&fx.root().join("draft-local"));
+    let draft_remote = fx.remote("bucket/draft");
+    let (runner, _guard) = setup_with_conf(fx.root(), Some(fx.conf()),
+        vec![job_at("download", JobKind::Copy, &configured, &local)]).await;
+    runner.check_browser_roots(&["decklocal:", &configured, &local]).await.unwrap();
+    assert!(runner.check_browser_roots(&[&local, &draft_remote]).await.is_err());
+
+    runner.pair_draft(&draft_local, &draft_remote).unwrap();
+    runner.check_browser_roots(&[&draft_local, &draft_remote]).await.unwrap();
+    assert!(runner.check_browser_roots(&[&fwd(&fx.dst())]).await.is_err());
+}
+
+#[tokio::test]
+async fn clearing_an_empty_tree_preserves_the_directory_and_empty_children() {
+    let fx = Fx::new();
+    let directory = fx.dst().join("outer/empty/child");
+    std::fs::create_dir_all(&directory).unwrap();
+    let (runner, _guard) = setup_with_conf(fx.root(), Some(fx.conf()), vec![]).await;
+    let preview = runner.browser_preview_purge("decklocal:", "outer").await.unwrap();
+    assert_eq!(preview.doomed_count, 0);
+    let report = runner.browser_run(&preview.token).await.unwrap();
+    assert_eq!(report.done, 0);
+    assert!(directory.is_dir());
+}
+
+#[tokio::test]
+async fn a_named_delete_refuses_a_case_only_rename_since_preview() {
+    let fx = Fx::new();
+    seed(&fx.dst(), &["outer/approved.webp"]);
+    let (runner, _guard) = setup_with_conf(fx.root(), Some(fx.conf()), vec![]).await;
+    let preview = runner.browser_preview_delete("decklocal:", "outer", vec!["outer/approved.webp".into()])
+        .await.unwrap();
+    let outer = fx.dst().join("outer");
+    std::fs::rename(outer.join("approved.webp"), outer.join("staged.webp")).unwrap();
+    std::fs::rename(outer.join("staged.webp"), outer.join("APPROVED.webp")).unwrap();
+    let error = runner.browser_run(&preview.token).await.unwrap_err().to_string();
+    assert!(error.contains("变了") && error.contains("一个都没动"), "{error}");
+    assert!(outer.join("APPROVED.webp").is_file());
+}
+
+#[tokio::test]
+async fn a_clear_preserves_a_file_added_after_the_recursive_recheck() {
+    let fx = Fx::new();
+    seed(&fx.dst(), &["outer/approved.webp"]);
+    let root = fx.dst();
+    let (runner, _guard, relay) = relay_fixture(&fx, vec![], move |method, _| {
+        if matches!(method, "operations/purge" | "operations/deletefile") {
+            seed(&root, &["outer/outside.webp"]);
+        }
+        true
+    }).await;
+    let preview = runner.browser_preview_purge("decklocal:", "outer").await.unwrap();
+    assert_eq!(preview.doomed_count, 1);
+    let _result = runner.browser_run(&preview.token).await;
+    assert!(!fx.dst().join("outer/approved.webp").exists());
+    assert!(fx.dst().join("outer/outside.webp").is_file(), "a name added after review was deleted");
+    relay.abort();
+}
+
+#[tokio::test]
+async fn a_browsers_write_with_no_response_keeps_its_scope_locked() {
+    let fx = Fx::new();
+    let (runner, guard) = setup_with_conf(fx.root(), Some(fx.conf()), vec![]).await;
+    guard.kill_daemon();
+    assert!(runner.browser_mkdir("decklocal:", "parent/first").await.is_err());
+    assert!(matches!(
+        runner.browser_mkdir("decklocal:", "parent/second").await,
+        Err(RunError::Busy { .. })
+    ));
+}
+
+#[tokio::test]
+async fn a_clear_with_a_lost_delete_reply_keeps_the_tree_locked_after_real_dispatch() {
+    let fx = Fx::new();
+    seed(&fx.src(), &["a.webp", "b.webp"]);
+    seed(&fx.dst(), &["nested/a.webp", "nested/b.webp", "nested/c.webp"]);
+    let job = job_at("mirror", JobKind::Sync, &fwd(&fx.src()), &fx.remote("nested"));
+    let (runner, _guard, relay) = relay_fixture(&fx, vec![job], |method, payload| {
+        !(method == "operations/deletefile" && payload.contains("remote=nested%2Fa.webp"))
+    }).await;
+    runner.run_inventory("mirror").await.unwrap();
+    let other = runner.preview_mirror("mirror").await.unwrap();
+    let preview = runner.browser_preview_purge("decklocal:", "nested").await.unwrap();
+    let message = runner.browser_run(&preview.token).await.unwrap_err().to_string();
+    assert!(message.contains("结果未知") && message.contains("nested/a.webp"), "{message}");
+    assert_eq!(files_in(&fx.dst()), ["nested/b.webp", "nested/c.webp"]);
+    assert!(runner.last_summary("mirror").is_none());
+    assert!(runner.run_mirror("mirror", &other.token).await.unwrap_err().to_string().contains("不作数"));
+    assert!(matches!(runner.browser_mkdir("decklocal:", "nested/blocked").await, Err(RunError::Busy { .. })));
+    relay.abort();
 }
 
 #[tokio::test]
@@ -526,7 +654,7 @@ async fn each_action_opens_its_own_log_under_the_directory_the_panel_is_already_
     let (fx, runner, _g) = browse_setup().await;
     let want_dir = runner.log_dir();
     let log_dir = std::path::Path::new(&want_dir);
-    assert_eq!(want_dir, fwd(&fx.root().join("logs")),
+    assert_eq!(log_dir, fx.root().join("logs"),
         "日志目录必须是夹具那一份（R68：跑在夹具里就要看得见它）");
 
     let first = runner.browser_open_log("下载").await.unwrap();
@@ -638,6 +766,7 @@ async fn clearing_a_prefix_works_when_nothing_is_hidden_and_removes_the_whole_la
     let (fx, runner, _g) = browser_tree(&["gone.webp", "also-gone.webp"]).await;
     runner.browser_mkdir("decklocal:", "sub").await.unwrap();
     seed(&fx.dst().join("sub"), &["one.webp", "two.webp"]);
+    std::fs::create_dir_all(fx.dst().join("sub/empty-child")).unwrap();
     let p = runner.browser_preview_purge("decklocal:", "sub").await.unwrap();
     assert_eq!(p.doomed, vec!["sub/one.webp".to_string(), "sub/two.webp".to_string()], "{:?}", p.doomed);
     assert_eq!(p.doomed_ratio, "2/2", "100% 照实报，但它不是拒绝的理由（I2b）：{}", p.doomed_ratio);
@@ -671,31 +800,15 @@ async fn the_root_of_either_side_is_never_a_clear_target() {
     runner.shutdown_rcd().await.unwrap();
 }
 
-#[test]
-fn the_purge_count_comes_from_rclone_not_from_our_list() {
-    // "清单条数"与"实际删除条数"是两个数，取错一个就是冒充（I7 那句"是否一致"就恒真了）。
-    // 本地 purge 太快，端到端造不出两者不等的活场景（成功路径上它们必然相等），
-    // 所以把**取值**抽成纯函数单测它。理由写在 `purge_done_count` 的文档里。
-    let mut s = empty_stats();
-    s.deletes = 7;
-    s.deleted_dirs = 3;
-    assert_eq!(purge_done_count(&s), 7, "必须是 rclone 的 deletes");
-    assert_eq!(purge_deleted_dirs(&s), 3, "目录数是另一个数，别与 deletes 混用");
-    assert_eq!(purge_done_count(&empty_stats()), 0, "空读数就是 0，不许凭空造一个");
-}
-
 #[tokio::test]
-async fn a_purge_releases_the_lock_only_after_the_job_is_over() {
-    // R33 的不变量在浏览器这一侧同样成立：guard 必须活得比 rclone 的 job 长。
-    // 本地 purge 太快，"job 还在跑时锁还在"那个瞬间观察不到，所以这条只钉两件事：
-    // 跑完之后锁已放开（不许永久锁住这棵树），以及这一档真的经过指向那棵树的申领。
+async fn a_clear_releases_the_lock_after_the_approved_writes_finish() {
     let (fx, runner, _g) = browser_tree(&["a.webp"]).await;
     runner.browser_mkdir("decklocal:", "keep").await.unwrap();
     seed(&fx.dst().join("keep"), &["x.webp", "y.webp"]);
     let key = scope_of("decklocal:", "keep");
     let p = runner.browser_preview_purge("decklocal:", "keep").await.unwrap();
     let r = runner.browser_run(&p.token).await.unwrap();
-    assert_eq!(r.done, 2, "done 必须是 rclone 报的 deletes：{r:?}");
+    assert_eq!(r.done, 2, "分别收到两项删除成功的答复：{r:?}");
     assert!(r.agrees);
     assert!(r.has_list, "清空走的是预览那一条，清单是有的：{r:?}");
     assert!(runner.mutex().holder(&key).await.is_none(),

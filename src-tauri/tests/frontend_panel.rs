@@ -54,7 +54,7 @@ fn every_card_action_selects_its_own_card_first() {
         // 「先选中」有两条合法的路：`cardAct`，以及对账那一条自己的 `runGate`
         // （它除了选中还要把右列翻到装报告的那一段，见下面那条证人）。
         // 认这两条**而不是认任意一个函数名**：下面逐条钉这两个定义里都有 `setSelectedId(id)`。
-        assert!(body.contains("cardAct(") || body.contains("runGate"),
+        assert!(body.contains("cardAct(") || body.contains("runGate") || body.contains("runTransfer"),
             "{arm} 那一支没有先选中那张卡：{body}");
     }
     let def = t.find("const cardAct").expect("找不到 cardAct 的定义");
@@ -175,10 +175,12 @@ fn a_finished_transfer_says_so_without_moving_the_rail() {
     // `runJob` / `runMirror` 的 rclone 失败是 **resolved 的 `Failed`**，不是 reject；
     // 完成提示必须读终态，不能只看 `act` 的 promise 有没有落地。
     assert!(t.contains("if (r.ok) done?.(r.value)"), "完成提示没有区分成功/失败：{t}");
-    assert!(t.contains("if (isDone(value) && value.dry_run) notifyDone('试跑', true)"),
-        "试跑完成提示没读 Done + dry_run：{t}");
-    assert!(t.contains("if (isDone(value) && !value.dry_run) notifyDone('传输')"),
-        "传输完成提示没读 Done：{t}");
+    assert_eq!(count_in(&t, "api.runJob("), 1, "实际按钮与选择条应复用同一个任务回调");
+    assert!(t.contains("if (isDone(value) && value.dry_run === dryRun)")
+        && t.contains("notifyDone(label, dryRun)"), "完成提示必须匹配 Done 与实际运行模式");
+    for binding in ["onTrialRun={(id) => runTransfer(id, true)}", "onStart={(id) => runTransfer(id, false)}"] {
+        assert_eq!(count_in(&t, binding), 2, "选择条和实际操作格没有共用回调");
+    }
     assert!(t.contains("if (r.ok && isDone(r.value)) notifyDone('对齐')"),
         "对齐完成提示没读 Done：{t}");
     assert!(t.contains("finished = await api.runMirror") && t.contains("return finished;"),

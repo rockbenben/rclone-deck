@@ -141,10 +141,8 @@ impl AppConfig {
     /// 的老规矩自证并把"是谁占着"说出来 —— 那句话里有操作员要的东西，换号会把它吞掉
     /// （`rcd/mod.rs` 那段明写"也不静默换端口"）。
     ///
-    /// **扫描起点固定、逐个往后，这保证同一台机器上多个面板算出同一个号。** 排除区是机器的
-    /// 属性而不是"谁在跑"的属性，所以两次算出来一样，单实例那道闸（`reclaim` 靠 pid 记录
-    /// 认领）继续成立。若改成"随便找个空的"，两个面板会各拿一个号、谁也看不见谁，于是起
-    /// 两个 rcd —— 那正是 R42 item 3 要挡的形状。
+    /// 面板启动时已取得配置家的所有权，可以从固定范围挑选备用端口。
+    /// 上次的进程仍按记录中的端口核验，与这次选到哪个号无关。
     fn pick_port() -> u16 {
         match Self::port_state(AppConfig::PORT) {
             PortState::Free | PortState::Taken => AppConfig::PORT,
@@ -184,12 +182,8 @@ impl AppConfig {
         }
         // 落点同源：开了 RCLONE_DECK_HOME 就用它，否则照旧 %LOCALAPPDATA%/rclone-deck。
         // 日志目录与 pid 文件**共用这一个根**（2026-10-09 起）。
-        let home = match deck_home()? {
-            Some(home) => home,
-            None => dirs::data_local_dir()
-                .ok_or_else(|| ConfigError::Invalid("无法解析 %LOCALAPPDATA%".into()))?
-                .join("rclone-deck"),
-        };
+        let pid_path = Self::daemon_pid_path()?;
+        let home = pid_path.parent().expect("固定 PID 文件有父目录");
         // `log_dir` 留空/不写 = 用 `home\logs`。**为什么允许空**：`jobs.toml` 是一份**静态文本**，
         // 里面没有 `%LOCALAPPDATA%` 可展开 —— 出厂那份不管写什么字面量，对别人都不是他的家
         // （改之前写死的是作者那台的 `D:\Sync\logs\...`，没有 D 盘的新用户连启动都过不去）。
@@ -203,8 +197,17 @@ impl AppConfig {
             }
             p
         };
-        let pid_path = home.join("rcd.pid");
         Ok(Self { rclone_bin, port: deck_port()?, log_dir, pid_path })
+    }
+
+    pub(crate) fn daemon_pid_path() -> Result<PathBuf, ConfigError> {
+        let home = match deck_home()? {
+            Some(home) => home,
+            None => dirs::data_local_dir()
+                .ok_or_else(|| ConfigError::Invalid("无法解析 %LOCALAPPDATA%".into()))?
+                .join("rclone-deck"),
+        };
+        Ok(home.join("rcd.pid"))
     }
 
     /// jobs.toml 的位置：开了 `RCLONE_DECK_HOME` 则是 `$HOME/jobs.toml`，

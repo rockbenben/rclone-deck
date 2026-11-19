@@ -29,6 +29,22 @@ fn create_names_the_file_after_the_job_and_the_second() {
 }
 
 #[test]
+fn legacy_job_ids_create_distinct_log_files_inside_the_log_directory() {
+    let home = tempfile::tempdir().unwrap();
+    let logs = home.path().join("logs");
+    let ids = ["../outside", r"..\outside", "legacy:2026", "旧/任务", "legacy-2026", "legacy_2026"];
+    let mut paths = std::collections::BTreeSet::new();
+    for id in ids {
+        let log = TaskLog::create(&logs, id, &[]).unwrap();
+        assert_eq!(log.path().parent(), Some(logs.as_path()), "{id}");
+        let name = log.path().file_name().unwrap().to_str().unwrap();
+        assert!(name.bytes().all(|b| b.is_ascii_alphanumeric() || b"-_.".contains(&b)), "{name}");
+        assert!(paths.insert(log.path().to_owned()), "{id}");
+    }
+    assert_eq!(std::fs::read_dir(home.path()).unwrap().count(), 1);
+}
+
+#[test]
 fn a_second_log_in_the_same_second_gets_a_suffix_instead_of_overwriting() {
     let dir = tempfile::tempdir().unwrap();
     let a = TaskLog::create(dir.path(), "r2-up", &[]).unwrap();

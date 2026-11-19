@@ -143,6 +143,7 @@ fn err_variant(e: &RcdError) -> &'static str {
         RcdError::SpawnFailed(_) => "SpawnFailed",
         RcdError::NotHealthy(..) => "NotHealthy",
         RcdError::Io(_) => "Io",
+        RcdError::HomeBusy(_) => "HomeBusy",
     }
 }
 
@@ -456,7 +457,10 @@ async fn a_live_sibling_panels_daemon_is_never_reaped() {
     let a = RcdSupervisor::start(s.clone()).await.unwrap();
     // 裁定 R45 item 1：A 是这条用例起的真 daemon，句柄一进门就交给守卫——
     // 下面任何一条断言（包括"同行的 daemon 被杀了"那条）panic 时，A 都不该留给下一条用例。
-    let mut guard = StrayGuard::new(a, s.rclone_bin.clone(), pid_path.clone(), &[]);
+    // 模拟旧版本面板持有的后台。旧版本没有配置家文件锁，须核验记录里的面板 PID。
+    let _sweep = StrayGuard::orphan_sweep(s.rclone_bin.clone(), pid_path.clone(), &[]);
+    let client = rclone_deck_lib::rc::RcClient::new(a.port, &a.secrets()[0], &a.secrets()[1]);
+    drop(a);
     let mut rec = pidfile::read(&pid_path).expect("A 启动后应该有 pid 记录");
     rec.panel_pid = peer.id(); // 一个活着的面板（不是本进程）
     pidfile::write(&pid_path, rec).unwrap();
@@ -479,14 +483,12 @@ async fn a_live_sibling_panels_daemon_is_never_reaped() {
         Err(other) => panic!("期望 PortBusyByForeignProcess（不许抢同行的 daemon），实际是变体 {}", err_variant(&other)),
         Ok(h) => {
             h.shutdown().await.ok();
-            guard.release().shutdown().await.ok();
             panic!("把活着的面板同行的 rcd 收尸了——A 正传到的那一半就这么被打断");
         }
     }
 
     // 关键的一半：A 的 daemon 得**还活着**（终结过它的话这条必然失败）。
-    assert!(guard.client().core_version().await.is_ok(), "同行正在用的 daemon 被杀了");
-    guard.release().shutdown().await.unwrap(); // 收尾：这条用例起的 daemon 自己带走，别搁浅给下一条
+    assert!(client.core_version().await.is_ok(), "同行正在用的 daemon 被杀了");
 }
 
 /// 裁定 R42 item 3 的**反方向**：活性检查只管"还活着的面板"，不能顺手把真正的孤儿也挡掉，
@@ -617,6 +619,88 @@ async fn a_foreign_listener_is_reported_with_its_owner_not_worked_around() {
     }
     drop(listener);
     assert!(port_free(p).await);
+}
+
+#[tokio::test]
+async fn a_second_panel_cannot_start_on_another_port_in_the_same_home() {
+    let dir = tempfile::tempdir().unwrap();
+    let first = spec(dir.path());
+    let unused = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let second = RcdSpec { port: unused.local_addr().unwrap().port(), ..first.clone() };
+    drop(unused);
+    let a = RcdSupervisor::start(first.clone()).await.unwrap();
+    let mut owner = StrayGuard::new(a, first.rclone_bin.clone(), first.pid_path.clone(), &[]);
+    let before = std::fs::read(&first.pid_path).unwrap();
+
+    let rejected = match RcdSupervisor::start(second).await {
+        Err(e) => e.to_string(),
+        Ok(h) => {
+            h.shutdown().await.unwrap();
+            panic!("a second daemon started for the same home");
+        }
+    };
+    assert!(rejected.contains("面板"), "{rejected}");
+    assert_eq!(std::fs::read(&first.pid_path).unwrap(), before);
+    assert!(owner.client().core_version().await.is_ok());
+    owner.release().shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn the_previous_daemon_is_reclaimed_even_when_the_new_port_differs() {
+    let dir = tempfile::tempdir().unwrap();
+    let first = spec(dir.path());
+    let sweep = StrayGuard::orphan_sweep(first.rclone_bin.clone(), first.pid_path.clone(), &[]);
+    let a = RcdSupervisor::start(first.clone()).await.unwrap();
+    let old = pidfile::read(&first.pid_path).unwrap();
+    drop(a);
+    let unused = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let new_port = unused.local_addr().unwrap().port();
+    drop(unused);
+    let b = RcdSupervisor::start(RcdSpec { port: new_port, ..first.clone() }).await.unwrap();
+    let record = pidfile::read(&first.pid_path).unwrap();
+    let old_alive = rclone_deck_lib::rcd::record_identity_matches(old.pid, old.start_time, &first.rclone_bin);
+    b.shutdown().await.unwrap();
+    drop(sweep);
+    assert!(!old_alive, "the previous daemon was still running when the new one started");
+    assert_eq!(record.port, new_port);
+}
+
+#[tokio::test]
+async fn a_stale_live_pid_does_not_authorize_reaping_another_daemon() {
+    let owner_home = tempfile::tempdir().unwrap();
+    let s = spec(owner_home.path());
+    let a = RcdSupervisor::start(s.clone()).await.unwrap();
+    let mut owner = StrayGuard::new(a, s.rclone_bin.clone(), s.pid_path.clone(), &[]);
+    let mut stale = pidfile::read(&s.pid_path).unwrap();
+    stale.start_time -= 1;
+    stale.panel_pid = DEAD_PANEL_PID;
+    let other_home = tempfile::tempdir().unwrap();
+    let other = spec(other_home.path());
+    pidfile::write(&other.pid_path, stale.clone()).unwrap();
+    assert!(matches!(RcdSupervisor::start(other.clone()).await,
+        Err(RcdError::PortBusyByForeignProcess { .. })));
+    assert_eq!(pidfile::read(&other.pid_path), Some(stale));
+    assert!(owner.client().core_version().await.is_ok());
+    owner.release().shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn an_unreadable_record_blocks_startup_even_on_a_free_port() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = spec(dir.path());
+    let incomplete = b"{partial record";
+    std::fs::write(&s.pid_path, incomplete).unwrap();
+    let result = RcdSupervisor::start(s.clone()).await;
+    let error = match result {
+        Err(error) => error,
+        Ok(handle) => {
+            handle.shutdown().await.unwrap();
+            panic!("an unverifiable record was overwritten");
+        }
+    };
+    assert!(matches!(error, RcdError::Io(_)), "{error}");
+    assert_eq!(std::fs::read(&s.pid_path).unwrap(), incomplete);
+    assert!(port_free(s.port).await);
 }
 
 #[tokio::test]

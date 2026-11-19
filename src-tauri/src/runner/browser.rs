@@ -13,19 +13,18 @@
 //! 相对路径、光一个盘符）不发。读数在 `tools/rc-contract-probe.mjs` §7 与
 //! `docs/superpowers/evidence/build-notes.md` 的 F16 一节。
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 use serde::Serialize;
 
 use crate::endpoint::{endpoint_of, Endpoint};
-use crate::rc::types::{FsInfo, JobStatus, ListEntry, StatsView};
-use crate::runner::POLL_INTERVAL;
+use crate::rc::types::{FsInfo, ListEntry};
+use super::deletion::{valid_delete_name, Deletion};
 use crate::rc::{ListError, ListShape};
 use crate::rc::RcError;
 use crate::runner::{Inflight, RunError, Runner};
 use crate::scope::{has_dot_segment, Scope};
-use crate::mutex::Busy;
 use crate::preview::{PreviewIntent, StoredPreview};
 use crate::runner::tasklog::{Level, TaskLog};
 
@@ -275,11 +274,9 @@ pub fn usage_of(entries: &[BrowserEntry]) -> (u64, u64) {
 /// 裁定 R84），根不相等 ⇒ 谁也不挡谁。本地那一支落进 `Scope::local`，与任务行那句回显同一个写法。
 pub fn browser_scope(fs: &str, prefix: &str) -> Scope {
     match endpoint_of(fs) {
-        // `fs` 自己可能已经带了一段路径（`r2:img/deep`：配置里那种写法是合法的），
-        // 那一段和点进来的前缀是同一段路径，先接起来再交给端点坐标系。
-        Endpoint::Remote { fs: root, remote } => {
-            let joined = if remote.is_empty() { prefix.to_string() } else { format!("{remote}/{prefix}") };
-            Scope::of_endpoint(&Endpoint::Remote { fs: root, remote: joined })
+        Endpoint::Remote { .. } => {
+            let root = if prefix.is_empty() { fs.to_string() } else { format!("{fs}/{prefix}") };
+            Scope::of_endpoint(&endpoint_of(&root))
         }
         Endpoint::Local(p) => Scope::of_endpoint(&Endpoint::Local(p.join(prefix))),
     }
@@ -320,15 +317,6 @@ fn refuse_dot_segments(ends: &[(&str, &str)]) -> Result<(), RunError> {
     Ok(())
 }
 
-/// `done` 这个数**只从 rclone 的 stats 取**。清单条数是"我们以为的"，两个数分开放才有核对意义（I7）。
-///
-/// **为什么是 `pub`**：这一档的活证人只能钉在纯函数上——动手前的重列比对保证了
-/// "我们的清单"与"rclone 报的 deletes"在成功路径上**必然相等**，所以"取错了来源"这个错误
-/// 在端到端用例里观察不到（`the_purge_count_comes_from_rclone_not_from_our_list` 钉的是取值）。
-/// 两个函数都是对公开类型的公开取值器，不扩大任何能力。
-pub fn purge_done_count(stats: &StatsView) -> usize { stats.deletes as usize }
-pub fn purge_deleted_dirs(stats: &StatsView) -> usize { stats.deleted_dirs as usize }
-
 impl Runner {
     /// 左列"你的远端"问 rclone 自己（F3），不解析 `rclone.conf`；
     /// 再加上**任务里出现过的位置**——本地目录与带桶段的远端位置都算（spec §3/§4：不新增配置）。
@@ -344,56 +332,56 @@ impl Runner {
         let mut out: Vec<RemoteRef> = names.iter()
             .map(|n| RemoteRef { id: format!("{n}:"), label: n.clone(), is_local: false, paired_with: String::new() })
             .collect();
-        // 去重的键用 `Scope` 那一份判据（`browser_scope` 与锁用的是同一个）：两行指向同一棵树时
-        // 只留一行，不在这里再写一份"位置怎么算相同"（大小写归一来自裁定 R84）。
-        // 根那几行先入册：任务的 dst 恰好就是 `r2:` 时，留下的是 `label = r2` 那一行，
-        // 而不是派生出来那条 `label = r2:`（同一个 id 两种写法，取短的那个）。
-        let mut seen: BTreeSet<String> = out.iter()
-            .map(|r| browser_scope(&r.id, "").key())
+        // 本地路径按 Windows 的 Scope 去重。远端保留后端使用的根拼写，
+        // 例如 SFTP 的 `name:` 和 `name:/` 可以指向不同的目录。
+        let mut indices: BTreeMap<_, _> = out.iter().enumerate()
+            .map(|(i, r)| ((false, r.id.clone()), i))
             .collect();
         for job in self.jobs() {
-            // 先算出这一条任务**两端**的 id：联动视图要的就是"这一头 ↔ 那一头"，
-            // 所以两头一次算齐，而不是两轮循环里各算各的（那样配对关系就丢了）。
-            // `(是不是本地, id, 配对的那一头)`。**只有前两格是真值**，第三格在两端都算出来之后才填。
-            //
-            // 用 `push` 而不是 `ends[n] = …`：上面那个 `continue` 会跳过某一端（没量过的本地形状），
-            // 于是**下标与长度就错开了** —— 那一端没被 push，下一次 `ends[n]` 要往更后的位置写，
-            // 越界或者写到错的格上（实测 panic：index out of bounds, len 0）。`push` 自己管长度。
-            let mut ends: Vec<(bool, String)> = Vec::with_capacity(2);
-            for ep in [job.endpoint_src(), job.endpoint_dst()] {
-                match ep {
-                    Endpoint::Remote { fs, remote } => {
-                        ends.push((false, if remote.is_empty() { fs.clone() } else { format!("{fs}/{remote}") }));
-                    }
-                    Endpoint::Local(p) => {
-                        // 没量过的本地形状不进候选（`local_fs_id` 的 F16 那一段）。
-                        if let Some(id) = local_fs_id(&p) { ends.push((true, id)); }
+            let choice = |endpoint: Endpoint| match endpoint {
+                Endpoint::Local(path) => local_fs_id(&path).map(|id| (true, id)),
+                Endpoint::Remote { root } => Some((false, root)),
+            };
+            let (Some(src), Some(dst)) = (choice(job.endpoint_src()), choice(job.endpoint_dst())) else {
+                continue;
+            };
+            let [src, dst] = [src, dst].map(|(is_local, id)| {
+                let key = if is_local { browser_scope(&id, "").key() } else { id.clone() };
+                *indices.entry((is_local, key)).or_insert_with(|| {
+                    let label = if is_local {
+                        std::path::Path::new(&id).file_name()
+                            .map(|name| name.to_string_lossy().into_owned())
+                            .unwrap_or_else(|| id.clone())
+                    } else {
+                        id.clone()
+                    };
+                    out.push(RemoteRef { id, label, is_local, paired_with: String::new() });
+                    out.len() - 1
+                })
+            });
+            // 配对指向去重后实际发布的另一栏 ID。已有多条配对时沿用首条。
+            if out[src].is_local != out[dst].is_local {
+                for (position, peer) in [(src, dst), (dst, src)] {
+                    if out[position].paired_with.is_empty() {
+                        out[position].paired_with = out[peer].id.clone();
                     }
                 }
-            }
-            // 少于两端就**不成对**，不动对面（临时卡、两侧同型那些）。硬凑一个配对是编的。
-            if ends.len() != 2 { continue; }
-            // 两端互相记住对方（这是"配对"这一件事的唯一算法，两处不许各写一遍）。
-            let mate0 = ends[1].1.clone();
-            let mate1 = ends[0].1.clone();
-            for (is_local, id) in ends.into_iter() {
-                let mate = if is_local { mate0.clone() } else { mate1.clone() };
-                // 带点段的那一种不必在这里再筛一次：`jobs.toml` 的两侧在 parse 就被同一条判据拒了
-                // （`config/jobs.rs`，裁定 R98），走到这里的 `p` 结构上已经不可能含点段。
-                let key = if is_local { Scope::local(std::path::Path::new(&id)).key() }
-                          else { browser_scope(&id, "").key() };
-                if !seen.insert(key) { continue; }
-                let label = if is_local {
-                    // 本地那半边给目录名（短）；远端那半边原样就是那个 id（配置里的写法）。
-                    std::path::Path::new(&id).file_name()
-                        .map(|f| f.to_string_lossy().to_string())
-                        .unwrap_or_else(|| id.clone())
-                } else { id.clone() };
-                out.push(RemoteRef { id, label, is_local, paired_with: mate });
             }
         }
         out.sort_by(|a, b| a.label.to_lowercase().cmp(&b.label.to_lowercase()));
         Ok(out)
+    }
+
+    /// 写操作和签发确认凭证只接受位置选择器当前提供的根 ID。
+    pub async fn check_browser_roots(&self, roots: &[&str]) -> Result<(), RunError> {
+        let choices = self.browser_remotes().await?;
+        for root in roots {
+            if !choices.iter().any(|choice| choice.id == *root) {
+                return Err(RunError::Invariant(format!(
+                    "「{root}」不在文件浏览的可选位置中，请重新选择位置。")));
+            }
+        }
+        Ok(())
     }
 
     /// 列一个前缀。**只读，所以不拿锁**（写动作的锁是 Task 9 那一档，裁定 R93）。
@@ -472,7 +460,7 @@ impl Runner {
     /// `pub` 是为了证人够得着（与 `Runner::force_release` 同一个口径：runner 内部与测试的口子），
     /// 生产侧的读者是 Task 10-13 的每一个动作。
     pub async fn browser_open_log(&self, action: &str) -> Result<TaskLog, RunError> {
-        TaskLog::create(std::path::Path::new(&self.log_dir()), action, self.rcd.secrets())
+        TaskLog::create(&self.app.log_dir, action, self.rcd.secrets())
             .map_err(|e| RunError::Io(e.to_string()))
     }
 
@@ -519,16 +507,17 @@ impl Runner {
         let log = self.browser_open_log("复制").await?;
         // 先拿锁再动数据。这一档没有凭证（copyfile 不是破坏动作），所以不存在
         // "一次失败的申领吃掉了凭证"那条路（对齐那边有，见 `run_mirror`）。
-        let guard = self.mutex.acquire_scopes(&scopes, "浏览器复制").await
-            .map_err(|Busy { owner }| RunError::Busy { owner })?;
+        let guard = self.acquire_scopes(&scopes, "浏览器复制").await?;
         log.line(Level::Info, &format!("复制 {} -> {}", browser_target_label(src_fs, src_remote), browser_target_label(dst_fs, dst_remote)))
             .map_err(|e| RunError::Io(e.to_string()))?;
         self.refuse_if_target_exists(dst_fs, dst_remote).await?;
-        self.rcd.client.operations_copyfile((src_fs, src_remote), (dst_fs, dst_remote)).await?;
+        let mut flight = Inflight::new(guard, &self.abandoned);
+        let result = flight.synchronous_write(self.rcd.client.operations_copyfile((src_fs, src_remote), (dst_fs, dst_remote))).await;
+        self.record_write_result(&scopes[1..], result).await?;
+        let guard = flight.disarm();
         log.line(Level::Info, "已完成：1 个对象（源保留）").map_err(|e| RunError::Io(e.to_string()))?;
         // 写完作废：任何把这棵树当**任一侧**的预览都不再作数（I3 第 3 条）。
         // 作废用的就是申领的那一组树 —— 同一个坐标系、同一个来源，不在这里再拼一遍"这次动了哪些位置"。
-        self.invalidate_writes(&scopes).await;
         drop(guard);
         Ok(RunReport {
             action: "复制".into(),
@@ -551,11 +540,12 @@ impl Runner {
         refuse_dot_segments(&[(fs, remote)])?;
         let scopes = vec![browser_scope(fs, parent_of(remote).as_str())];
         let log = self.browser_open_log("建目录").await?;
-        let guard = self.mutex.acquire_scopes(&scopes, "浏览器建目录").await
-            .map_err(|Busy { owner }| RunError::Busy { owner })?;
-        self.rcd.client.operations_mkdir(fs, remote).await?;
+        let guard = self.acquire_scopes(&scopes, "浏览器建目录").await?;
+        let mut flight = Inflight::new(guard, &self.abandoned);
+        let result = flight.synchronous_write(self.rcd.client.operations_mkdir(fs, remote)).await;
+        self.record_write_result(&scopes, result).await?;
+        let guard = flight.disarm();
         log.line(Level::Info, &format!("建了 {}", browser_target_label(fs, remote))).map_err(|e| RunError::Io(e.to_string()))?;
-        self.invalidate_writes(&scopes).await;
         drop(guard);
         Ok(RunReport {
             action: "建目录".into(), target: browser_scope(fs, remote).describe(),
@@ -578,6 +568,8 @@ impl Runner {
     /// 那是读侧的口径；写侧把"没看见"读成"是空的"就是本仓最忌的那一族假绿，所以这里响亮拒。
     pub async fn browser_preview_rmdir(&self, fs: &str, remote: &str) -> Result<BrowserPreview, RunError> {
         refuse_dot_segments(&[(fs, remote)])?;
+        let scopes = vec![browser_scope(fs, remote)];
+        let _guard = self.acquire_scopes(&scopes, "预览删除空目录").await?;
         let inside = match self.rcd.client.operations_list(fs, remote, ListShape::Tree).await {
             Ok(v) => v,
             Err(ListError::NotFound) => return Err(RunError::Invariant(
@@ -589,8 +581,6 @@ impl Runner {
         if !files.is_empty() {
             return Err(RunError::Invariant(rmdir_not_empty_refusal(files.len())));
         }
-        let scope = browser_scope(fs, remote);
-        let scopes = vec![scope];
         self.previews.supersede(&scopes).await;
         // 清单上就一个名字：要被删掉的是**这个目录本身**。它不是装饰——确认层靠它说清
         // "你批准的是删掉哪一个"。动手前那一步的坐标来自凭证里那对 `fs` / `remote`（重列这一层
@@ -619,8 +609,7 @@ impl Runner {
     async fn run_rmdir(&self, fs: &str, remote: &str) -> Result<RunReport, RunError> {
         let scopes = vec![browser_scope(fs, remote)];
         let log = self.browser_open_log("删空目录").await?;
-        let guard = self.mutex.acquire_scopes(&scopes, "浏览器删空目录").await
-            .map_err(|Busy { owner }| RunError::Busy { owner })?;
+        let guard = self.acquire_scopes(&scopes, "浏览器删空目录").await?;
         match self.rcd.client.operations_list(fs, remote, ListShape::Tree).await {
             Ok(inside) => {
                 let n = inside.iter().filter(|e| !e.is_dir).count();
@@ -637,9 +626,25 @@ impl Runner {
         }
         // 只剩空子目录那一档 rclone 自己会拒（F14）：那句原文（带操作员自己的绝对路径）原样交出去，
         // 不翻译成猜测。
-        self.rcd.client.operations_rmdir(fs, remote).await.map_err(rmdir_refusal)?;
+        let mut flight = Inflight::new(guard, &self.abandoned);
+        let result = flight.synchronous_write(self.rcd.client.operations_rmdir(fs, remote)).await;
+        if let Err(error) = self.record_write_result(&scopes, result).await {
+            let unknown = super::deletion::unknown_write(&error);
+            let outcome = if unknown { "删除结果未知" } else { "删除空目录失败" };
+            let reason = rmdir_refusal(error);
+            if let Err(audit_error) = log.kv(Level::Error, outcome, &[
+                ("路径", browser_target_label(fs, remote)),
+                ("原因", reason.to_string()),
+            ]) {
+                return Err(RunError::Invariant(format!("{outcome}。{reason} 写入结果日志失败。{audit_error}")));
+            }
+            if unknown {
+                return Err(RunError::Invariant(format!("{outcome}。{reason} 请重新预览。")));
+            }
+            return Err(reason);
+        }
+        let guard = flight.disarm();
         log.line(Level::Info, &format!("删了空目录 {}", browser_target_label(fs, remote))).map_err(|e| RunError::Io(e.to_string()))?;
-        self.invalidate_writes(&scopes).await;
         drop(guard);
         Ok(RunReport {
             action: "删空目录".into(), target: browser_target_label(fs, remote),
@@ -649,29 +654,22 @@ impl Runner {
         })
     }
 
-    /// 清空整个前缀的**预览**。两道闸排在一切之前：排除规则非空即拒（R74/I8，F11 说 purge 不受
-    /// 过滤器管——它删的比显示的多），**前缀**站在根上即拒（F12：alias→本地时 purge 连目录本身一起删；
-    /// 判据只看 `prefix` 是不是全空/全是点段，见 [`clear_gates`]）。
-    ///
-    /// 这里**没有**比例守卫（I2b）：清单与实删等价是 `deletefile` 那条通路的事，purge 做不到，
-    /// 所以它的核对靠"动手前重列一遍"，而比例那一档从来不是它的判据。
+    /// Whole-prefix approval names both the files and the directories in this snapshot.
     pub async fn browser_preview_purge(&self, fs: &str, prefix: &str) -> Result<BrowserPreview, RunError> {
         refuse_dot_segments(&[(fs, prefix)])?;
-        // 两道闸与列表上那一对字段**同一个来源**（[`clear_gates`]）：界面上灰着的那颗按钮与这里
-        // 拒的那一次，说的是同一句话。判据的推导只写在那一个函数里，这里不复述一遍。
         let (may_clear, why_not) = clear_gates(&self.defaults.exclude, fs, prefix);
         if !may_clear {
-            // 界面那侧摆的是 `short`（栏上那句点不动），这里给的是拒绝的正文（整句解释）。
             return Err(RunError::Invariant(why_not.detail));
         }
-        let scope = browser_scope(fs, prefix);
-        let doomed = self.prefix_files(fs, prefix).await?;
-        let scopes = vec![scope];
+        let scopes = vec![browser_scope(fs, prefix)];
+        let _guard = self.acquire_scopes(&scopes, "预览清空目录树").await?;
+        let (files, directories) = self.purge_listing(fs, prefix).await?;
         self.previews.supersede(&scopes).await;
-        let shown = doomed.len();
+        let shown = files.len();
+        let doomed = files.iter().cloned().collect();
         let token = self.previews.issue(StoredPreview {
-            intent: PreviewIntent::Purge { fs: fs.to_string(), prefix: prefix.to_string() },
-            doomed: Some(doomed.iter().cloned().collect()),
+            intent: PreviewIntent::Purge { fs: fs.to_string(), prefix: prefix.to_string(), directories },
+            doomed: Some(files),
             scopes,
         }).await;
         Ok(BrowserPreview {
@@ -681,75 +679,37 @@ impl Runner {
             doomed_count: shown,
             doomed,
             total_in_prefix: shown,
-            // 照实报 100%。这道拒绝**不**看它（I2b），看的是规则数与是不是根。
             doomed_ratio: format!("{shown}/{shown}"),
             filtered_note: filtered_note(&self.defaults.exclude),
         })
     }
 
-    /// 异步提交 + 轮询。**锁的寿命照 `transfer` 那套来**（R33）：guard 必须在 job 结束前不死，
-    /// 而"读不到状态"那一路要把锁挂进 `abandoned` 而不是就地放开——
-    /// 否则 rclone 还在删，浏览器已经允许对同一棵树再发起一次写。
-    /// 反过来同样成立：`job/status` 确证说完之后**就没有东西还在动这棵树**，那一刻就解除持有；
-    /// 下面那几步只是画数字与写日志，失败不许把键扣到重启为止（那是把一次抖动变成一次事故）。
-    async fn run_purge(&self, fs: &str, prefix: &str, doomed: BTreeSet<String>)
-        -> Result<RunReport, RunError> {
+    async fn run_purge(
+        &self, fs: &str, prefix: &str, doomed: BTreeSet<String>, directories: BTreeSet<String>,
+    ) -> Result<RunReport, RunError> {
         let scopes = vec![browser_scope(fs, prefix)];
         let log = self.browser_open_log("清空前缀").await?;
-        let guard = self.mutex.acquire_scopes(&scopes, "浏览器清空前缀").await
-            .map_err(|Busy { owner }| RunError::Busy { owner })?;
-        // 动手前重新列一遍，逐条比对（I2）。规则数为 0 时"看到的"就是"会删的"（F11 的反面）。
-        let fresh: BTreeSet<String> = self.prefix_files(fs, prefix).await?.into_iter().collect();
-        if fresh != doomed {
+        let guard = self.acquire_scopes(&scopes, "浏览器清空前缀").await?;
+        let (fresh, fresh_dirs) = self.purge_listing(fs, prefix).await?;
+        if fresh != doomed || fresh_dirs != directories {
             return Err(RunError::Invariant(browser_list_changed_refusal("这一层", doomed.len(), fresh.len())));
         }
-        let ack = self.rcd.client.operations_purge_async(fs, prefix).await?;
-        log.line(Level::Info, &format!("已提交清空，jobid={}", ack.jobid))
-            .map_err(|e| RunError::Io(e.to_string()))?;
-        // 持锁的整批键交给 `Inflight`：它 Drop 时如果还没 disarm，就把这批键挂进 `abandoned`。
-        let mut flight = Inflight::new(guard, &self.abandoned);
-        let status = self.wait_for_job(ack.jobid).await?;
-        // **唯一**的解除点，跟 `transfer` 同一格语义（R48 item 1）：job 说完了。
-        // 绑成有名字的局部量让它活到本函数结束 —— 裸 `flight.disarm();` 是当场落地，
-        // 而 `Inflight::disarm` 头上那条规矩说的正是这一种形状。
-        let _released = flight.disarm();
-        let stats = self.rcd.client.core_stats(&format!("job/{}", ack.jobid)).await?.view();
         let confirmed = doomed.len();
-        // `done` 只从 rclone 的 stats 取（见 `purge_done_count`）：拿清单条数填这里，
-        // I7 那句"是否一致"就恒真了。
-        let done = purge_done_count(&stats);
-        log.line(Level::Info, &format!("清单 {confirmed} 个，rclone 报删除 {done} 个（含 {} 个目录），一致={}",
-                 purge_deleted_dirs(&stats), done == confirmed))
-            .map_err(|e| RunError::Io(e.to_string()))?;
-        if !status.success {
-            return Err(RunError::Invariant(format!("清空没有成功收尾：{}", status.error)));
-        }
-        self.invalidate_writes(&scopes).await;
+        // An empty file list authorizes zero changes. For a nonempty list, rmdir
+        // can remove only directories that are still empty after the approved deletes.
+        let directories: Vec<_> = if doomed.is_empty() { Vec::new() }
+            else { directories.into_iter().rev().collect() };
+        let (deleted, _guard) = self.delete_approved(Deletion {
+            fs, source: None, files: &doomed, directories: &directories, touched: &scopes,
+        }, &log, guard).await?;
+        let done = deleted.files;
+        log.line(Level::Info, &format!("清单 {confirmed} 个，已删除 {done} 个文件和 {} 个空目录",
+            deleted.directories)).map_err(|e| RunError::Io(e.to_string()))?;
         Ok(RunReport {
             action: "清空这一层".into(), target: browser_scope(fs, prefix).describe(),
             confirmed, done, agrees: done == confirmed, has_list: true, note: String::new(),
             log_path: log.path().to_string_lossy().to_string(),
         })
-    }
-
-    /// 等到这个 job **说完**为止，再把它的答复交出去（裁定 R113）。
-    ///
-    /// 为什么不能只读一次：`job/status` 立刻就答，跑完之前答的是 `finished:false` +
-    /// `success:false`（rclone 在 job 跑完之前就把 `success` 答成 false；那个字段**没有**
-    /// `#[serde(default)]`，缺字段是解析失败不是 false）。照 `success` 判的话，
-    /// "还没跑完"就被读成"跑失败了"——那与本项目咬过两次的那格同族
-    ///（把"没读到"当"没有"）。`transfer` 那圈循环同一个道理，只是它还要画进度。
-    ///
-    /// 读不到（`poll_status` 自己已经重试过一轮）就 `?` 抛出：调用方手里的 `Inflight`
-    /// 随栈 drop 把整批键挂进 `abandoned`（R33），绝不就地放开——rclone 那边可能还在删。
-    async fn wait_for_job(&self, jobid: i64) -> Result<JobStatus, RunError> {
-        loop {
-            let status = self.poll_status(jobid).await?;
-            if status.finished {
-                return Ok(status);
-            }
-            tokio::time::sleep(POLL_INTERVAL).await;
-        }
     }
 
     /// 改名 / 移动到目录 / 跨远端移动的**预览**。破坏性（源会没），所以走凭证；
@@ -758,10 +718,9 @@ impl Runner {
     pub async fn browser_preview_move(&self, src_fs: &str, src_remote: &str,
                                        dst_fs: &str, dst_remote: &str) -> Result<BrowserPreview, RunError> {
         refuse_dot_segments(&[(src_fs, src_remote), (dst_fs, dst_remote)])?;
-        self.refuse_if_target_exists(dst_fs, dst_remote).await?;
-        // 凭证覆盖**两端**所在的目录（裁定 R90/R99）：只登记目标端的话，源那一侧被人写过一次，
-        // 操作员确认的还是"这个文件从这里搬走"——而它可能已经不在了，或者内容已经不是那份。
         let scopes = self.browser_lock_scopes(&[(src_fs, src_remote), (dst_fs, dst_remote)]);
+        let _guard = self.acquire_scopes(&scopes, "预览移动").await?;
+        self.refuse_if_target_exists(dst_fs, dst_remote).await?;
         self.previews.supersede(&scopes).await;
         let token = self.previews.issue(StoredPreview {
             intent: PreviewIntent::Move {
@@ -794,8 +753,7 @@ impl Runner {
         let ends = [(src.0.as_str(), src.1.as_str()), (dst.0.as_str(), dst.1.as_str())];
         let scopes = self.browser_lock_scopes(&ends);
         let log = self.browser_open_log("移动").await?;
-        let guard = self.mutex.acquire_scopes(&scopes, "浏览器移动").await
-            .map_err(|Busy { owner }| RunError::Busy { owner })?;
+        let guard = self.acquire_scopes(&scopes, "浏览器移动").await?;
         let (src_fs, src_remote) = (src.0.as_str(), src.1.as_str());
         let (dst_fs, dst_remote) = (dst.0.as_str(), dst.1.as_str());
         if !doomed.iter().any(|d| d == src_remote) {
@@ -807,11 +765,13 @@ impl Runner {
         self.refuse_if_target_exists(dst_fs, dst_remote).await?;
         log.line(Level::Info, &format!("移动 {} -> {}", browser_target_label(src_fs, src_remote), browser_target_label(dst_fs, dst_remote)))
             .map_err(|e| RunError::Io(e.to_string()))?;
-        self.rcd.client.operations_movefile((src_fs, src_remote), (dst_fs, dst_remote)).await?;
+        let mut flight = Inflight::new(guard, &self.abandoned);
+        let result = flight.synchronous_write(self.rcd.client.operations_movefile((src_fs, src_remote), (dst_fs, dst_remote))).await;
+        self.record_write_result(&scopes, result).await?;
+        let guard = flight.disarm();
         log.line(Level::Info, "已完成：1 个对象换了名字/位置（源不再存在）")
             .map_err(|e| RunError::Io(e.to_string()))?;
         // 作废的就是申领的那两端（同一个来源，不在这里重算一遍位置集合）。
-        self.invalidate_writes(&scopes).await;
         drop(guard);
         let confirmed = doomed.len();
         Ok(RunReport {
@@ -847,21 +807,40 @@ impl Runner {
         self.listed_files(fs, prefix, ListShape::Level).await
     }
 
-    /// **整个前缀**下的文件（含子目录里的）。「清空这一层」用它：`operations/purge` 删的就是整棵，
-    /// 拿单层那一份当清单会把"会删多少"报小 —— 报小的那一次是真删了整棵。
-    pub(crate) async fn prefix_files(&self, fs: &str, prefix: &str) -> Result<Vec<String>, RunError> {
-        self.listed_files(fs, prefix, ListShape::Tree).await
+    async fn purge_listing(&self, fs: &str, prefix: &str) -> Result<(BTreeSet<String>, BTreeSet<String>), RunError> {
+        let root = prefix.trim_end_matches('/');
+        if !valid_delete_name(root) {
+            return Err(RunError::Invariant("清空只接受具体、可复核的相对目录。".into()));
+        }
+        let descendants = format!("{root}/");
+        let entries = match self.rcd.client.operations_list(fs, root, ListShape::TreeWithDirectories).await {
+            Ok(entries) => entries,
+            Err(ListError::NotFound) => Vec::new(),
+            Err(error) => return Err(error.into()),
+        };
+        let mut files = BTreeSet::new();
+        let mut directories = BTreeSet::from([root.to_owned()]);
+        for entry in entries {
+            if entry.is_dir && entry.path == root {
+                continue;
+            }
+            if !entry.path.starts_with(&descendants) || !valid_delete_name(&entry.path) {
+                return Err(RunError::Invariant(format!("无法确认目录树内的相对路径 {:?}。", entry.path)));
+            }
+            let names = if entry.is_dir { &mut directories } else { &mut files };
+            names.insert(entry.path);
+        }
+        Ok((files, directories))
     }
 
-    /// "删掉这一层看到的 N 个"（R75）与"删这一个"。名单为空 = 当前前缀下看到的全部。
-    ///
-    /// 这条通路的**清单必然等于实删**：执行单位是名字（F13：按名的调用不受过滤器影响），
-    /// 所以它是浏览器里唯一能做到等价核对的删除。`purge` 做不到（F11）。
+    /// Preview this layer or an explicit subset of its file names.
     pub async fn browser_preview_delete(&self, fs: &str, prefix: &str, names: Vec<String>)
         -> Result<BrowserPreview, RunError> {
         // 名单里每一个名字都问一遍（裁定 R110）：名字是界面交回来的，不是后台生成的那一份清单。
         refuse_dot_segments(&[(fs, prefix)])?;
         refuse_dot_segments(&names.iter().map(|n| (fs, n.as_str())).collect::<Vec<_>>())?;
+        let scopes = vec![browser_scope(fs, prefix)];
+        let _guard = self.acquire_scopes(&scopes, "预览删除").await?;
         let all = self.layer_files(fs, prefix).await?;
         let doomed: Vec<String> = if names.is_empty() {
             all.clone()
@@ -875,9 +854,9 @@ impl Runner {
             }
             let mut picked = names.clone();
             picked.sort();
+            picked.dedup();
             picked
         };
-        let scopes = vec![browser_scope(fs, prefix)];
         self.previews.supersede(&scopes).await;
         let shown = doomed.len();
         let total = all.len();
@@ -885,7 +864,7 @@ impl Runner {
             intent: if names.is_empty() {
                 PreviewIntent::DeleteVisible { fs: fs.to_string(), prefix: prefix.to_string() }
             } else {
-                PreviewIntent::DeleteNames { fs: fs.to_string(), names: names.clone() }
+                PreviewIntent::DeleteNames { fs: fs.to_string(), prefix: prefix.to_string() }
             },
             doomed: Some(doomed.iter().cloned().collect()),
             scopes,
@@ -923,8 +902,8 @@ impl Runner {
         };
         match intent {
             PreviewIntent::DeleteVisible { fs, prefix } => self.run_delete_visible(&fs, &prefix, doomed).await,
-            PreviewIntent::DeleteNames { fs, names } => self.run_delete_names(&fs, &names, doomed).await,
-            PreviewIntent::Purge { fs, prefix } => self.run_purge(&fs, &prefix, doomed).await,
+            PreviewIntent::DeleteNames { fs, prefix } => self.run_delete_names(&fs, &prefix, doomed).await,
+            PreviewIntent::Purge { fs, prefix, directories } => self.run_purge(&fs, &prefix, doomed, directories).await,
             PreviewIntent::Rmdir { fs, remote } => self.run_rmdir(&fs, &remote).await,
             PreviewIntent::Move { src, dst } => self.run_move(src, dst, doomed).await,
             // 到这里五种意图都有了实现者；将来加第六种时，编译器会因为这条 catch-all 不再穷尽而**不**提醒，
@@ -937,8 +916,7 @@ impl Runner {
         -> Result<RunReport, RunError> {
         let scopes = vec![browser_scope(fs, prefix)];
         let log = self.browser_open_log("删除").await?;
-        let guard = self.mutex.acquire_scopes(&scopes, "浏览器删除").await
-            .map_err(|Busy { owner }| RunError::Busy { owner })?;
+        let guard = self.acquire_scopes(&scopes, "浏览器删除").await?;
         // 动手前重新列一遍，逐条比对（I2）。这里**没有**比例守卫：按名删除的清单等于实删，
         // 100% 那一档是"删掉这一层看到的 N 个"的合法形状（I2b），照对齐那条接过来
         // 就做出一个永远点不动的按钮（`a_full_prefix_delete_by_name_is_still_executable…` 钉的就是它）。
@@ -947,55 +925,41 @@ impl Runner {
             return Err(RunError::Invariant(
                 browser_list_changed_refusal("这个前缀", doomed.len(), fresh.len())));
         }
-        let confirmed = doomed.len();
-        let mut done = 0usize;
-        for name in &doomed {
-            self.rcd.client.operations_deletefile(fs, name).await?;
-            done += 1;
+        self.run_file_delete(fs, browser_scope(fs, prefix).describe(), &doomed, &scopes, &log, guard).await
+    }
+
+    async fn run_delete_names(&self, fs: &str, prefix: &str, doomed: BTreeSet<String>)
+        -> Result<RunReport, RunError> {
+        let ends: Vec<_> = doomed.iter().map(|name| (fs, name.as_str())).collect();
+        let scopes = self.browser_lock_scopes(&ends);
+        let log = self.browser_open_log("删除").await?;
+        let guard = self.acquire_scopes(&scopes, "浏览器删除").await?;
+        // Stat by a supplied name may resolve a differently spelled file on some backends.
+        let actual = self.layer_files(fs, prefix).await?;
+        let still_listed = doomed.iter().filter(|name| actual.binary_search(name).is_ok()).count();
+        if still_listed != doomed.len() {
+            return Err(RunError::Invariant(browser_list_changed_refusal("这个前缀", doomed.len(), still_listed)));
         }
-        log.line(Level::Info, &format!("清单 {confirmed} 个，实际删除 {done} 个，一致={}", confirmed == done))
+        let target = doomed.iter().map(|name| browser_target_label(fs, name)).collect::<Vec<_>>().join("、");
+        self.run_file_delete(fs, target, &doomed, &scopes, &log, guard).await
+    }
+
+    async fn run_file_delete(
+        &self, fs: &str, target: String, doomed: &BTreeSet<String>, scopes: &[Scope],
+        log: &TaskLog, guard: crate::mutex::MultiGuard,
+    ) -> Result<RunReport, RunError> {
+        let (deleted, _guard) = self.delete_approved(Deletion {
+            fs, source: None, files: doomed, directories: &[], touched: scopes,
+        }, log, guard).await?;
+        let (confirmed, done) = (doomed.len(), deleted.files);
+        log.line(Level::Info, &format!("清单 {confirmed} 个，实际删除 {done} 个"))
             .map_err(|e| RunError::Io(e.to_string()))?;
-        // 作废用的就是申领的那一组树（与 `browser_copy` 同一个口径，不在这里重算位置集合）。
-        self.invalidate_writes(&scopes).await;
-        drop(guard);
         Ok(RunReport {
-            action: "删除".into(), target: browser_scope(fs, prefix).describe(),
-            confirmed, done, agrees: confirmed == done, has_list: true, note: String::new(),
-            log_path: log.path().to_string_lossy().to_string(),
+            action: "删除".into(), target, confirmed, done, agrees: confirmed == done,
+            has_list: true, note: String::new(), log_path: log.path().to_string_lossy().into_owned(),
         })
     }
 
-    async fn run_delete_names(&self, fs: &str, names: &[String], doomed: BTreeSet<String>)
-        -> Result<RunReport, RunError> {
-        // 按名字删的这一档：核对的是"这些名字还在不在"（stat），不是重列整个前缀——
-        // 一个对象的删除与它邻居的变化无关，重列会让一次无关的写入把授权作废。
-        let ends: Vec<(&str, &str)> = names.iter().map(|n| (fs, n.as_str())).collect();
-        let scopes = self.browser_lock_scopes(&ends);
-        let log = self.browser_open_log("删除").await?;
-        let guard = self.mutex.acquire_scopes(&scopes, "浏览器删除").await
-            .map_err(|Busy { owner }| RunError::Busy { owner })?;
-        for n in names {
-            if !doomed.iter().any(|d| d == n) {
-                return Err(RunError::Invariant("这份确认与当前名单不一致，所以一个都没动".to_string()));
-            }
-            if self.rcd.client.operations_stat(fs, n).await?.is_none() {
-                return Err(RunError::Invariant(browser_list_changed_refusal("它", names.len(), names.len() - 1)));
-            }
-        }
-        let mut done = 0usize;
-        for n in names { self.rcd.client.operations_deletefile(fs, n).await?; done += 1; }
-        log.line(Level::Info, &format!("清单 {} 个，实际删除 {done} 个，一致={}", names.len(), done == names.len()))
-            .map_err(|e| RunError::Io(e.to_string()))?;
-        self.invalidate_writes(&scopes).await;
-        drop(guard);
-        Ok(RunReport {
-            // 回显走同一处坐标系：`names` 是相对那一侧根的名字，光把它们列出来读不出"在哪儿"。
-            action: "删除".into(),
-            target: names.iter().map(|n| browser_target_label(fs, n)).collect::<Vec<_>>().join("、"),
-            confirmed: names.len(), done, agrees: done == names.len(), has_list: true,
-            note: String::new(), log_path: log.path().to_string_lossy().to_string(),
-        })
-    }
 }
 
 /// I2c 的话术。归因要说对：这是面板在提交之前拦下的，不是 rclone 报的错
@@ -1118,7 +1082,7 @@ pub struct RunReport {
     pub has_list: bool,
     /// 清单上的条数（没有清单那一档恒为 0，因为那份清单不存在）。
     pub confirmed: usize,
-    /// 实际完成的条数（purge 用 rclone 自己报的 deletes，见 `purge_done_count`）。
+    /// 实际完成的条数。
     pub done: usize,
     /// I7 要的那一句：两个数是否一致。**判定在这里做完**，界面只读这个布尔（I5）。
     ///

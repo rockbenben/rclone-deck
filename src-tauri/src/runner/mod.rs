@@ -1,5 +1,6 @@
 pub mod browser;
 pub mod checks;
+mod deletion;
 pub mod drafts;
 pub mod lists;
 pub mod tasklog;
@@ -198,62 +199,6 @@ pub fn transport_kind_gate(kind: &JobKind, name: &str, dry_run: bool) -> Result<
     }
 }
 
-/// 确认执行这一路上四句拒绝话术的**唯一**出处（`run_mirror` 的控制流中间）。
-///
-/// 抽成函数不是为了复用，是为了让 `tests/commands_surface.rs` 那份"操作员看到的句子里不许有
-/// 内部名词"的扫描够得着：这四句都长在流程中间，测试构造不到那个位置，扫不到就等于这几句
-/// 从没被这条规矩管过（那道闸另外两句本来就是纯函数，天然扫得到）。
-/// `operations/check` 要的是 `(fs, remote)` 两个字符串，而它手上那两个端点是
-/// `Endpoint` 枚举 —— 得把它们拆成 rc 认的那两个字段。
-///
-/// **本地那一侧必须走 `runner::browser::local_fs_id`**（2026-10-11 改，之前是错的）：
-/// 早先这里发的是 `("/", "D:\\pics")` —— `fs` 传 `/`、盘符路径塞在 `remote` 里。
-/// 那正是 `local_fs_id` 上面那条注释实测过**不能当读数用**的形状：
-/// 「`/D:/x` 那一种 list 与 size 都 404、fsinfo 却回 200 并且介绍的是插进了另一个盘符的根」。
-/// 换句话说开着 `check_by_hash` 时，它多半交回空 `differ`，而汇总照样打一行「跑了」——
-/// 一个报成功而什么都没做的开关。
-///
-/// 复用那一个函数而不是再实现一次转换：它是这个仓对「本地目录怎么交给 rc」的**唯一**
-/// 量过的口径，另写一份就是第二套（`local_fs_id` 的 F16 说的正是这件事）。
-/// `None` = 这个形状没量过（UNC、盘符相对写法）⇒ **不出这一级的结果**，交 `Unknown`
-/// 那条保守路径，而不是硬拼一个 rc 不认的 `fs`。
-///
-/// **顺序是判据**：src 交本地、dst 交云端，反了就等于反过来比。
-fn check_pair<'a>(
-    a: &'a Endpoint, b: &'a Endpoint,
-) -> Option<((std::borrow::Cow<'a, str>, std::borrow::Cow<'a, str>),
-             (std::borrow::Cow<'a, str>, std::borrow::Cow<'a, str>))> {
-    let local = |p: &std::path::Path| -> Option<std::borrow::Cow<'a, str>> {
-        browser::local_fs_id(p).map(std::borrow::Cow::Owned)
-    };
-    match (a, b) {
-        (Endpoint::Local(l), Endpoint::Remote { fs, remote }) => Some((
-            (local(l)?, std::borrow::Cow::Borrowed("")),
-            (std::borrow::Cow::Borrowed(fs.as_str()), std::borrow::Cow::Borrowed(remote.as_str())),
-        )),
-        (Endpoint::Remote { fs, remote }, Endpoint::Local(l)) => Some((
-            (std::borrow::Cow::Borrowed(fs.as_str()), std::borrow::Cow::Borrowed(remote.as_str())),
-            (local(l)?, std::borrow::Cow::Borrowed("")),
-        )),
-        _ => None,
-    }
-}
-
-/// `operations/check` 的 `differ` 交的是**桶全 key**（带 `remote=` 那一段前缀），
-/// 而 `report.diverged` 与 `orphans` 用的是「相对各自根」—— 不剥掉前缀就是两套坐标系，
-/// 而这一份是给人对着列表找文件的，名字对不上就等于没有。
-///
-/// 剥不掉时**交原串**而不是报错：那一条随后会以一个"对不上任何键"的名字进名单，
-/// 用户看得见一��多出来的条目、可以自己判断；反过来把它静默丢掉才是真的看不见。
-fn relative_to_root(full: &str, root: &str) -> String {
-    let root = root.trim_matches('/');
-    if root.is_empty() { return full.trim_start_matches('/').to_string(); }
-    match full.strip_prefix(&format!("{root}/")) {
-        Some(rest) => rest.to_string(),
-        None => full.to_string(),
-    }
-}
-
 /// 预览只认这一族扩展名。**白名单而不是黑名单**：放行"不是图片就拒"的那一族要靠维护，
 /// 而漏一个 `exe` 就是一次任意文件读取。
 pub const IMAGE_EXTS: &[&str] = &[
@@ -384,47 +329,53 @@ pub fn mirror_side_refused_refusal(name: &str, empty_src: bool, too_much: bool) 
          要对着逐条名单看就点「重新预览」。",
         den = prune::RATIO_DEN)
 }
-/// 裁定 R48 item 1：**提交成功（或提交结果未知）之后、`job/status` 确证 `finished == true`
-/// 之前**，guard 由这个持有者代管，它的 `Drop` 默认把 guard 存进 `abandoned`（那组键继续被占住）。
-///
-/// 为什么要有这个类型，而不是把 `abandoned.push` 写回 Unknown 那条臂：今天坏掉的就是**顺序**——
-/// 两条日志写（`log.kv` / `log.line`）排在 `push` 之前，各自带一个 `?`，于是"日志目录写不下去"
-/// 成了"放开这把锁"的充分条件，而 rclone 那边的 job 可能还在删。逐个 `?` 数过去没意义：
-/// 下一个 `?` 是 Task 10 加的，注释拦不住它。有了持有者，**任何**提前结束的形状（`?`、panic、
-/// 早退 `return`）都落在同一语义上：**没确证跑完就不放开键**。
-///
-/// 唯一的解除点是 [`Inflight::disarm`]，只许在 `job/status` 答了 `finished == true` 那一刻调
-/// （无论成功还是失败，"说完"就是"这一个 job 不会再动这一对目录"）。
-///
-/// `Drop` 里**没有** `unwrap`/`expect`/打印：本机 console 开着 QuickEdit，一次被挡住的 stderr 写
-/// 能把调用方挂住，而展开过程中 panic 是**进程中止**。存 guard 走已有的 `abandoned` 通道，
-/// 锁中毒只 `into_inner`（临界区是 `Vec::push`，中毒了也只剩"少一次登记"这种更坏的选项）。
+/// Hold the scopes from the start of submission until an explicit rejection
+/// or until the acknowledged job is confirmed finished.
 struct Inflight<'a> {
-    /// `Some` = 还没有任何东西确证这个 job 结束；`disarm` 把它取走。
-    /// 类型是 `MultiGuard`（一批键，Task 7 起两侧各一把），**R33 那套生命周期一个字都没改**：
-    /// 没确证跑完就把整批键存进 `abandoned`，绝不就地 drop，也绝不 `mem::forget`。
     guard: Option<MultiGuard>,
-    abandoned: &'a StdMutex<Vec<MultiGuard>>,
+    ack: Option<SubmitAck>,
+    abandoned: &'a StdMutex<Vec<AbandonedWrite>>,
+}
+
+struct AbandonedWrite {
+    _guard: MultiGuard,
+    ack: Option<SubmitAck>,
 }
 
 impl<'a> Inflight<'a> {
-    fn new(guard: MultiGuard, abandoned: &'a StdMutex<Vec<MultiGuard>>) -> Self {
-        Self { guard: Some(guard), abandoned }
+    fn new(guard: MultiGuard, abandoned: &'a StdMutex<Vec<AbandonedWrite>>) -> Self {
+        Self { guard: Some(guard), ack: None, abandoned }
     }
 
-    /// 解除默认动作，把 guard 交回调用方。**调用方必须把它绑成有名字的局部量**
-    /// （`let _ = inflight.disarm();` 会当场落地，`must_use` 对 `let _` 不管用，
-    /// 见 `transfer` 头上那段实测），让它活到函数结束。
+    fn acknowledge(&mut self, ack: &SubmitAck) {
+        self.ack = Some(ack.clone());
+    }
+
     fn disarm(&mut self) -> Option<MultiGuard> {
         self.guard.take()
+    }
+
+    /// For an RC call that returns only after the write finishes, a definite
+    /// error ends the call too. A lost response still leaves its outcome unknown.
+    async fn synchronous_write(
+        &mut self,
+        request: impl std::future::Future<Output = Result<(), ListError>>,
+    ) -> Result<(), ListError> {
+        let result = request.await;
+        if let Err(error) = &result {
+            if !matches!(error, ListError::Other(e) if e.submission_is_unknown()) {
+                drop(self.disarm());
+            }
+        }
+        result
     }
 }
 
 impl Drop for Inflight<'_> {
     fn drop(&mut self) {
         if let Some(guard) = self.guard.take() {
-            let mut abandoned = self.abandoned.lock().unwrap_or_else(|e| e.into_inner());
-            abandoned.push(guard);
+            self.abandoned.lock().unwrap_or_else(|e| e.into_inner())
+                .push(AbandonedWrite { _guard: guard, ack: self.ack.take() });
         }
     }
 }
@@ -502,15 +453,8 @@ pub struct Runner {
     /// 裁定 R99 的"与配置里的编号比一次，撞了就进位"用的也是这一个游标。
     draft_seq: StdMutex<usize>,
     mutex: JobMutex,
-    /// R33：状态未知时存下来的 guard，**故意不释放**。
-    /// 键会一直锁到面板重启为止——这不是缺陷：那两棵树上的 rclone job 可能还在跑、还在删，
-    /// 而放开锁就等于让另一个写同一棵树的任务（反方向那条，或浏览器的一次 purge）开跑（起点事故）。
-    /// 子项目 1 不给这个状态放按钮，
-    /// 所以下面的 `force_release` 只作为 runner 内部与测试的口子；界面侧的恢复路径留给子项目 2。
-    /// R48 item 1 起，写它的是 `Inflight::Drop`（提交之后任何没确证跑完的出口都走那里），
-    /// 所以它是 std 的同步锁而不是 tokio 的——`Drop` 里不能 await，临界区又只有 `Vec::push`。
-    /// Task 7 起存的是一批键（`MultiGuard`，两侧各一把），存法与释放语义照旧。
-    abandoned: StdMutex<Vec<MultiGuard>>,
+    /// 未确认结束的写入保留整组锁。只有拿到同一任务的终态后才能在本次会话释放。
+    abandoned: StdMutex<Vec<AbandonedWrite>>,
     /// 待确认的预览登记（`crate::preview`）：token → 那份清单关于哪个动作、内容本身、以及它
     /// 关于哪些位置。对齐与浏览器共用同一个登记处，所以"看过清单"这套机制只有一份实现。
     /// 为什么要存内容而不是存条数、`scopes` 为什么放两侧，见 `StoredPreview` 的字段文档；
@@ -560,7 +504,7 @@ impl Runner {
     /// 而不是落进 `%LOCALAPPDATA%\rclone-deck\logs`（`%APPDATA%` 那边住的是 `jobs.toml`；
     /// 那起事故记在 R58 与 R68）。
     pub fn log_dir(&self) -> String {
-        self.defaults.log_dir.clone()
+        self.app.log_dir.to_string_lossy().into_owned()
     }
 
     /// rcd 的身份读数（端口 / PID / 版本 / execute_id），供命令层拼 `RcdStatus`。
@@ -572,6 +516,10 @@ impl Runner {
             rclone_version: self.rcd.rclone_version.clone(),
             execute_id: self.rcd.execute_id.clone(),
         }
+    }
+
+    pub(crate) fn rcd_owner_is_live(&self) -> bool {
+        self.rcd.client.owner_is_live()
     }
 
     pub fn mutex(&self) -> &JobMutex {
@@ -591,7 +539,34 @@ impl Runner {
     }
 
     pub async fn locks(&self) -> BTreeMap<String, String> {
+        self.refresh_unconfirmed_writes().await;
         self.mutex.snapshot().await
+    }
+
+    pub(crate) async fn refresh_unconfirmed_writes(&self) {
+        let acknowledgements: Vec<_> = self.abandoned.lock().unwrap_or_else(|e| e.into_inner())
+            .iter().filter_map(|write| write.ack.clone())
+            .filter(|ack| !ack.execute_id.is_empty()).collect();
+        if acknowledgements.is_empty() {
+            return;
+        }
+        // A UI refresh has a bounded budget. Failure to read status never frees scopes.
+        let _ = tokio::time::timeout(Duration::from_secs(1), async {
+            for ack in acknowledgements {
+                if let Ok(status) = self.rcd.client.job_status(ack.jobid).await {
+                    if status.finished && status.matches_ack(&ack) {
+                        self.abandoned.lock().unwrap_or_else(|e| e.into_inner())
+                            .retain(|write| write.ack.as_ref() != Some(&ack));
+                    }
+                }
+            }
+        }).await;
+    }
+
+    async fn acquire_scopes(&self, scopes: &[Scope], owner: &str) -> Result<MultiGuard, RunError> {
+        self.refresh_unconfirmed_writes().await;
+        self.mutex.acquire_scopes(scopes, owner).await
+            .map_err(|Busy { owner }| RunError::Busy { owner })
     }
 
     /// 这条任务要写的那两棵树正被谁挡着（裁定 R92）——**界面那一行的读数与拒绝动作用的是同一条判据**。
@@ -638,16 +613,6 @@ impl Runner {
         // `abandoned` 那条登记——但一次被拒的动作连这把键都不该短暂碰过）；`open_log` 之后的早退
         // 会在日志目录里落一个这个任务从没跑过的文件。两者都是"被拒绝的动作产生了副作用"。
         transport_kind_gate(&job.kind, &job.name, dry_run).map_err(RunError::Invariant)?;
-        // 排在门**之后**：被拒的那一次仍然一个副作用都不该有（见上面那段）。作废只认**真实写入**——
-        // spec §4.1 的作废条件是"那一棵树被真写过"，而试跑（dry run）一个东西都不改，它对端上
-        // 承诺的删除范围没有任何影响。更关键的是设计上的交叉核对**要的正是让人在预览之后再跑一次
-        // 试读**去比对 rclone 自己算的那份删除计数（见 `transport_kind_gate` 放行 dry run 的理由）：
-        // 让一次只读的试跑作废确认，等于把这条被鼓励的核对变成每次都要重新预览的负担。
-        if !dry_run {
-            // 传的是**被写的那一侧**（`dst`）：这一跑真正落盘的东西全进那一侧，
-            // 而任何预览只要有关于这个位置的清单就该作废（判据见 `invalidate_writes`）。
-            self.invalidate_writes(&[Scope::of_endpoint(&job.endpoint_dst())]).await;
-        }
         // `&job.kind`：`JobKind` 不是 `Copy`（Task 2 的派生只有 Debug/Clone/PartialEq/Eq），
         // 按值 match 会想把 `job` 里的这个字段搬走——`job` 是 `&Job`，E0507。
         let method = match &job.kind {
@@ -664,12 +629,7 @@ impl Runner {
         // 可比，`None` 意味着"这不是对齐实删"，绝不能当 0（那会把只增的 copy 也误判成违约）。
         let guard = self.acquire(job).await?;
         let log = self.open_log(job).await?;
-        let state = self.transfer(job, method, dry_run, &log, guard, None).await?;
-        // 真写过之后，卡上那份"上次盘点"就不再是现状了：留着它，屏上会继续写
-        // 「会传 N 个」/「会删 M 个」，而这一趟已经把它们用掉了。失败/未知也可能写了一半，
-        // 终态又没有计数可核，所以一并收回；试跑不动任何东西，保留。
-        if summary_is_stale(&state) { self.forget_summary(id); }
-        Ok(state)
+        self.transfer(job, method, dry_run, &log, guard, None).await
     }
 
     pub async fn run_gate(&self, id: &str) -> Result<GateReport, RunError> {
@@ -684,10 +644,10 @@ impl Runner {
 
         // 日志里也要走会报错的那条推导：`remote_part()` 对本地 dst 返回 ""，
         // 于是日志把"这个任务根本没有远端"印成一个空字符串，看起来像正常对账。
-        let remote = job.remote_for_list().map_err(RunError::Config)?;
+        job.remote_for_list().map_err(RunError::Config)?;
         log.kv(Level::Info, "闸门开始对账", &[
             ("job", job.id.clone()), ("src", job.src.clone()),
-            ("fs", job.fs_for_list()), ("remote", remote),
+            ("fs", job.endpoint_dst().rclone_root().into_owned()), ("remote", String::new()),
         ]).map_err(io)?;
 
         let expected = checks::expected_keys(job, &self.defaults.exclude)?;
@@ -777,33 +737,47 @@ impl Runner {
         // 的真实成本在请求数里），先看见"这一前缀变慢了"的位置就在这一行。
         let before = self.rcd.client.list_request_count();
         let listed_at = std::time::Instant::now();
-        let src = checks::side_set(&self.rcd.client, &self.defaults.exclude, &job.endpoint_src()).await?;
-        let dst = checks::side_set(&self.rcd.client, &self.defaults.exclude, &job.endpoint_dst()).await?;
-        let list_requests = self.rcd.client.list_request_count() - before;
-        let list_secs = listed_at.elapsed().as_secs();
+        let src_endpoint = job.endpoint_src();
+        let dst_endpoint = job.endpoint_dst();
         // 报告仍然是「本地 vs 远端」这一帧（字段名与界面一个字不动），只是"哪一端是本地"
         // 由端点类型判，而不是由"src 必须是本地"这个前提逼出来。
-        let (local, remote) = match (job.endpoint_src(), job.endpoint_dst()) {
-            (Endpoint::Local(_), Endpoint::Remote { .. }) => (&src, &dst),
-            (Endpoint::Remote { .. }, Endpoint::Local(_)) => (&dst, &src),
+        let (le, re, downloading) = match (&src_endpoint, &dst_endpoint) {
+            (Endpoint::Local(_), Endpoint::Remote { .. }) => (&src_endpoint, &dst_endpoint, false),
+            (Endpoint::Remote { .. }, Endpoint::Local(_)) => (&dst_endpoint, &src_endpoint, true),
             (Endpoint::Local(l), Endpoint::Local(r)) => {
                 return Err(RunError::Invariant(format!(
                     "job {} 的两侧都是本地目录（{} 与 {}）：这一对位置之间没有云端，盘点没有对象。\
                      面板能盘的是「本地 ↔ 远端」这两种形状。",
                     job.id, l.display(), r.display())))
             }
-            (Endpoint::Remote { fs: a, remote: ra }, Endpoint::Remote { fs: b, remote: rb }) => {
+            (Endpoint::Remote { root: a }, Endpoint::Remote { root: b }) => {
                 return Err(RunError::Invariant(format!(
-                    "job {} 的两侧都是远端（{a}:{ra} 与 {b}:{rb}）：盘点那一侧要能在本机读到，\
+                    "job {} 的两侧都是远端（{a} 与 {b}）：盘点那一侧要能在本机读到，\
                      两侧都是云端时这一格给不出可读的那一列。",
                     job.id)))
             }
         };
-        let mut report = crate::prune::orphans(local, remote);
+        let local_root = le.as_local().expect("盘点的一侧是本地目录");
+        let remote_root = re.rclone_root();
+        // A first download can create its destination later. Only this read-only
+        // report treats a missing local destination as empty.
+        let local = if downloading && std::fs::symlink_metadata(local_root)
+            .is_err_and(|error| error.kind() == std::io::ErrorKind::NotFound) {
+            BTreeSet::new()
+        } else {
+            checks::side_set(&self.rcd.client, &self.defaults.exclude, le).await?
+        };
+        let (remote, batch_metadata) = checks::inventory_remote(&self.rcd.client, &remote_root, &local).await?;
+        let list_requests = self.rcd.client.list_request_count() - before;
+        let list_secs = listed_at.elapsed().as_secs();
+        let mut report = crate::prune::orphans(&local, &remote);
         // 方向由这里填（内核只看得到两堆名字）：dst 是本地目录 ⇒ 这一档是「云端覆盖本地」，
         // 它要删的是本机多出来的那一半。判据与界面上那两枚「以本地为主 / 以云端为主」同一个来源
         // （`endpoint_dst` 的类型），只在这里判一次，往下当数据带出去。
-        report.dst_is_local = matches!(job.endpoint_dst(), Endpoint::Local(_));
+        report.dst_is_local = downloading;
+        if downloading {
+            report.empty_basis = false;
+        }
 
         // 裁定 R29 的空基准拒绝在盘点侧**保留**（R58）：本地清单为空而桶里非空时，
         // 集合差交出的是**整个桶**。清单虽然只读，空基准下"本地没有"这个结论本身照样
@@ -833,7 +807,7 @@ impl Runner {
         //
         // 只对**交集**付 stat 的代价：真实图库里绝大多数文件两边一样，整棵树逐个问
         // ModTime 就是 `ListShape::Tree` 注释里记的那次 90 秒超时。差集那两半不归这里。
-        let shared: BTreeSet<String> = local.intersection(remote).cloned().collect();
+        let shared: BTreeSet<String> = local.intersection(&remote).cloned().collect();
         let mut diverged_count = 0usize;
         let mut unknown_count = 0usize;
         // 这一趟的比法读一次就够：卡面那句「会被换掉」只在 rclone 真的会重传时才成立。
@@ -844,79 +818,56 @@ impl Runner {
         let mut hash_checked = false;
         let mut hash_type = String::new();
         if !shared.is_empty() {
-            let local_ep = job.endpoint_src();
-            let remote_ep = job.endpoint_dst();
-            // 方向那一面已经判过了（上面那个 match）：这里要的是"本地 vs 云端"，
-            // 而不是 src vs dst —— 拿反了会把"云端更新"说成"本地更新"。
-            let (le, re) = match (&local_ep, &remote_ep) {
-                (Endpoint::Local(_), Endpoint::Remote { .. }) => (&local_ep, &remote_ep),
-                (Endpoint::Remote { .. }, Endpoint::Local(_)) => (&remote_ep, &local_ep),
-                _ => (&local_ep, &remote_ep),
-            };
-            let lm = checks::side_meta(&self.rcd.client, le, &shared).await?;
-            let rm = checks::side_meta(&self.rcd.client, re, &shared).await?;
-            // 第二级（哈希）走 rclone 自己的 `operations/check`：它按两侧后端都支持的那一种哈希比对，
-            // 并交出 `hashType`。
-            //
-            // **代价要说清**：`check` 是**全树**比对（rc 侧没有"只查这批"的入口），后端不支持
-            // 该哈希时它要下载每一个文件。所以它默认**不跑**，由 `[defaults] check_by_hash`
-            // 显式打开（见下面那一句）；`suspects` 那一份只用来判"有没有必要跑"，
-            // **不是**用来缩小检查范围的 —— 结果回来之后只并入交集内的那些（见下面）。
-            //
-            // 为什么不是自己算：`hashsumfile` 是**逐个文件**一次调用，那等于把候选数乘上一轮往返；
-            // 而 `check` 一次调用交出整份 `differ`，是 rclone 为这件事准备的那把尺子。
-            // 自己拼哈希比对就是第二套口径——而这一层的产物要给人当"往哪边合"看，
-            // 两套口径不一致时更难查。
-            let suspects: Vec<String> = lm
-                .iter()
-                .filter_map(|(name, l)| {
+            let lm = checks::local_metadata(local_root, &shared);
+            let rm = checks::inventory_remote_metadata(&self.rcd.client, &remote_root, &shared, batch_metadata).await?;
+            // 哈希扫描任务根，只把大小与时间已相同的共同文件的结果并回盘点。
+            let mut differ_by_hash = BTreeSet::new();
+            if self.defaults.check_by_hash {
+                let suspects: BTreeSet<&str> = lm.iter().filter_map(|(name, l)| {
                     let r = rm.get(name)?;
-                    match crate::prune::verdict_of(l, r, None) {
-                        crate::prune::Verdict::Same => Some(name.clone()),
-                        _ => None,
-                    }
-                })
-                .collect();
-            let mut differ_by_hash: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
-            if self.defaults.check_by_hash && !suspects.is_empty() {
-                if let Some((a, b)) = check_pair(le, re) {
-                    match self.rcd.client
-                        .operations_check((a.0.as_ref(), a.1.as_ref()), (b.0.as_ref(), b.1.as_ref()))
-                        .await
-                    {
-                        Ok(outcome) => {
-                            // 这一位**只在真的拿到结果时**置位：早先是在 await 之前就置 true，
-                            // 于是失败那一次日志里一句"没跑成"、汇总里一句"跑了"，自己跟自己打架。
-                            hash_checked = true;
-                            hash_type = outcome.hash_type.unwrap_or_default();
-                            for d in &outcome.differ {
-                                // **只在交集之内才收**：`operations/check` 是全树比对，
-                                // 我们没有把 `defaults.exclude` 传给它（那要在 rc 侧再实现一遍
-                                // 排除语义 = 第二套匹配器，`checks.rs` 那条注释正是在说这个）。
-                                // 所以它可能报出被排除规则挡掉的名字 —— 那一档整个盘点别处都不列，
-                                // 唯独这里冒出来一行就是自相矛盾。不收，比"收下再解释"干净。
-                                let rel = relative_to_root(d, b.1.as_ref());
-                                if shared.contains(&rel) {
-                                    differ_by_hash.insert(rel);
+                    matches!(crate::prune::verdict_of(l, r, None), crate::prune::Verdict::Same)
+                        .then_some(name.as_str())
+                }).collect();
+                if !suspects.is_empty() {
+                    let local_supported = le.as_local().and_then(|p| browser::local_fs_id(p)).is_some();
+                    if size_only || !local_supported {
+                        let reason = if size_only { "已启用只比大小" } else { "本地根不支持哈希检查" };
+                        log.line(Level::Warn, &format!("跳过哈希检查（{reason}）"))
+                            .map_err(|e| RunError::Io(e.to_string()))?;
+                    } else {
+                        match self.rcd.client.operations_check(&le.rclone_root(), &re.rclone_root()).await {
+                            Ok(outcome) => {
+                                hash_type = outcome.hash_type.unwrap_or_default();
+                                hash_checked = !hash_type.is_empty() && !hash_type.eq_ignore_ascii_case("none");
+                                if hash_checked {
+                                    differ_by_hash.extend(outcome.differ.into_iter()
+                                        .filter(|name| suspects.contains(name.as_str())));
+                                } else {
+                                    log.line(Level::Warn, "rclone 未报告可用的共同哈希，未确认文件内容")
+                                        .map_err(|e| RunError::Io(e.to_string()))?;
+                                }
+                                for name in outcome.errors.iter().chain(&outcome.missing_on_src).chain(&outcome.missing_on_dst) {
+                                    if suspects.contains(name.as_str()) {
+                                        log.line(Level::Warn, &format!("哈希检查未能读取两侧文件 {name}"))
+                                            .map_err(|e| RunError::Io(e.to_string()))?;
+                                    }
                                 }
                             }
-                        }
-                        Err(e) => {
-                            // 哈希那一级跑不成**不**把整次盘点报成失败：它是精确认认，
-                            // 而第一级的结论（大小/时间对不上的那些）仍然是真的。
-                            // 说实话：交一个数 + 一句原因，别静默降级。
-                            log.line(Level::Warn, &format!(
-                                "哈希那一级没跑成（{e}）：第一级的结论仍然作数，只是不给哈希确认"))
-                                .map_err(|e| RunError::Io(e.to_string()))?;
+                            Err(e) => {
+                                log.line(Level::Warn, &format!("哈希检查失败（{e}），盘点只比较大小和时间"))
+                                    .map_err(|e| RunError::Io(e.to_string()))?;
+                            }
                         }
                     }
                 }
             }
 
-            for (name, v) in crate::prune::diverged(&lm, &rm, None) {
+            for name in &shared {
+                let pair = lm.get(name).zip(rm.get(name));
+                let v = pair.map_or(crate::prune::Verdict::Unknown, |(l, r)| crate::prune::verdict_of(l, r, None));
                 // 只有真会被重传的那一批才算「会被换掉」：Unknown 是判不出来，
                 // 而 size-only 下同大小的 mtime 差异不会触发重传。
-                if let (Some(l), Some(r)) = (lm.get(&name), rm.get(&name)) {
+                if let Some((l, r)) = pair {
                     if counts_as_replacement(&v, l.size, r.size, size_only) {
                         replaces += 1;
                     }
@@ -933,7 +884,7 @@ impl Runner {
                         log.line(Level::Warn, &format!("两边不是同一份 {name} · {side}"))
                             .map_err(|e| RunError::Io(e.to_string()))?;
                         crate::prune::DivergedEntry {
-                            name, verdict: "differs",
+                            name: name.clone(), verdict: "differs",
                             newer: Some(match newer {
                                 crate::prune::Newer::Remote => "remote",
                                 crate::prune::Newer::Local => "local",
@@ -943,11 +894,11 @@ impl Runner {
                     crate::prune::Verdict::Unknown => {
                         unknown_count += 1;
                         log.line(Level::Warn, &format!(
-                            "两边对不上但说不出谁新 {name} · 时间戳读不出或相等，不猜"))
+                            "无法比较或判断谁更新 {name} · 缺少文件元数据或时间戳相等"))
                             .map_err(|e| RunError::Io(e.to_string()))?;
-                        crate::prune::DivergedEntry { name, verdict: "unknown", newer: None }
+                        crate::prune::DivergedEntry { name: name.clone(), verdict: "unknown", newer: None }
                     }
-                    crate::prune::Verdict::Same => unreachable!("diverged 不交 Same"),
+                    crate::prune::Verdict::Same => continue,
                 };
                 report.diverged.push(entry);
             }
@@ -1051,12 +1002,6 @@ impl Runner {
             .get(id).cloned()
     }
 
-    /// 真写过（或失败/未知可能写了一半）之后把那份摘要拿掉：它描述的是写之前的两侧，
-    /// 继续摆在卡上会变成一句假现状。试跑与排队不动任何东西，不碰。
-    fn forget_summary(&self, id: &str) {
-        self.last_summaries.lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(id);
-    }
-
     // ---------------------------------------------------------- 对齐：预览（spec §4.1 第 1 步）
     //
     // 对齐这几节自己不出现在 `Endpoint` 上：端点只是交给 `checks::side_set` 的参数，
@@ -1075,18 +1020,21 @@ impl Runner {
             listed_at.elapsed().as_secs()))
     }
 
-    /// 写过的东西让相关清单作废（R71 / I3 第 3 条）。
-    /// 判据从"同一对目录的正反向键"换成 Scope 交集：浏览器没有 job，方向串根本串不到它。
-    /// 传进来的是**被写的那一侧**（`touched`）——预览的 scopes 里只要有任何一个与它冲突，
-    /// 那份清单就不再作数。
-    ///
-    /// 试跑（dry run）不作废：它一个东西都不改，一份看过的清单在它跑完之后照样成立。
-    /// （以前这里还写着"交叉核对要的就是它" —— 那条入口 2026-10-05 已从对齐那一格撤了，
-    /// 对数现在跑在 `tests/mirror_runner.rs` 里，见 `run_copy` 那个 `if !dry_run` 上面的注释。）
-    /// 旧实现里"任务已从配置里消失就顺手清掉那份授权"那一支没有搬过来：那不再需要——
-    /// 拿着那样的凭证来确认，第一步 `lookup` 就报"没有叫 X 的任务"，走不到授权那一步。
+    /// Clear every overlapping preview and summary while the writer holds its scopes.
     pub async fn invalidate_writes(&self, touched: &[Scope]) {
         self.previews.invalidate(touched).await;
+        let affected: BTreeSet<_> = self.jobs().into_iter().filter(|job| {
+            job.write_scopes().iter().any(|scope| touched.iter().any(|t| scope.conflicts(t)))
+        }).map(|job| job.id).collect();
+        self.last_summaries.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+            .retain(|id, _| !affected.contains(id));
+    }
+
+    async fn invalidate_after_write(&self, touched: &[Scope], invalidated: &mut bool) {
+        if !touched.is_empty() && !*invalidated {
+            self.invalidate_writes(touched).await;
+            *invalidated = true;
+        }
     }
 
     /// 只列、不删。返回"会被删掉"的每一行，并登记一个一次性 token。
@@ -1151,7 +1099,8 @@ impl Runner {
         self.previews.supersede(&preview_scopes).await;
         // 这份 doomed 是执行前逐条比对要用的那一份：先攒成集合再存，
         // 下面那个结构体字面量把 `plan.doomed` 移进 `PreviewView`，之后再取就是用后借用。
-        let stored_doomed: BTreeSet<String> = plan.doomed.iter().cloned().collect();
+        let stored_doomed: BTreeSet<_> = plan.doomed.iter().cloned().collect();
+        self.previews.remember_preview(&preview_scopes[0], &preview_scopes[1], stored_doomed.clone()).await;
         let token = self.previews.issue(StoredPreview {
             intent: PreviewIntent::Mirror { job_id: id.to_string() },
             // 预览过的凭证：`Some` 里就是"人看过的那一份"，动手前逐条比对拿它当参照物。
@@ -1191,36 +1140,25 @@ impl Runner {
         if job.kind != JobKind::Sync {
             return Err(RunError::Invariant(mirror_wrong_kind_refusal(&job.name, job.kind.word())));
         }
-        // 日志排在顶掉旧凭证之前：开日志失败的那一次不该顺手把人手里那份清单作废掉。
+        let _guard = self.acquire(job).await?;
+        let src = Scope::of_endpoint(&job.endpoint_src());
+        let dst = Scope::of_endpoint(&job.endpoint_dst());
+        if self.previews.review_required(&src, &dst).await {
+            return Err(RunError::Invariant("上次清单已失效，请重新预览后再确认。".into()));
+        }
         let log = self.open_log(job).await?;
-        // 与预览同一组 scopes：反方向那一跑动的是同两棵树，写过之后这份确认同样不作数。
-        let scopes = vec![
-            Scope::of_endpoint(&job.endpoint_src()),
-            Scope::of_endpoint(&job.endpoint_dst()),
-        ];
-        self.previews.supersede(&scopes).await;
-        // 「看差异」那一面**已经把删除候选逐条摆给人看过了**（`run_inventory` 把同一份集合
-        // 记进了 `seen`）。有它就直接当基准：动手前那次重列会比对它，而不是"没有名单可比"。
-        // 少了这一句，看过差异的那一趟还得再点一次「重新预览」把同一批名字再列一遍 ——
-        // 而人已经看过了，那一次列举纯属白花（这正是问出来的那件事）。
-        // 方向不匹配（反方向那一条对齐）、从没点过看差异、或超过 `SEEN_CAP` —— 三种情况下
-        // 它是 `None`，走"批准这一趟、没看名单"那一档，两道拒绝照旧一道不少。
-        let seen = self
-            .previews
-            .peek_seen(&Scope::of_endpoint(&job.endpoint_src()), &Scope::of_endpoint(&job.endpoint_dst()))
-            .await;
-        let has_seen = seen.is_some();
-        let via = if has_seen { "（基准取自「看差异」那一份）" } else { "" };
-        let token = self.previews.issue(StoredPreview {
-            intent: PreviewIntent::Mirror { job_id: id.to_string() },
-            doomed: seen,     // `None` = 没人看过名单，动手那一刻列出来的就是准（见 `StoredPreview`）
-            scopes,
-        }).await;
-        log.line(Level::Info, &format!(
-            "已确认这一趟对齐{}{}", via,
-            if has_seen { "；动手前照旧重列一遍并逐条比对" } else { "（没看逐条名单；动手前照旧重列一遍并过两道拒绝）" }
-        ))
+        let doomed = self.previews.peek_seen(&src, &dst).await;
+        let intent = if doomed.is_some() {
+            PreviewIntent::Mirror { job_id: id.to_string() }
+        } else {
+            PreviewIntent::MirrorTree { job_id: id.to_string() }
+        };
+        let mode = if doomed.is_some() { "逐名" } else { "整树" };
+        log.kv(Level::Info, "已授权对齐，执行前将重新复核", &[("授权", mode.into())])
             .map_err(|e| RunError::Io(e.to_string()))?;
+        let scopes = vec![src, dst];
+        self.previews.supersede(&scopes).await;
+        let token = self.previews.issue(StoredPreview { intent, doomed, scopes }).await;
         Ok(token)
     }
 
@@ -1245,18 +1183,16 @@ impl Runner {
         if job.kind != JobKind::Sync {
             return Err(RunError::Invariant(mirror_wrong_kind_refusal(&job.name, job.kind.word())));
         }
-        // 授权**先吃掉**：无论下面走哪条路（拒绝、失败、成功），同一个 token 都不该再用第二次。
-        // 放在 acquire 之前是有意的——拿不到锁也不能把授权留着，否则等锁的人可以拿旧清单插队。
-        // `consume` 取走即消费（它就是登记表上的 `remove`，见 `PreviewRegistry::consume`）。
-        let stored = self.previews.consume(token).await;
-        // 既认 token 也认归属：A 的确认不能授权 B（同一对目录同时可能有两条任务）。
-        // 归属现在读的是凭证里那份 `intent`（R78：做什么由 token 说，不由参数说），判据一字未改。
-        let Some(stored) = stored.filter(|s| matches!(
-            &s.intent, PreviewIntent::Mirror { job_id } if job_id == id)) else {
-            return Err(RunError::Invariant(mirror_confirmation_voided_refusal(&job.name)));
+        let reviewed = match self.previews.consume(token).await {
+            Some(StoredPreview { intent: PreviewIntent::Mirror { job_id }, doomed: Some(names), .. })
+                if job_id == id => Some(names),
+            Some(StoredPreview { intent: PreviewIntent::MirrorTree { job_id }, doomed: None, .. })
+                if job_id == id => None,
+            _ => return Err(RunError::Invariant(mirror_confirmation_voided_refusal(&job.name))),
         };
-        // 等锁那一段说「排队中」：它确实是在等，而"正在核对清单"要等真的开始列举才算。
-        self.set_state(&job.id, TaskState::Queued).await;
+        self.previews.require_review(
+            &Scope::of_endpoint(&job.endpoint_src()), &Scope::of_endpoint(&job.endpoint_dst()),
+        ).await;
         let guard = self.acquire(job).await?;
         let log = self.open_log(job).await?;
 
@@ -1284,56 +1220,40 @@ impl Runner {
             return Err(RunError::Invariant(mirror_side_refused_refusal(
                 &job.name, plan.empty_src, plan.too_much)));
         }
-        // 逐条一致才动手（spec §6 那一行）—— 但**这条比对只挂在"有人看过那份名单"上**：
-        // `None` 是「批准这一趟、没看名单」那种凭证，它没有参照物，
-        // 动手这一刻列出来的就是准，守这一趟的是上面那两道拒绝（它们一道都没挪）。
-        // 不一致时不猜哪一份对，把两份的差都写进日志，让事后翻日志的人看得见到底是什么动了。
-        // 判据是**集合相等**而不是条数相等：一次等量的调换（看过的那个没了、同时冒出一个没看过的）
-        // 数量上看不出来，删掉的却是一个谁都没确认过的东西。
-        let confirmed = match &stored.doomed {
-            Some(seen) => {
-                if fresh != *seen {
-                    log.kv(Level::Error, "对齐被拒绝：清单变了", &[
-                        ("confirmed", seen.len().to_string()),
-                        ("now", fresh.len().to_string()),
-                        ("list_requests", list_requests.to_string()),
-                        ("list_secs", list_secs.to_string()),
-                    ]).map_err(|e| RunError::Io(e.to_string()))?;
-                    for k in seen.difference(&fresh) {
-                        log.line(Level::Info, &format!("确认时有、现在没了：{k}")).map_err(|e| RunError::Io(e.to_string()))?;
-                    }
-                    for k in fresh.difference(seen) {
-                        log.line(Level::Info, &format!("确认时没有、现在多了：{k}")).map_err(|e| RunError::Io(e.to_string()))?;
-                    }
-                    return Err(RunError::Invariant(mirror_list_changed_refusal(
-                        &job.name, seen.len(), fresh.len())));
+        if let Some(seen) = &reviewed {
+            if fresh != *seen {
+                log.kv(Level::Error, "对齐被拒绝：清单变了", &[
+                    ("confirmed", seen.len().to_string()),
+                    ("now", fresh.len().to_string()),
+                    ("list_requests", list_requests.to_string()),
+                    ("list_secs", list_secs.to_string()),
+                ]).map_err(|e| RunError::Io(e.to_string()))?;
+                for name in seen.difference(&fresh) {
+                    log.line(Level::Info, &format!("确认时有、现在没了：{name}"))
+                        .map_err(|e| RunError::Io(e.to_string()))?;
                 }
-                seen.len()
+                for name in fresh.difference(seen) {
+                    log.line(Level::Info, &format!("确认时没有、现在多了：{name}"))
+                        .map_err(|e| RunError::Io(e.to_string()))?;
+                }
+                return Err(RunError::Invariant(mirror_list_changed_refusal(&job.name, seen.len(), fresh.len())));
             }
-            None => fresh.len(),
-        };
-        log.kv(Level::Info, if stored.doomed.is_some() { "对齐清单复核一致，开始实删" }
-                 else { "对齐开始实删（这份确认没带逐条名单）" }, &[
-            ("previewed", confirmed.to_string()),
-            // 事后读这份日志的人要能分清"人对着名单按了确认"与"人批的是这一趟"。
-            ("confirmed_a_list", if stored.doomed.is_some() { "yes".to_string() } else { "no".to_string() }),
+        }
+        let named = reviewed.is_some();
+        let mode = if named { "逐名" } else { "整树" };
+        let approved = reviewed.unwrap_or(fresh);
+        if let Some(name) = approved.iter().find(|name| !deletion::valid_delete_name(name)) {
+            return Err(RunError::Invariant(format!("无法安全解析删除清单中的相对路径 {name:?}，请重新预览。")));
+        }
+        log.kv(Level::Info, "对齐复核完成，先复制再按清单删除", &[
+            ("授权", mode.into()),
+            ("confirmed_a_list", if named { "yes".into() } else { "no".into() }),
+            ("previewed", approved.len().to_string()),
             ("list_requests", list_requests.to_string()),
             ("list_secs", list_secs.to_string()),
         ]).map_err(|e| RunError::Io(e.to_string()))?;
 
-        // spec §4.1：任何一次真跑都作废"关于被写过的那棵树"的确认。上面那份是**吃掉**的，但吃授权
-        // 与拿锁之间有个窗口——别的任务（反方向那一条也算：它那份清单的源端就是这一跑写掉的这棵树）
-        // 在那一刻插进一次预览的话，它那份清单在我这次删完之后就不成立了。
-        // 放在所有判据之后：被拒的那一次仍然一个副作用都不该有。
-        self.invalidate_writes(&[Scope::of_endpoint(&job.endpoint_dst())]).await;
-
-        // 删除只走 `sync/sync` 这一条正典路径（spec §4.1：绝不靠 filter/include 猜删除范围——
-        // 认不出的 rc 参数会 fail-open，把不该删的放进来）。预览数随 transfer 带进终态与日志。
-        let state = self.transfer(job, "sync/sync", false, &log, guard, Some(confirmed)).await?;
-        // 与 `run_copy` 同一条口径：真写过（含删）之后，跑前那份盘点摘要就作废了；
-        // 失败/未知也可能写了一半，一并收回。
-        if summary_is_stale(&state) { self.forget_summary(id); }
-        Ok(state)
+        self.transfer(job, "sync/copy", false, &log, guard, Some(&approved)).await
     }
 
     // ---------------------------------------------------------- 共用部件
@@ -1405,8 +1325,7 @@ impl Runner {
         // `acquire_scopes` 折到祖先那一层（裁定 R91）：这里照旧交整组 `write_scopes()`，
         // 不在配置层也不在这里加一条"父子不许同批"的拒绝——那种拒绝的形状是 `Busy{owner: 自己}`，
         // 而锁说不出"是谁挡的"就等于在说谎。理由与证据都写在 `mutex::acquire_scopes` 头上。
-        self.mutex.acquire_scopes(&job.write_scopes(), &job.name).await
-            .map_err(|Busy { owner }| RunError::Busy { owner })
+        self.acquire_scopes(&job.write_scopes(), &job.name).await
     }
 
     async fn open_log(&self, job: &Job) -> Result<TaskLog, RunError> {
@@ -1455,9 +1374,13 @@ impl Runner {
         dry_run: bool,
         log: &TaskLog,
         guard: MultiGuard,
-        previewed: Option<usize>,
+        approved_deletions: Option<&BTreeSet<String>>,
     ) -> Result<TaskState, RunError> {
         let io = |e: std::io::Error| RunError::Io(e.to_string());
+        let previewed = approved_deletions.map(BTreeSet::len);
+        let destination = job.endpoint_dst();
+        let touched = if dry_run { Vec::new() } else { vec![Scope::of_endpoint(&destination)] };
+        let mut invalidated = false;
         // 裁定 R49 第 1 档（知道结果的 terminal 臂：失败/成功/不变量那三行）：状态**已经**排在日志
         // 前面落成真结果，日志只是没落盘。这时写不下去**不许**把状态改回去，也不许返回一条和状态无关、
         // 让人以为"任务失败"的错误。这句话术是给调用方和 `tail_log` 的：日志断了，但界面看到的是真结果。
@@ -1481,26 +1404,21 @@ impl Runner {
 
         // （R53 起这里不再有 `include` 可 push，`mut` 一并去掉——留着就是死变量修饰。）
         let params: Vec<(&str, String)> = vec![
-            ("srcFs", job.src.clone()),
-            ("dstFs", job.dst.clone()),
+            ("srcFs", job.endpoint_src().rclone_root().into_owned()),
+            ("dstFs", destination.rclone_root().into_owned()),
         ];
         // 提交**不重试**，也不带 `_config`：`dry_run` 这个布尔由客户端自己翻成
         // `_config={"dryRun":true}`，`--exclude` / `--fast-list` 走 rcd 的启动参数（实测每调用
         // 传 fs.Config flag 会被静默忽略）。超时的那次可能已经在 rcd 里落地了，
         // 重试就会起两个 job 打同一对目录——那正是本项目要消灭的失败方式。
+        let mut inflight = Inflight::new(guard, &self.abandoned);
         let ack: SubmitAck = match self.rcd.client.submit_async(method, &params, dry_run).await {
             Ok(ack) => ack,
-            // R48 item 2：`Timeout`/`Transport` 是**没有得到答复**——请求可能已经落地，
-            // rcd 那边那个 job 可能已经在跑。这一档按"结果未知"办：guard 交给持有者（键不放开），
-            // 状态从 `Queued` 走 `Unknown`，话术必须把后果说清楚。
-            Err(e @ (RcError::Timeout { .. } | RcError::Transport(_))) => {
-                // 持有者先接上手，这条臂里后面每一步（含那次日志写）都只会走"不放开"。
-                // 名字带下划线但仍活到臂结束——`let _ = …` 才是当场落地。
-                let _inflight = Inflight::new(guard, &self.abandoned);
+            Err(e) if e.submission_is_unknown() => {
+                self.invalidate_after_write(&touched, &mut invalidated).await;
                 let reason = format!(
-                    "提交请求没有得到答复（{e}）：这个 job 可能已经在 rcd 里起来了、可能正在动这两个位置。\
-                     所以 {src}=>{dst} 这把键**不会**放开，会锁到面板重启或操作员确认后用 force_release 为止；\
-                     在此期间反方向任务一律被拒。",
+                    "提交请求没有得到答复或任务编号（{e}）。后台可能仍在写入 {src} → {dst}。\
+                     这两个位置继续阻止冲突写入。重开面板时会重新核验后台。",
                     src = job.src, dst = job.dst);
                 let state = TaskState::Unknown { reason: reason.clone() };
                 self.set_state(&job.id, state.clone()).await;
@@ -1509,10 +1427,8 @@ impl Runner {
                 ]).map_err(io)?;
                 return Ok(state);
             }
-            // rcd **答了**一个错（HTTP 状态码 / 载荷里的 `error`）= 根本没有 job 起来。
-            // 这一档正常放开锁（guard 随本函数落地），但状态**不许**冻在 `Queued`：
-            // 回到 `Idle` 说的是"这次没跑起来，可以重来"，原因由 `Err` 交给调用方、日志里也有一条。
             Err(e) => {
+                let _rejected = inflight.disarm();
                 self.set_state(&job.id, TaskState::Idle).await;
                 log.kv(Level::Error, "提交被拒绝", &[
                     ("job", job.id.clone()), ("error", e.to_string()),
@@ -1520,25 +1436,18 @@ impl Runner {
                 return Err(e.into());
             }
         };
-        // 从这一行起 job 在 rcd 那边已经存在（或至少无法排除它存在）——锁从此不由日志的成败决定。
-        let mut inflight = Inflight::new(guard, &self.abandoned);
+        inflight.acknowledge(&ack);
         self.set_state(&job.id, TaskState::Running {
             phase: TaskPhase::Transferring, jobid: Some(ack.jobid), stats: None, dry_run }).await;
-        // 裁定 R49 第 2 档（选 (a)：状态先行）：这行"已提交"落在"还不知道结果"的区间里——没有
-        // "真结果"可写。日志写不下去时**不许**让 `?` 直接离开 `transfer`：那会把界面冻在
-        // `Running { stats: None }`，从此再没人轮询这个 job，直到面板重启。所以先落状态再返回——
-        // `Unknown` 的 reason 点名"日志写不下去"，然后 `Err`。
-        // 代价（选 (a) 就要付的）：`Inflight` 仍握着 guard，这个 `return` 走的是"存进 abandoned"
-        // 那条路，于是这一对 (src,dst) 的键锁到面板重启或操作员 `force_release` 为止。审计断了就
-        // 拒绝假装审计过，与本项目"闸门宁可拦住不可放行"的取向一致；一次磁盘满会让面板当天不好用。
-        // （(b) best-effort 被排除：`TaskState` 里没有能挂"这轮日志不完整"的落点，加字段又撞本裁定的禁区。）
+        // 发布错误前保留已确认的任务身份，供后续检查是否结束。
         if let Err(e) = log.kv(Level::Info, "已提交", &[
             ("jobid", ack.jobid.to_string()),
             ("execute_id", ack.execute_id.clone()),
         ]) {
+            self.invalidate_after_write(&touched, &mut invalidated).await;
             let reason = format!(
                 "job 已提交（jobid={}）但「已提交」这一行日志写不下去（{e}）：这次传输的结果无从确证，\
-                 而这一对 {src}=>{dst} 的键**不会**放开，会锁到面板重启或操作员确认后用 force_release 为止。\
+                 在确认任务结束前，{src} → {dst} 继续阻止冲突写入。\
                  请检查日志目录（盘满 / ACL / 路径过长）。",
                 ack.jobid, src = job.src, dst = job.dst);
             self.set_state(&job.id, TaskState::Unknown { reason }).await;
@@ -1553,25 +1462,17 @@ impl Runner {
             // 判活只认 `job/status`（R38）。`core/stats group=<不存在的一组>` 是 HTTP 200 +
             // 全零，"读到全零"与"这个 group 从来没存在过"在数据面上不可区分，
             // 所以下面那圈 stats 只用来画数字，**不**参与"还在不在跑"的判定。
-            let status: JobStatus = match self.poll_status(ack.jobid).await {
+            let status: JobStatus = match self.poll_status(&ack).await {
                 Ok(s) => s,
                 Err(e) => {
+                    self.invalidate_after_write(&touched, &mut invalidated).await;
                     let reason = format!("连续 {RC_RETRIES} 次读不到 job/status：{e}");
-                    // R33：**这条路上不许释放这把锁。** rclone 那边的 job 可能还在跑、还在删，
-                    // 而 guard 一随本函数返回就落地 = 键被放开 = 反向任务可以对着同一对目录开跑，
-                    // 那正是本项目要消灭的起点事故（R31 之后互斥靠登记表，释放语义是"guard 死即放"，
-                    // 所以"持锁的 task 结束"不等于"活干完了"）。存起来而不是 std::mem::forget
-                    //（那会留下洗不掉的幽灵持有者）；唯一的正常出路是 `force_release`，
-                    // 操作员确认 job 真的没了之后由 runner 调。
-                    // R48 item 1：这里**不再**手写 `abandoned.push(guard)`——guard 在 `inflight`
-                    // 手里，本臂的 `return` 和下面两次日志写带来的 `?` 都只会走"存进 abandoned"。
-                    // 顺序也改了：状态先落，日志写不下去时界面看到的是 `Unknown` 而不是 `Running`。
                     let state = TaskState::Unknown { reason: reason.clone() };
                     self.set_state(&job.id, state.clone()).await;
                     log.kv(Level::Error, "任务状态未知", &[
                         ("jobid", ack.jobid.to_string()), ("reason", reason.clone()),
                     ]).map_err(io)?;
-                    log.line(Level::Warn, "这个键会一直锁到面板重启或人工确认为止，防止反向任务同时动同一对目录")
+                    log.line(Level::Warn, "确认同一个后台任务已结束前，相关位置继续阻止冲突写入")
                         .map_err(io)?;
                     return Ok(state);
                 }
@@ -1579,15 +1480,18 @@ impl Runner {
 
             if let Ok(stats) = self.rcd.client.core_stats(&group).await {
                 let view = stats.view();
+                if view.bytes > 0 || view.transfers > 0 || view.deletes > 0 || view.deleted_dirs > 0 {
+                    self.invalidate_after_write(&touched, &mut invalidated).await;
+                }
                 if view.retry_error && !retry_warned {
                     // 裁定 R49 第 2 档（同"已提交"那处，选 (a)：状态先行）：限流警告也落在"还不知道
                     // 结果"的循环里。这条日志写不下去时先转 `Unknown`（reason 点名日志）再返回 `Err`，
-                    // 绝不让界面冻在 `Running`。代价同上：`Inflight` 握着 guard，这条 `return` 走
-                    // "存进 abandoned"，键锁到重启或 force_release。
+                    // 任务结束需要重新核验，核验前继续持锁。
                     if let Err(e) = log.line(Level::Warn, "云端限流中，rclone 在自行重试，不是卡死") {
+                        self.invalidate_after_write(&touched, &mut invalidated).await;
                         let reason = format!(
                             "job 正在跑（jobid={}）但限流警告这一行日志写不下去（{e}）：这次传输的结果无从确证，\
-                             而这一对 {src}=>{dst} 的键**不会**放开，会锁到面板重启或操作员确认后用 force_release 为止。\
+                             在确认任务结束前，{src} → {dst} 继续阻止冲突写入。\
                              请检查日志目录（盘满 / ACL / 路径过长）。",
                             ack.jobid, src = job.src, dst = job.dst);
                         self.set_state(&job.id, TaskState::Unknown { reason }).await;
@@ -1620,6 +1524,7 @@ impl Runner {
             let stats = match self.rcd.client.core_stats(&group).await {
                 Ok(s) => s,
                 Err(e) => {
+                    self.invalidate_after_write(&touched, &mut invalidated).await;
                     let reason = format!(
                         "job/status 已确证这个 job 结束（success={}），但结束时那次 core/stats 读不到：{e}。\
                          删除计数与 copy 不变量都没有读到，所以这一次**没有**被确认为「没删东西」，\
@@ -1631,10 +1536,11 @@ impl Runner {
                     return Ok(state);
                 }
             };
-            let view = stats.view();
+            let mut view = stats.view();
             let duration = format!("{:.3}", status.duration);
 
             if !status.success {
+                self.invalidate_after_write(&touched, &mut invalidated).await;
                 let state = TaskState::Failed { jobid: ack.jobid, error: note_for_text(&status.error) };
                 self.set_state(&job.id, state.clone()).await;
                 log.kv(Level::Error, "任务失败", &[
@@ -1645,18 +1551,47 @@ impl Runner {
                 return Ok(state);
             }
 
-            if let Some(violation) = transfer_invariant_violation(&job.kind, &view, previewed) {
-                let state = TaskState::Failed { jobid: ack.jobid, error: violation.clone() };
-                self.set_state(&job.id, state.clone()).await;
-                log.kv(Level::Error, "不变量被破坏", &[
-                    ("jobid", ack.jobid.to_string()),
-                    ("short", violation.short.clone()),
-                    ("detail", violation.detail.clone()),
-                ]).map_err(log_failed)?;
-                return Ok(state);
+            if method == "sync/copy" {
+                if let Some(violation) = transfer_invariant_violation(&JobKind::Copy, &view, None) {
+                    self.invalidate_after_write(&touched, &mut invalidated).await;
+                    let state = TaskState::Failed { jobid: ack.jobid, error: violation.clone() };
+                    self.set_state(&job.id, state.clone()).await;
+                    log.kv(Level::Error, "不变量被破坏", &[
+                        ("jobid", ack.jobid.to_string()),
+                        ("short", violation.short.clone()),
+                        ("detail", violation.detail.clone()),
+                    ]).map_err(log_failed)?;
+                    return Ok(state);
+                }
             }
 
+            if view.bytes > 0 || view.transfers > 0 {
+                self.invalidate_after_write(&touched, &mut invalidated).await;
+            }
+            let mut finished_guard = _confirmed_finished;
+            if let Some(names) = approved_deletions.filter(|names| !names.is_empty()) {
+                let guard = finished_guard.take().expect("提交成功后的整组锁");
+                match self.delete_mirror_files(job, names, &touched, log, guard).await {
+                    Ok((deleted, guard)) => {
+                        view.deletes = deleted.files as u64;
+                        finished_guard = Some(guard);
+                    }
+                    Err(failure) => {
+                        let state = if failure.unknown {
+                            TaskState::Unknown { reason: format!("{} {}", failure.note.short, failure.note.detail) }
+                        } else {
+                            TaskState::Failed { jobid: ack.jobid, error: failure.note }
+                        };
+                        self.set_state(&job.id, state.clone()).await;
+                        return Ok(state);
+                    }
+                }
+            }
+            let _finished_guard = finished_guard;
             let state = TaskState::Done { jobid: ack.jobid, stats: view.clone(), dry_run, previewed };
+            if summary_is_stale(&state) {
+                self.invalidate_after_write(&touched, &mut invalidated).await;
+            }
             self.set_state(&job.id, state.clone()).await;
             log.kv(Level::Info, "任务结束", &[
                 ("jobid", ack.jobid.to_string()),
@@ -1682,11 +1617,15 @@ impl Runner {
     /// 所以这里只等 Timeout/Transport。
     /// 耗尽之后由 `transfer` 走 `Unknown`；guard 那时不在 `transfer` 的手上而在 `Inflight` 的
     /// 手上，所以这条路的返回**无论走哪一步**都会把它存进 `abandoned`（R33 + R48 item 1）。
-    async fn poll_status(&self, jobid: i64) -> Result<JobStatus, RcError> {
+    async fn poll_status(&self, ack: &SubmitAck) -> Result<JobStatus, RcError> {
         let mut attempt = 0u32;
         loop {
-            match self.rcd.client.job_status(jobid).await {
-                Ok(s) => return Ok(s),
+            match self.rcd.client.job_status(ack.jobid).await {
+                Ok(s) if s.matches_ack(ack) => return Ok(s),
+                Ok(_) => return Err(RcError::Rc {
+                    method: "job/status".into(),
+                    message: "返回的任务身份与提交确认不一致".into(),
+                }),
                 Err(_e @ (RcError::Timeout { .. } | RcError::Transport(_))) if attempt + 1 < RC_RETRIES => {
                     attempt += 1;
                     tokio::time::sleep(Duration::from_millis(300 * 2u64.pow(attempt))).await;

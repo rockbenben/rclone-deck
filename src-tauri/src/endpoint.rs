@@ -1,18 +1,13 @@
-//! 端点模型（裁定 R60）。
-//!
-//! 为什么不继续用 `Job` 上那四个 helper：它们都从 **`self.dst`** 找 remote，因为它们唯一的消费者
-//! 是 gate 与盘点，而那两类的 dst 恒为远端。对齐的**下载方向**把 remote 放到了 `src`——前提一反，
-//! 那些函数不会报错，只安静地交出错的那一侧，而"错的那一侧"在下游就是一份删除清单。
-//! 于是"怎么解析一个端点字符串"收成这里一处；`Job` 上的旧方法改成对它薄封装（语义一字不动，
-//! 只把知识的归属挪对）。
+//! 任务的本地或远端根。对账报告和 Scope 仍可从同一个端点读取桶坐标。
+use std::borrow::Cow;
 use std::path::{Path, PathBuf};
 
 /// 一侧的端点：本地目录，或 `scheme:桶[/路径]`。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Endpoint {
     Local(PathBuf),
-    /// `fs` 到桶名为止（`r2:img`），`remote` 是桶内路径、**不含结尾斜杠**、可以为空。
-    Remote { fs: String, remote: String },
+    /// 完整的 rclone 根，保留配置中的路径拼写（包括远端名之后的前导斜杠）。
+    Remote { root: String },
 }
 
 /// Windows 盘符也长成 `X:`，靠"冒号前不止一个字符"区分：`r2:img/x` 是 remote，`D:\vault\x` 是本地。
@@ -26,17 +21,10 @@ pub fn remote_split(raw: &str) -> Option<(&str, &str)> {
 }
 
 pub fn endpoint_of(raw: &str) -> Endpoint {
-    match remote_split(raw) {
-        Some((scheme, rest)) => match rest.split_once('/') {
-            Some((bucket, path)) => Endpoint::Remote {
-                fs: format!("{scheme}:{bucket}"),
-                // 结尾斜杠在这里剥：实测 `remote="imgprompt/"` 返回 200 + 空列表，
-                // 于是那一侧"什么都没有"，对齐的 doomed 就成了对端的全部。
-                remote: path.trim_matches('/').to_string(),
-            },
-            None => Endpoint::Remote { fs: format!("{scheme}:{rest}"), remote: String::new() },
-        },
-        None => Endpoint::Local(PathBuf::from(raw)),
+    if remote_split(raw).is_some() {
+        Endpoint::Remote { root: raw.to_string() }
+    } else {
+        Endpoint::Local(PathBuf::from(raw))
     }
 }
 
@@ -47,12 +35,27 @@ impl Endpoint {
         match self { Endpoint::Local(p) => Some(p), Endpoint::Remote { .. } => None }
     }
 
-    /// 列举用的 `(fs, remote)`。**本地端点返回 `None`——这就是"不许把本地路径当 remote"那道闸**：
-    /// 拿本地路径去 `operations/list` 是真能列出本地盘的（实测），于是"远端清单"退化成
-    /// "再扫一遍本地"，那是本项目要消灭的假绿（§5.1）。
+    /// 任务读写共用这个根。rclone 的锚定过滤规则从这个根开始匹配。
+    pub fn rclone_root(&self) -> Cow<'_, str> {
+        match self {
+            Self::Remote { root } => Cow::Borrowed(root),
+            Self::Local(path) => path.to_string_lossy(),
+        }
+    }
+
+    /// 旧的桶坐标，供 Scope 及对账报告的键名使用。桶内前缀不带首尾斜杠。
     pub fn remote_target(&self) -> Option<(&str, &str)> {
         match self {
-            Endpoint::Remote { fs, remote } => Some((fs, remote)),
+            Endpoint::Remote { root } => {
+                let (_, path) = remote_split(root)?;
+                match path.split_once('/') {
+                    Some((bucket, prefix)) => {
+                        let bucket_end = root.len() - path.len() + bucket.len();
+                        Some((&root[..bucket_end], prefix.trim_matches('/')))
+                    }
+                    None => Some((root, "")),
+                }
+            }
             Endpoint::Local(_) => None,
         }
     }
@@ -60,17 +63,9 @@ impl Endpoint {
     /// remote 端点里"冒号之后"混进的反斜杠，原样交出让调用方**拒绝**（不改写）。
     /// 本地路径永远 `None`：那里的 `\` 是分隔符，不是分隔符问题。
     ///
-    /// 为什么不只看 `remote`：桶名与路径的切分**只认** `/`，所以 `r2:img\a\b` 里根本没有 `/`，
-    /// 整串都落在 `fs` 那一段、`remote` 是空的——只查 `remote` 会让最常见的那种手滑（把本地路径
-    /// 粘到冒号后面）悄悄过去，而 fs 里带反斜杠的 remote 是 rclone 根本不认识的 remote 名。
-    /// 取"第一个反斜杠之后的原样文本"：宁可交出的尾巴短一截，也不改写任何一个字符。
+    /// 返回第一个反斜杠之后的原文，桶名中出现的反斜杠也会被检测到。
     pub fn stray_backslash(&self) -> Option<&str> {
-        match self {
-            Endpoint::Remote { fs, remote } => match fs.find('\\') {
-                Some(i) => Some(&fs[i + 1..]),
-                None => remote.find('\\').map(|i| &remote[i + 1..]),
-            },
-            Endpoint::Local(_) => None,
-        }
+        let Endpoint::Remote { root } = self else { return None };
+        root.split_once('\\').map(|(_, tail)| tail)
     }
 }

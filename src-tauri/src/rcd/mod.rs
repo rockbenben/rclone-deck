@@ -6,25 +6,17 @@
 //! 2. **凭据绝不进 argv**——`--rc-pass` 上命令行会同时泄进 rclone 自己的 DEBUG 日志
 //!    和 `Win32_Process.CommandLine`（probe 有对照组）。只走 `RCLONE_RC_USER` /
 //!    `RCLONE_RC_PASS` 环境变量。
-//! 3. **孤儿认领**——面板崩溃后留下的 rcd 必须靠四件事认出来并**终结重开**：pid 文件的
-//!    start_time == sysinfo 的进程启动时间、进程映像路径 == `rclone_bin`、端口在听，
-//!    以及**写这条记录的面板进程已经不在**（`panel_pid`，裁定 R42 item 3——同一用户的 dev 构建
-//!    和 release 构建共用 `pid_path` 与端口 默认端口，前三件事全对也可能是在杀活同行的 daemon）。
-//!    绝不复用：它内存里的凭据不是我们的。
-//!    认领的依据（pid 记录）必须在**任何可能早退的动作之前**落盘（裁定 R42 item 1）：
-//!    没有记录的 daemon 是不可回收的 daemon，而不可回收的 daemon 让面板自己变砖。
+//! 3. **后台归属**——每个配置家持有独占文件锁。启动时核验旧记录，用同一 Windows
+//!    进程句柄确认身份、回收孤儿和等待退出。选用新端口也要处理上一份记录。
 
 pub mod pidfile;
+pub(crate) mod process;
 
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::Duration;
 
-use sysinfo::{Pid, ProcessesToUpdate, System};
-// 这两个只有 `command_line_of` 用得到（它必须显式要 cmd），而它在 test-helpers 后面：
-// 放在顶层 use 里会让 `cargo check --all-targets`（不带 feature）报 unused_imports。
-#[cfg(feature = "test-helpers")]
-use sysinfo::{ProcessRefreshKind, UpdateKind};
+use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
 use thiserror::Error;
 use tokio::net::TcpStream;
 use tokio::process::{Child, Command};
@@ -58,6 +50,8 @@ pub enum RcdError {
     NotHealthy(u64, String),
     #[error("pid 文件读写失败：{0}")]
     Io(String),
+    #[error("配置目录 {0} 的后台已由另一个面板管理，请在那个面板操作")]
+    HomeBusy(PathBuf),
 }
 
 impl serde::Serialize for RcdError {
@@ -127,6 +121,32 @@ pub struct RcdHandle {
     child: Child,
     pid_path: PathBuf,
     secrets: Vec<String>,
+    _home: Option<DaemonHome>,
+}
+
+/// A stable file path serializes daemon ownership across panel processes.
+/// The OS releases the lock when the owning handle is closed, including a panel crash.
+pub(crate) struct DaemonHome { _file: std::fs::File }
+
+impl DaemonHome {
+    pub(crate) fn claim(pid_path: &Path) -> Result<Self, RcdError> {
+        use std::os::windows::fs::OpenOptionsExt;
+        use windows_sys::Win32::Storage::FileSystem::{FILE_SHARE_READ, FILE_SHARE_WRITE};
+        let lock_path = pid_path.with_extension("lock");
+        if let Some(dir) = pid_path.parent() {
+            std::fs::create_dir_all(dir).map_err(|e| RcdError::Io(format!("{}: {e}", dir.display())))?;
+        }
+        let file = std::fs::OpenOptions::new().read(true).write(true).create(true).truncate(false)
+            .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
+            .open(&lock_path).map_err(|e| RcdError::Io(format!("{}: {e}", lock_path.display())))?;
+        match file.try_lock() {
+            Ok(()) => Ok(Self { _file: file }),
+            Err(std::fs::TryLockError::WouldBlock) =>
+                Err(RcdError::HomeBusy(lock_path.parent().unwrap_or(&lock_path).to_path_buf())),
+            Err(std::fs::TryLockError::Error(e)) =>
+                Err(RcdError::Io(format!("无法锁住 {}：{e}", lock_path.display()))),
+        }
+    }
 }
 
 impl RcdHandle {
@@ -152,34 +172,26 @@ impl RcdHandle {
     /// 靠三重身份认领并回收（模块头第 3 条）。`Drop` 里杀进程会让那条路径无法被测试，
     /// 还会让 panic 路径悄悄留下一个握着无法重发凭据的守护进程。
     pub async fn shutdown(mut self) -> Result<(), RcdError> {
-        let _ = self.child.start_kill();
-        let _ = self.child.wait().await;
-        for _ in 0..REAP_ATTEMPTS {
-            if !port_in_use(self.port).await {
-                break;
-            }
-            tokio::time::sleep(REAP_INTERVAL).await;
-        }
-        // 收尾失败不许静默（裁定 R56 item 3）。两条出口各自把它拼在自己那句话的**后面**：
-        // "端口仍在监听"先说，"记录没删掉"跟在后面，两者一起进 `OrphanNotReapable.reason`；
-        // 端口已经让开时这条就成了唯一的问题，单独作为 `Io` 报出去
-        // （那个变体的话术本来就是"pid 文件读写失败"）。都不新增变体。
-        let cleanup = pidfile::remove(&self.pid_path);
-        if port_in_use(self.port).await {
-            let mut reason = String::from("shutdown 之后端口仍在监听");
-            if let Err(e) = cleanup {
-                reason.push_str(&format!(
-                    "；此外 pid 记录（{}）没能删掉，请手动删除：{e}", self.pid_path.display()));
-            }
-            return Err(RcdError::OrphanNotReapable { port: self.port, pid: self.pid, reason });
-        }
-        if let Err(e) = cleanup {
+        stop_child(&mut self.child, self.port, self.pid).await?;
+        if let Err(e) = pidfile::remove(&self.pid_path) {
             return Err(RcdError::Io(format!(
                 "删除 pid 记录 {} 失败：{e}——那份记录还留在磁盘上，请手动删除",
                 self.pid_path.display())));
         }
         Ok(())
     }
+}
+
+async fn stop_child(child: &mut Child, port: u16, pid: u32) -> Result<(), RcdError> {
+    let uncertain = |reason| RcdError::OrphanNotReapable { port, pid, reason };
+    if child.try_wait().map_err(|e| uncertain(e.to_string()))?.is_some() {
+        return Ok(());
+    }
+    child.start_kill().map_err(|e| uncertain(e.to_string()))?;
+    tokio::time::timeout(HEALTH_TIMEOUT, child.wait()).await
+        .map_err(|_| uncertain("未能确认后台已退出，保留进程记录".into()))?
+        .map_err(|e| uncertain(e.to_string()))?;
+    Ok(())
 }
 
 /// 手写而不是 derive：`RcClient` **故意**不 derive Debug（密码在它的 basic-auth 头里，
@@ -212,8 +224,24 @@ impl RcdSupervisor {
         user: &str,
         pass: &str,
     ) -> Result<RcdHandle, RcdError> {
+        let home = DaemonHome::claim(&spec.pid_path)?;
+        Self::start_in_home(spec, home, user, pass).await
+    }
+
+    pub(crate) async fn start_owned(spec: RcdSpec, home: DaemonHome) -> Result<RcdHandle, RcdError> {
+        let (user, pass) = random_credentials();
+        Self::start_in_home(spec, home, &user, &pass).await
+    }
+
+    async fn start_in_home(
+        spec: RcdSpec,
+        home: DaemonHome,
+        user: &str,
+        pass: &str,
+    ) -> Result<RcdHandle, RcdError> {
+        reclaim(&spec).await?;
         if port_in_use(spec.port).await {
-            reclaim(&spec).await?;
+            return Err(foreign_listener(spec.port));
         }
 
         let stderr_path = spec.stderr_path();
@@ -255,8 +283,14 @@ impl RcdSupervisor {
         // `log_level_debug: false`），但"凭据不上磁盘"是不变量，不能靠一个开关没打开来保证。
         let outcome = Self::spawn_and_verify(spec, user, pass, &stderr_path, stderr_file).await;
         match outcome {
-            Ok(handle) => {
-                wipe_credential_echo(&stderr_path)?;
+            Ok(mut handle) => {
+                handle._home = Some(home);
+                if let Err(e) = wipe_credential_echo(&stderr_path) {
+                    return match handle.shutdown().await {
+                        Ok(()) => Err(e),
+                        Err(shutdown) => Err(RcdError::Io(format!("{e}；后台收尾失败：{shutdown}"))),
+                    };
+                }
                 Ok(handle)
             }
             Err(e) => {
@@ -285,8 +319,16 @@ impl RcdSupervisor {
         let pid = child.id()
             .ok_or_else(|| RcdError::SpawnFailed("子进程刚拉起就读不到 PID（可能已经退出）".into()))?;
 
-        let info = inspect(pid)
-            .ok_or_else(|| RcdError::SpawnFailed("子进程刚拉起就查不到它的进程信息".into()))?;
+        let identity = process::Process::open(pid, false)
+            .and_then(|process| process.ok_or_else(|| std::io::Error::other("子进程已经退出")))
+            .and_then(|process| Ok((process.creation_time()?, process)));
+        let (created, process) = match identity {
+            Ok(identity) => identity,
+            Err(e) => {
+                stop_child(&mut child, spec.port, pid).await?;
+                return Err(RcdError::SpawnFailed(format!("无法确认新后台进程 {pid} 的创建时间：{e}")));
+            }
+        };
 
         // 裁定 R42 item 1：**pid 记录写在任何可能早退的动作之前**（这里四个字段刚齐）
         // ——`core/version` 出错 → `NotHealthy`、`!healthy` 出口，都是"子进程活着、端口还绑着、
@@ -295,9 +337,10 @@ impl RcdSupervisor {
         // 读不到 pid → 永远 `PortBusyByForeignProcess`，面板自己变砖，而且那个 rclone
         // 握着的凭据只有已经死掉的上一代面板知道。写在前头 = 早退顶多多一个待收尸的记录，
         // 而记录正是收尸的依据（`!healthy` 那条会当场把它删掉，见下）。
-        if let Err(e) = pidfile::write(&spec.pid_path, pidfile::PidRecord {
-            pid, start_time: info.start_time, port: spec.port, panel_pid: std::process::id(),
-        }) {
+        if let Err(e) = pidfile::write_owned(&spec.pid_path, pidfile::PidRecord {
+            pid, start_time: process::unix_seconds(created), port: spec.port,
+            panel_pid: std::process::id(),
+        }, created) {
             // 写不进去 = 这个 daemon 从此不可回收，正是 item 1 要防的残局。所以这条出口自己收拾：
             // 句柄还在手里，直接 `start_kill()`（比让 `reclaim` 按 PID 号重新查一遍可靠，
             // 见裁定 R42 item 5），终结不掉就把两件事一起报出去，别让操作员只看到一句"pid 文件失败"。
@@ -316,7 +359,8 @@ impl RcdSupervisor {
             }
         }
 
-        let client = RcClient::new(spec.port, user, pass);
+        let mut client = RcClient::new(spec.port, user, pass);
+        client.bind_process(process);
         let mut last = String::from("一直没有响应");
         let mut healthy = false;
         // 按墙上时钟收，不按尝试次数收（brief 里写的是 `for _ in 0..attempts`，
@@ -333,33 +377,16 @@ impl RcdSupervisor {
             }
         }
         if !healthy {
-            // 裁定 R42 item 5：**句柄还在手里，就终结自己那个进程**。`kill(pid)` 是按 PID 号
-            // 重新查一遍再杀，而且不重新校验 `start_time`——PID 被系统复用的话，杀的是别人。
-            // `child.start_kill()` 打的才是我们确实握着的那个进程（TerminateProcess by handle）。
-            // `reclaim` 那边没有句柄，只能继续用 `kill(owner)`，但那里刚刚比对过 start_time。
-            let kill_note = match child.start_kill() {
-                // 假 flag 这类子进程是自己退的：`start_kill` 在那里报错不是新故障，
-                // 但也不能不提——操作员需要知道我们到底有没有亲手终结过它。
-                Ok(()) => String::new(),
-                Err(e) => format!("；终结 rcd（PID {pid}）时又失败了一次：{e}"),
-            };
-            // 等它真退出：端口放掉、stderr 也写完了，下面读到的 `detail` 才是最后一版。
-            // `wait()` 的错误只会是"已经被回收"，对这条话术没有增量信息，所以这里不覆盖启动错误。
-            let _ = child.wait().await;
-            // 这条出口上 daemon 已经被终结，记录再留着就是**假线索**：PID 会被系统复用，
-            // 下一个恰好复用该 PID 的进程会带着 `port` 与 `start_time` 的比对被误认成"我们的 rcd"。
-            // 所以早退路径自己收尾（裁定 R42 item 1 的后半句）。
-            //
-            // 收尾失败不许静默（裁定 R56 item 3）：`pidfile::remove` 现在把 io::Error 交回来，
-            // 这一条出口手上正好有一个要交出去的 `RcdError`，就拼进它的话术——**排在原始失败
-            // 与终结说明之后**（先说"rcd 没响应"，再说"顺手删记录也没删掉"），
-            // 不为它新增错误变体，也不让它顶掉真正的原因。
-            let cleanup_note = match pidfile::remove(&spec.pid_path) {
-                Ok(()) => String::new(),
-                Err(e) => format!(
-                    "；此外 pid 记录（{}）没能删掉，请手动删除，否则下一个复用该 PID 的进程可能被误认成我们的 rcd：{e}",
-                    spec.pid_path.display()),
-            };
+            let mut cleanup_note = String::new();
+            match stop_child(&mut child, spec.port, pid).await {
+                Ok(()) => {
+                    if let Err(e) = pidfile::remove(&spec.pid_path) {
+                        cleanup_note = format!("；此外 pid 记录（{}）没能删掉，请手动删除：{e}",
+                            spec.pid_path.display());
+                    }
+                }
+                Err(e) => cleanup_note = format!("；保留后台记录以便重新核验：{e}"),
+            }
             // 先杀再读（要拿到退出前最后那几行）；磁盘上那一份由调用方**无条件**擦掉（裁定 R42 item 2）。
             let detail = std::fs::read_to_string(stderr_path).unwrap_or_default();
             // 裁定 R37：`log_level_debug=true` 时这份 stderr 里带着 rclone 的回显
@@ -371,15 +398,30 @@ impl RcdSupervisor {
             } else {
                 format!("{last}\nrclone 自己的报错：{detail}")
             };
-            message.push_str(&kill_note);
             message.push_str(&cleanup_note);
             return Err(RcdError::NotHealthy(HEALTH_TIMEOUT.as_secs(), message));
         }
         // rc 活了，`stderr_path` 里那段"启动回显"就没有回看价值了，而它**带凭据**——但擦除**不在这条
         // 分支里做**（原来在这里写成 `let _ = std::fs::write(..)`，失败就静默留着）：一律由
         // `start_with_credentials` 在拿到本函数的结果之后无条件擦一次并把失败抛出去（裁定 R42 item 2）。
-        let v = client.call("core/version", &[]).await
-            .map_err(|e| RcdError::NotHealthy(HEALTH_TIMEOUT.as_secs(), e.to_string()))?;
+        let version = client.call("core/version", &[]).await
+            .map_err(|e| RcdError::NotHealthy(HEALTH_TIMEOUT.as_secs(), e.to_string()))
+            .and_then(|v| {
+                if port_owner_pid(spec.port) == Some(pid) {
+                    Ok(v)
+                } else {
+                    Err(foreign_listener(spec.port))
+                }
+            });
+        let v = match version {
+            Ok(v) => v,
+            Err(original) => {
+                stop_child(&mut child, spec.port, pid).await?;
+                pidfile::remove(&spec.pid_path).map_err(|e| RcdError::Io(format!(
+                    "{original}；删除 pid 记录 {} 失败：{e}", spec.pid_path.display())))?;
+                return Err(original);
+            }
+        };
         let rclone_version = v.get("version")
             .and_then(serde_json::Value::as_str).unwrap_or("unknown").to_string();
         let execute_id = v.get("executeId")
@@ -387,7 +429,7 @@ impl RcdSupervisor {
 
         Ok(RcdHandle {
             client, port: spec.port, pid, execute_id, rclone_version,
-            child, pid_path: spec.pid_path.clone(),
+            child, pid_path: spec.pid_path.clone(), _home: None,
             secrets: vec![user.to_string(), pass.to_string()],
         })
     }
@@ -648,89 +690,72 @@ async fn port_in_use(port: u16) -> bool {
     port_accepts(port, PROBE_TIMEOUT).await
 }
 
-/// 端口被占时的处置：先自证是不是我们上一次崩溃留下的 rcd，是就终结重开，
-/// 不是就报错退出并给出占用者身份。**不做"杀一次算一次"，也不静默换端口。**
-///
-/// **单实例假设（裁定 R42 item 3，写成明文而不是留在暗里）**：`pid_path` 与端口对同一个 Windows
-/// 用户是**常量**。端口这一档今天仍然是常量，但**理由变了**：它来自 `deck_port()` —— 没设
-/// `RCLONE_DECK_PORT` 时按 `AppConfig::pick_port` 现挑，而扫描起点固定，所以同一台机器上两个面板
-/// 算出的是同一个号。**设了那个变量这条假设就断**（两个面板各占一个号、谁也看不见谁，于是各起一个
-/// rcd），要真隔离得连 `RCLONE_DECK_HOME` 一起设（pid 记录跟着 home 走）。dev 与 release 构建共用，
-/// 而 Task 6 的互斥锁只在进程内（`AtomicU64`），挡不住两个面板同时跑。下面的 `panel_pid`
-/// 活性检查因此是最后一道"别杀活同行的 daemon"的闸；真正强制同一时刻只有一个面板属于
-/// Task 12（跨进程单实例），那一步落地之后这条检查仍然留着——它是防御性的，成本是一次进程查询。
+/// Check the previous record even when the new panel selected a different port.
 async fn reclaim(spec: &RcdSpec) -> Result<(), RcdError> {
-    let Some(owner) = port_owner_pid(spec.port) else { return Ok(()) };
-    let foreign = |pid: u32| RcdError::PortBusyByForeignProcess {
-        port: spec.port,
-        pid,
-        name: inspect(pid).map(|i| i.name).unwrap_or_else(|| "未知进程".into()),
+    let Some(stored) = pidfile::read_checked(&spec.pid_path).map_err(|e| {
+        RcdError::Io(format!("无法确认上一份后台记录 {}：{e}", spec.pid_path.display()))
+    })? else { return Ok(()) };
+    let rec = stored.record;
+    let uncertain = |reason| RcdError::OrphanNotReapable {
+        port: rec.port, pid: rec.pid, reason,
     };
-
-    let Some(rec) = pidfile::read(&spec.pid_path) else { return Err(foreign(owner)) };
-    if rec.pid != owner || rec.port != spec.port {
-        return Err(foreign(owner));
+    let Some(previous) = process::Process::open(rec.pid, true)
+        .map_err(|e| uncertain(format!("无法验证进程身份：{e}")))? else { return Ok(()) };
+    if previous.exited().map_err(|e| uncertain(format!("无法确认进程是否退出：{e}")))? {
+        return Ok(());
     }
-    let Some(info) = inspect(owner) else { return Err(foreign(owner)) };
-    if info.start_time != rec.start_time || !same_path(info.exe.as_deref(), &spec.rclone_bin) {
-        return Err(foreign(owner));
+    let created = previous.creation_time()
+        .map_err(|e| uncertain(format!("无法验证进程创建时间：{e}")))?;
+    let same_creation = match stored.creation_time {
+        Some(previous) => previous == created,
+        None => rec.start_time == process::unix_seconds(created),
+    };
+    if !same_creation {
+        return Ok(());
     }
-
-    // 四条身份全对上只能说明"端口上这个 rclone 是某个面板按同一份配置拉起来的"，
-    // 说明不了"写记录的那个面板已经不在"。那个进程还活着 = 这是**同行正在用的 daemon**：
-    // 它内存里的凭据我们不知道，杀掉它会把对方传了一半的 sync 拦腰截断——而本项目要防的
-    // founding incident 正是两次反向 sync 互相删文件。所以这里只报错，绝不动它。
-    // 两个"记录的主人不算活着"的例外：`panel_pid == 0` 是还没有这个字段的旧记录
-    // （`pidfile::PidRecord` 的 `#[serde(default)]`，退回三重身份判定，别让升级期的孤儿变成
-    // 永久不可回收）；`panel_pid == 自己` 是本进程上一轮留下的残局——测试里"面板崩溃"只能
-    // 同进程模拟，生产里同一进程第二次 start 是调用方的用法错误，两种都照常回收。
-    if rec.panel_pid != 0 && rec.panel_pid != std::process::id() && process_is_alive(rec.panel_pid) {
-        return Err(RcdError::PortBusyByForeignProcess {
-            port: spec.port,
-            pid: owner,
-            name: format!(
-                "另一个面板进程（PID {}）还在跑的 rcd——本面板不抢它，请先关掉那个面板",
-                rec.panel_pid
-            ),
-        });
+    let exe = previous.executable().map_err(|e| uncertain(format!("无法验证可执行文件：{e}")))?;
+    if !same_path(Some(&exe), &spec.rclone_bin) {
+        return Err(uncertain("记录中的可执行文件与当前配置不同，请核实后台是否仍在运行".into()));
     }
-
-    if !kill(owner) {
-        return Err(RcdError::OrphanNotReapable {
-            port: spec.port, pid: owner, reason: "kill() 返回 false".into(),
-        });
-    }
-    // 裁定 R42 item 5：话术里的耗时必须是**量出来的**。原来写的是
-    // `REAP_ATTEMPTS × REAP_INTERVAL = 50 × 200ms = 10s`，可那只是循环的**下限**：
-    // 每一轮还要付一次 `port_in_use` 探测，探测外面套的是 300ms 连接超时
-    // （本机对一个没人听的回环端口发 connect，要 ~2s 才被拒，所以这 300ms 经常吃满），
-    // 于是最坏是 50 × (200 + 300)ms ≈ 25s。操作员按话术等 10s 就会以为"卡住了"。
-    // 这里改成起表 + `elapsed()`：报出去的数字是那一段真正花掉的秒数。
-    let reap_started = std::time::Instant::now();
-    for _ in 0..REAP_ATTEMPTS {
-        tokio::time::sleep(REAP_INTERVAL).await;
-        if !port_in_use(spec.port).await {
-            // 收尾失败不许静默（裁定 R56 item 3）：孤儿已经终结、端口已经让开，这条记录留下的
-            // 只是**假线索**，删不掉就得让操作员知道（同样落在 `Io` 那个变体上，不新增）。
-            pidfile::remove(&spec.pid_path).map_err(|e| RcdError::Io(format!(
-                "回收之后删除 pid 记录 {} 失败：{e}——那份记录还留在磁盘上，请手动删除",
-                spec.pid_path.display())))?;
-            return Ok(());
+    if rec.panel_pid != 0 && rec.panel_pid != std::process::id() {
+        let panel = process::Process::open(rec.panel_pid, false)
+            .and_then(|panel| panel.map_or(Ok(false), |panel| panel.exited().map(|exited| !exited)))
+            .map_err(|e| uncertain(format!("无法确认原面板已退出：{e}")))?;
+        if panel {
+            return Err(RcdError::PortBusyByForeignProcess {
+                port: rec.port, pid: rec.pid,
+                name: format!("另一个面板进程（PID {}）正在管理后台", rec.panel_pid),
+            });
         }
     }
-    Err(RcdError::OrphanNotReapable {
-        port: spec.port,
-        pid: owner,
-        reason: format!(
-            "{}.{:03}s 后端口仍在监听（上限 {upper}ms = {attempts} 次间隔 {interval}ms + 每次最多 {probe}ms 探测）",
-            reap_started.elapsed().as_secs(),
-            reap_started.elapsed().as_millis() % 1000,
-            attempts = REAP_ATTEMPTS,
-            interval = REAP_INTERVAL.as_millis(),
-            probe = PROBE_TIMEOUT.as_millis(),
-            upper = REAP_ATTEMPTS as u64 * (REAP_INTERVAL.as_millis() as u64 + PROBE_TIMEOUT.as_millis() as u64),
-        ),
-    })
+
+    // Older records only have seconds of precision. Require the recorded listener
+    // and the expected rcd arguments as additional evidence before reclaiming them.
+    if stored.creation_time.is_none() {
+        let addr = format!("127.0.0.1:{}", rec.port);
+        let cmd = process_command_line(rec.pid);
+        let is_rcd = cmd.get(1).is_some_and(|arg| arg == "rcd")
+            && cmd.windows(2).any(|args| args[0] == "--rc-addr" && args[1] == addr);
+        if port_owner_pid(rec.port) != Some(rec.pid) || !is_rcd {
+            return Err(uncertain("旧记录无法确认后台身份，请核实进程和端口".into()));
+        }
+    }
+
+    previous.terminate().map_err(|e| uncertain(format!("无法终结已确认归属的后台：{e}")))?;
+    for _ in 0..REAP_ATTEMPTS {
+        if previous.exited().map_err(|e| uncertain(format!("无法确认后台已退出：{e}")))? {
+            return pidfile::remove(&spec.pid_path).map_err(|e| RcdError::Io(format!(
+                "回收之后删除 pid 记录 {} 失败：{e}", spec.pid_path.display())));
+        }
+        tokio::time::sleep(REAP_INTERVAL).await;
+    }
+    Err(uncertain("已请求终结后台，仍未确认进程退出".into()))
+}
+
+fn foreign_listener(port: u16) -> RcdError {
+    let pid = port_owner_pid(port).unwrap_or_default();
+    let name = inspect(pid).map(|info| info.name).unwrap_or_else(|| "无法确认监听进程".into());
+    RcdError::PortBusyByForeignProcess { port, pid, name }
 }
 
 fn port_owner_pid(port: u16) -> Option<u32> {
@@ -741,10 +766,11 @@ fn port_owner_pid(port: u16) -> Option<u32> {
         .output()
         .ok()?;
     let text = String::from_utf8_lossy(&out.stdout);
-    let needle = format!(":{port}");
+    let loopback = format!("127.0.0.1:{port}");
+    let wildcard = format!("0.0.0.0:{port}");
     for line in text.lines() {
         let cols: Vec<&str> = line.split_whitespace().collect();
-        if cols.len() >= 5 && cols[1].ends_with(&needle) && cols[3] == "LISTENING" {
+        if cols.len() >= 5 && (cols[1] == loopback || cols[1] == wildcard) && cols[3] == "LISTENING" {
             if let Ok(pid) = cols[4].parse::<u32>() {
                 return Some(pid);
             }
@@ -754,26 +780,27 @@ fn port_owner_pid(port: u16) -> Option<u32> {
 }
 
 struct ProcInfo {
+    #[cfg(feature = "test-helpers")]
     start_time: u64,
     name: String,
+    #[cfg(feature = "test-helpers")]
     exe: Option<PathBuf>,
 }
 
 fn inspect(pid: u32) -> Option<ProcInfo> {
-    // `refresh_processes` 在 sysinfo 0.39 里的 RefreshKind 是
-    // `nothing().with_memory().with_cpu().with_disk_usage().with_exe(OnlyIfNotSet).with_tasks()`
-    // （sysinfo-0.39.6 src/common/system.rs:317-322），所以 name / start_time / exe 都有，
-    // 孤儿认领的三重身份靠它够了；它**不含 cmd**，要命令行得走下面那条 specifics 路径。
     let mut sys = System::new();
     sys.refresh_processes(ProcessesToUpdate::Some(&[Pid::from_u32(pid)]), true);
     let p = sys.process(Pid::from_u32(pid))?;
     Some(ProcInfo {
+        #[cfg(feature = "test-helpers")]
         start_time: p.start_time(),
         name: p.name().to_string_lossy().into_owned(),
+        #[cfg(feature = "test-helpers")]
         exe: p.exe().map(PathBuf::from),
     })
 }
 
+#[cfg(feature = "test-helpers")]
 fn kill(pid: u32) -> bool {
     let mut sys = System::new();
     sys.refresh_processes(ProcessesToUpdate::Some(&[Pid::from_u32(pid)]), true);
@@ -781,12 +808,6 @@ fn kill(pid: u32) -> bool {
         Some(p) => p.kill(),
         None => true,
     }
-}
-
-/// 这个 PID 现在是不是还活着一个进程（裁定 R42 item 3 的活性判定）。
-/// 走的是和身份校验同一个 `inspect`，所以"活着"与"是当初那个进程"用的是同一份 sysinfo 口径。
-fn process_is_alive(pid: u32) -> bool {
-    inspect(pid).is_some()
 }
 
 /// Windows 路径大小写不敏感，且 sysinfo 给的可能是 8.3 短名或不同大小写的盘符。
@@ -807,6 +828,10 @@ fn same_path(a: Option<&Path>, b: &Path) -> bool {
 /// 用它读到的命令行永远是空的，那条断言就成了空转。
 #[cfg(feature = "test-helpers")]
 pub fn command_line_of(pid: u32) -> Vec<String> {
+    process_command_line(pid)
+}
+
+fn process_command_line(pid: u32) -> Vec<String> {
     let mut sys = System::new();
     sys.refresh_processes_specifics(
         ProcessesToUpdate::Some(&[Pid::from_u32(pid)]),

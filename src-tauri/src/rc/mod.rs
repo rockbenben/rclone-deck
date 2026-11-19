@@ -43,6 +43,14 @@ pub enum RcError {
     /// （判定与读数都从后台来）。
     #[error("rcd 响应超时：{method}（等了 {budget_secs} 秒）")]
     Timeout { method: String, budget_secs: u64 },
+    #[error("rcd 无法确证 {method} 是否已提交：{reason}")]
+    SubmissionUnknown { method: String, reason: String },
+}
+
+impl RcError {
+    pub(crate) fn submission_is_unknown(&self) -> bool {
+        matches!(self, Self::Timeout { .. } | Self::Transport(_) | Self::SubmissionUnknown { .. })
+    }
 }
 
 impl serde::Serialize for RcError {
@@ -75,12 +83,15 @@ const ALLOWED_CONFIG_KEYS: &[&str] = &["dryRun"];
 pub struct RcClient {
     http: Client,
     base: String,
+    owner: Option<crate::rcd::process::Process>,
     /// Basic 头的值。故意不 derive Debug：密码不能跟着 `{rc:?}` 漏进日志或前端。
     auth: String,
     /// 发出去的 `operations/list` 次数，单调递增、永不重置。
     /// 调用方按"前后取差值"用，所以并发任务会把彼此的 LIST 算进同一段区间——
     /// 这只影响日志里的一个观测数字，不参与任何判定，故不加锁也不分区。
     list_requests: AtomicUsize,
+    #[cfg(feature = "test-helpers")]
+    requests: [AtomicUsize; 2],
 }
 
 /// 列举的两种形状。**要什么**由这个类型说，不由调用点临时拼 `opt`。
@@ -101,6 +112,10 @@ pub enum ListShape {
     /// 全是 `Failed to read metadata: operation error S3: HeadObject`。
     /// 目录行则从一开始就是白要 —— 四个使用方拿到后第一件事都是 `!is_dir` 丢掉。
     Tree,
+    /// Recursive file list with modification times, for inventory on fast metadata backends.
+    TreeMetadata,
+    /// Files and directories in a recursive deletion preview.
+    TreeWithDirectories,
     /// 只列**这一层**：目录行留着（浏览器要靠它导航），但 `noModTime` + `noMimeType` 照关。
     ///
     /// 这一档以前一个 `opt` 都不发，理由是"大小与目录都要显示"。前半句站不住：
@@ -117,6 +132,10 @@ impl ListShape {
         match self {
             ListShape::Tree =>
                 Some("{\"recurse\":true,\"filesOnly\":true,\"noModTime\":true,\"noMimeType\":true}"),
+            ListShape::TreeMetadata =>
+                Some("{\"recurse\":true,\"filesOnly\":true,\"noMimeType\":true}"),
+            ListShape::TreeWithDirectories =>
+                Some("{\"recurse\":true,\"noModTime\":true,\"noMimeType\":true}"),
             ListShape::Level => Some("{\"noModTime\":true,\"noMimeType\":true}"),
         }
     }
@@ -180,6 +199,20 @@ impl RcResponse {
             },
         }
     }
+
+    fn into_write_result(self, method: &str) -> Result<(), RcError> {
+        if self.json.get("error").and_then(Value::as_str).is_some()
+            || matches!(self.status, 400 | 401 | 403 | 405) {
+            return Err(self.error_for(method));
+        }
+        if (200..300).contains(&self.status) && self.json.is_object() && self.json.get("error").is_none() {
+            return Ok(());
+        }
+        Err(RcError::SubmissionUnknown {
+            method: method.to_string(),
+            reason: format!("收到 HTTP {}，响应不是可确认的写入回执", self.status),
+        })
+    }
 }
 
 impl RcClient {
@@ -196,16 +229,34 @@ impl RcClient {
         crate::tls::ensure_provider();
         let token = STANDARD.encode(format!("{user}:{pass}"));
         Self {
-            http: Client::builder().timeout(REQUEST_TIMEOUT).build().expect("reqwest client"),
+            http: Client::builder().timeout(REQUEST_TIMEOUT)
+                .redirect(reqwest::redirect::Policy::none()).no_proxy().build().expect("reqwest client"),
             base: base.into(),
+            owner: None,
             auth: format!("Basic {token}"),
             list_requests: AtomicUsize::new(0),
+            #[cfg(feature = "test-helpers")]
+            requests: Default::default(),
         }
+    }
+
+    pub(crate) fn bind_process(&mut self, process: crate::rcd::process::Process) {
+        self.owner = Some(process);
+    }
+
+    pub(crate) fn owner_is_live(&self) -> bool {
+        self.owner.as_ref().is_none_or(|owner| matches!(owner.exited(), Ok(false)))
     }
 
     /// 已发出的 LIST 次数。用途见字段注释：调用方取差值，写进任务日志。
     pub fn list_request_count(&self) -> usize {
         self.list_requests.load(Ordering::Relaxed)
+    }
+
+    /// Dispatched RC calls and their stat subset, for performance fixtures.
+    #[cfg(feature = "test-helpers")]
+    pub fn test_request_counts(&self) -> (usize, usize) {
+        (self.requests[0].load(Ordering::Relaxed), self.requests[1].load(Ordering::Relaxed))
     }
 
     pub async fn call(&self, method: &str, params: &[(&str, String)]) -> Result<Value, RcError> {
@@ -236,12 +287,19 @@ impl RcClient {
             let cfg = serde_json::json!({ "dryRun": true });
             owned.push(("_config", cfg.to_string()));
         }
-        let v = self.call(method, &owned).await?;
-        // 状态码必须已经处理完才轮得到 jobid：实测非法 _config 是 400 且 body 里没有 jobid。
-        let jobid = v.get("jobid").and_then(Value::as_i64).ok_or_else(|| RcError::Rc {
-            method: method.to_string(),
-            message: format!("响应里没有 jobid：{v}"),
-        })?;
+        let response = self.send(method, &owned).await?;
+        // Async dispatch returns a job ID. A malformed reply or a server failure can
+        // arrive after dispatch. The known request rejections happen before dispatch.
+        if matches!(response.status, 400 | 401 | 403 | 404 | 405) {
+            return Err(response.error_for(method));
+        }
+        let unknown = |reason| RcError::SubmissionUnknown { method: method.to_string(), reason };
+        if !(200..300).contains(&response.status) {
+            return Err(unknown(format!("收到 HTTP {}", response.status)));
+        }
+        let v = response.into_value(method).map_err(|e| unknown(e.to_string()))?;
+        let jobid = v.get("jobid").and_then(Value::as_i64).filter(|id| *id > 0)
+            .ok_or_else(|| unknown("响应里没有有效的任务 ID".into()))?;
         let execute_id = v.get("executeId").and_then(Value::as_str).unwrap_or_default().to_string();
         Ok(SubmitAck { execute_id, jobid })
     }
@@ -276,6 +334,16 @@ impl RcClient {
     ///
     /// 别复制这个函数来做另一档（上面那条注释说的就是这个）：条件化 `opt` 那一行。
     pub async fn operations_list(&self, fs: &str, remote: &str, shape: ListShape) -> Result<Vec<ListEntry>, ListError> {
+        self.list_entries(fs, remote, shape).await
+    }
+
+    pub(crate) async fn operations_list_metadata(&self, fs: &str) -> Result<Vec<InventoryEntry>, ListError> {
+        self.list_entries(fs, "", ListShape::TreeMetadata).await
+    }
+
+    async fn list_entries<T: serde::de::DeserializeOwned>(
+        &self, fs: &str, remote: &str, shape: ListShape,
+    ) -> Result<Vec<T>, ListError> {
         // remote="." 不是"当前目录"而是 404；结尾斜杠会拿到空列表（都是实测）。
         // 两条都在发请求之前掐掉。桶根是 ""，不是 "."。
         if remote == "." {
@@ -305,20 +373,20 @@ impl RcClient {
         // 404 之后一律走 into_value：那是这个文件唯一的失败口径，也是 call() 用的那一个。
         // 自己重写一遍 `>= 400` 会漏掉它那条"rc 偶尔用 200 包一个 error（版本差异）"的
         // 分支——而 operations_list 恰恰是最不能漏的地方，见下面 list 的取法。
-        let json = res.into_value("operations/list").map_err(ListError::Other)?;
+        let mut json = res.into_value("operations/list").map_err(ListError::Other)?;
         // list 必须真的存在、而且真的是个数组。缺键或非数组都不是"空目录"：
         // 空目录的表示是 `{"list": []}`（实测）。把上面两种读成 Ok(vec![])，
         // 就等于让 `listing` 那一趟"整棵树一次读完"把"这个目录没看见"当成"这个目录是空的"——
         // 门禁会报"没有缺图"、盘点会报"没有孤儿"，而它们是静默跳过它的。
         // fail-closed：宁可让任务带着错误停下，也不报一个没人验证过的 success。
-        let list = json.get("list").and_then(Value::as_array).cloned().ok_or_else(|| {
-            ListError::Other(RcError::Rc {
+        if !json.get("list").is_some_and(Value::is_array) {
+            return Err(ListError::Other(RcError::Rc {
                 method: "operations/list".into(),
                 message: format!("响应里没有一个 list 数组（不能当作空目录）：{json}"),
-            })
-        })?;
+            }));
+        }
         // 返回条目的 Path 已经含前缀，不能再拼一次（实测）。这里原样交出去。
-        serde_json::from_value(Value::Array(list)).map_err(|e| {
+        serde_json::from_value(json["list"].take()).map_err(|e| {
             ListError::Other(RcError::Rc {
                 method: "operations/list".into(),
                 message: format!("解析 list 失败：{e}"),
@@ -355,8 +423,7 @@ impl RcClient {
         let params = object_params(fs, remote);
         let res = self.send(method, &params).await.map_err(ListError::Other)?;
         if res.status == 404 { return Err(ListError::NotFound); }
-        res.into_value(method).map_err(ListError::Other)?;
-        Ok(())
+        res.into_write_result(method).map_err(ListError::Other)
     }
 
     /// `srcFs/srcRemote/dstFs/dstRemote` 四个参数，一个都不能少、也不能换名（F2 那族拼写错误：
@@ -372,8 +439,7 @@ impl RcClient {
             // 源不见了 = 界面上点中的那个东西已经没了（面板每秒刷一次，中间被人删掉是真会发生的）。
             return Err(ListError::NotFound);
         }
-        res.into_value(method).map_err(ListError::Other)?;
-        Ok(())
+        res.into_write_result(method).map_err(ListError::Other)
     }
 
     /// 单文件复制。**撞同名不会报错也不会拒绝**（F10：rc 回 200，然后按"大小 + modtime"
@@ -453,11 +519,8 @@ impl RcClient {
             method: "operations/fsinfo".into(), message: format!("解析 fsinfo 失败：{e}") })
     }
 
-    pub async fn operations_check(&self, src: (&str, &str), dst: (&str, &str)) -> Result<CheckOutcome, RcError> {
-        let params = [
-            ("srcFs", src.0.to_string()), ("srcRemote", src.1.to_string()),
-            ("dstFs", dst.0.to_string()), ("dstRemote", dst.1.to_string()),
-        ];
+    pub async fn operations_check(&self, src_root: &str, dst_root: &str) -> Result<CheckOutcome, RcError> {
+        let params = [("srcFs", src_root.to_string()), ("dstFs", dst_root.to_string())];
         let v = self.call("operations/check", &params).await?;
         serde_json::from_value(v).map_err(|e| RcError::Rc {
             method: "operations/check".into(), message: format!("解析 check 失败：{e}") })
@@ -478,6 +541,9 @@ impl RcClient {
         params: &[(&str, String)],
         timeout: Duration,
     ) -> Result<RcResponse, RcError> {
+        if !self.owner_is_live() {
+            return Err(RcError::Transport("原后台已退出或无法确认归属，已停止向该端口发送请求".into()));
+        }
         enforce_config_allowlist(method, params)?;
         let mut form = String::new();
         for (k, v) in params {
@@ -485,6 +551,13 @@ impl RcClient {
             form.push_str(&urlencoded(k));
             form.push('=');
             form.push_str(&urlencoded(v));
+        }
+        #[cfg(feature = "test-helpers")]
+        {
+            self.requests[0].fetch_add(1, Ordering::Relaxed);
+            if method == "operations/stat" {
+                self.requests[1].fetch_add(1, Ordering::Relaxed);
+            }
         }
         let res = self.http
             .post(format!("{}/{method}", self.base))

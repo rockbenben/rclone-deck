@@ -82,9 +82,9 @@ async fn supersede_only_replaces_the_same_scope_set() {
 async fn a_token_carries_the_intent_it_was_issued_for() {
     // R78：界面上只有一个"动手"入口，所以"这份授权做什么"必须在 token 里，而不是在参数里。
     let r = PreviewRegistry::default();
-    let t = r.issue(stored(PreviewIntent::DeleteNames { fs: "decklocal:".into(), names: vec!["a.webp".into()] }, &[""], &["a.webp"])).await;
+    let t = r.issue(stored(PreviewIntent::DeleteNames { fs: "decklocal:".into(), prefix: String::new() }, &[""], &["a.webp"])).await;
     let s = r.consume(&t).await.expect("凭证要在");
-    assert_eq!(s.intent, PreviewIntent::DeleteNames { fs: "decklocal:".into(), names: vec!["a.webp".into()] });
+    assert_eq!(s.intent, PreviewIntent::DeleteNames { fs: "decklocal:".into(), prefix: String::new() });
 }
 
 #[tokio::test]

@@ -376,13 +376,15 @@ async fn a_folded_draft_leaves_a_stale_token_powerless() {
 /// 这里配置侧那份清单先站着，临时格真写一次目标侧，那份清单当场不作数。
 #[tokio::test]
 async fn a_draft_write_voids_a_configured_preview() {
-    let (_fx, r, _g, local, cloud) = pair("m", KEEP, KEEP,
+    let (fx, r, _g, local, cloud) = pair("m", KEEP, KEEP,
         |l, c| vec![job_at("cfg-down", JobKind::Sync, c, l)]).await;
     r.pair_draft(&local, &cloud).unwrap();
     let p = r.preview_mirror("cfg-down").await.unwrap();
     assert_eq!(p.doomed.len(), 0, "夹具形状不对：两侧一样时不该有删除候选");
-    // 临时格真跑一次写（copy-a：本地 → 云端）。它传不传东西不重要——写动作本身就作废凭证。
+    // copy-a 写入云端后，两侧依然没有删除差集，但交叠的旧凭证已经失效。
+    seed(&fx.src().join("m"), &["draft-incoming.webp"]);
     r.run_copy("adhoc-1-copy-a", false).await.unwrap();
+    assert!(fx.dst().join("m").join("draft-incoming.webp").is_file());
     let err = r.run_mirror("cfg-down", &p.token).await.unwrap_err().to_string();
     assert!(err.contains("不作数"), "临时格写过的东西没作废配置侧那份凭证：{err}");
     assert!(!err.contains("清单变了"), "那句该是凭证作废，不是清单比对：{err}");

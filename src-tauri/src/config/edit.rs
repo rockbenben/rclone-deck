@@ -10,11 +10,12 @@
 //!    `endpoint` / `region`），一次一行，不重排、不新增段、不删段。远端的名字就取这份文件自己的
 //!    段名（`section_names`）：**没有第二份名单**，也就不用去问 `config/listremotes`——那是命令面上
 //!    唯一被允许的那一类调用（`config/dump`/`config/get` 的响应含明文凭据，F4/I4），能不碰就不碰。
-//! 2. **不引入 TOML/INI 的序列化库。**"读进来再序列化出去"会把满纸的理由注释吃掉——
-//!    R58/R60/R69 的落点就在那些注释上。所以这里按**行**操作：被点名的行换掉，
+//! 2. TOML 按解析器给出的键和值的位置编辑原文。INI 只改白名单键所在的行。
 //!    其余每一行连自己的行尾一起原样回到原地。
 //! 3. **行尾跟着每一行走。**真机上这两份文件都是 CRLF（实测：整份 conf 全是 `\r\n`）。
 //!    统一换行会让"改一行"的保存在 diff 里长成整文件重写，也会惹恼 git。
+use std::collections::BTreeMap;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -137,17 +138,7 @@ fn parse_simple_value(text: &str) -> Option<String> {
     Some(unq.to_string())
 }
 
-/// `[defaults]` 段：从那一行到**下一个头**（`[[job]]`）之前，或 EOF。
-pub fn defaults_span(lines: &[Line]) -> Option<Span> {
-    let start = lines.iter().position(|l| l.text.trim() == "[defaults]")?;
-    let end = lines.iter().skip(start + 1)
-        .position(|l| is_header(&l.text))
-        .map(|i| start + 1 + i)
-        .unwrap_or(lines.len());
-    Some(Span { start, end })
-}
-
-/// 块的头行下标（`[[job]]` 那种数组表；`header` 是精确匹配的那一行文本）。
+/// INI 段头的行号。
 fn header_indexes(lines: &[Line], header: &str) -> Vec<usize> {
     lines.iter().enumerate()
         .filter(|(_, l)| l.text.trim() == header)
@@ -155,23 +146,79 @@ fn header_indexes(lines: &[Line], header: &str) -> Vec<usize> {
         .collect()
 }
 
-/// id 那一条 `[[job]]` 块：从它自己的头行到下一个头行之前（或 EOF）。
-/// 头与头**之间**的注释行落在后一块的区间里吗？不落——注释在上一块的区间尾部，
-/// 所以 `deletion_plan` 必须自己把区间收在"最后一个键行"那一步，不然理由注释就跟着没了。
-pub fn job_span(lines: &[Line], id: &str) -> Option<Span> {
-    let heads = header_indexes(lines, "[[job]]");
-    for n in 0..heads.len() {
-        let start = heads[n];
-        let end = heads.get(n + 1).copied().unwrap_or(lines.len());
-        let mine = (start..end).any(|i| {
-            line_key(&lines[i].text) == Some("id")
-                && parse_simple_value(&lines[i].text).is_some_and(|v| v == id)
-        });
-        if mine {
-            return Some(Span { start, end });
-        }
+
+type Fields = BTreeMap<toml::Spanned<String>, toml::Spanned<toml::Value>>;
+type Table = toml::Spanned<Fields>;
+
+#[derive(Deserialize)]
+struct JobsLayout {
+    defaults: Table,
+    #[serde(default)]
+    job: Vec<Table>,
+}
+
+impl JobsLayout {
+    fn job(&self, id: &str) -> Option<&Table> {
+        self.job.iter().find(|table| {
+            table.get_ref().iter().any(|(key, value)| {
+                key.get_ref() == "id" && value.get_ref().as_str() == Some(id)
+            })
+        })
     }
-    None
+}
+
+struct TomlSource<'a> {
+    text: &'a str,
+    lines: &'a [Line],
+    starts: Vec<usize>,
+}
+
+impl<'a> TomlSource<'a> {
+    fn new(text: &'a str, lines: &'a [Line]) -> Self {
+        let mut offset = 0;
+        let starts = lines.iter().map(|line| {
+            let start = offset;
+            offset += line.text.len() + line.ending.len();
+            start
+        }).collect();
+        Self { text, lines, starts }
+    }
+
+    fn position(&self, offset: usize) -> (usize, usize) {
+        let line = self.starts.partition_point(|start| *start <= offset) - 1;
+        (line, offset - self.starts[line])
+    }
+
+    fn header_line(&self, table: &Table) -> Result<usize, EditError> {
+        let span = table.span();
+        if !self.text[span.clone()].starts_with('[') {
+            return Err(toml_layout_refusal());
+        }
+        Ok(self.position(span.start).0)
+    }
+
+    fn field_lines(&self, key: &toml::Spanned<String>, value: &toml::Spanned<toml::Value>) -> Span {
+        let start = self.position(key.span().start).0;
+        let end = self.position(value.span().end.saturating_sub(1).max(key.span().start)).0 + 1;
+        Span { start, end }
+    }
+
+    fn is_assignment(&self, key: &toml::Spanned<String>, value: &toml::Spanned<toml::Value>) -> bool {
+        self.text.get(key.span().end..value.span().start)
+            .is_some_and(|separator| separator.trim() == "=")
+    }
+
+    fn insert_at(&self, table: &Table) -> Result<usize, EditError> {
+        let header = self.header_line(table)?;
+        Ok(table.get_ref().iter()
+            .filter(|(key, value)| self.is_assignment(key, value))
+            .map(|(key, value)| self.field_lines(key, value).end)
+            .max().unwrap_or(header + 1))
+    }
+}
+
+fn toml_layout_refusal() -> EditError {
+    EditError::Refused("这份配置的表结构无法安全地局部修改。请在编辑器里修改后重新查看。".into())
 }
 
 /// conf 的 `[name]` 段。**同名段出现两次就拒**——"改哪一段"说不清，而这里改的是凭据的邻居。
@@ -203,19 +250,6 @@ pub struct EditPlan {
     pub deleted: Vec<usize>,
 }
 
-/// 一块的删除区间：从头行到**最后一个键行**（含）。块里一个键都没有时区间退化成头行本身。
-/// 之后的空行与注释行**不进区间**——那正是规矩 2 要留下的东西。
-pub fn deletion_plan(lines: &[Line], block: Span) -> EditPlan {
-    let last_key = (block.start..block.end)
-        .filter(|i| line_key(&lines[*i].text).is_some())
-        .next_back()
-        .unwrap_or(block.start);
-    EditPlan {
-        replaced: vec![],
-        inserted: vec![],
-        deleted: (block.start..=last_key).collect(),
-    }
-}
 
 /// 方案落地。**行尾从被改那一行原来的那一份继承**；新行继承文件里最后用过的行尾。
 pub fn apply_plan(lines: &[Line], plan: &EditPlan) -> Vec<Line> {
@@ -247,8 +281,13 @@ pub fn apply_plan(lines: &[Line], plan: &EditPlan) -> Vec<Line> {
     }
     // 尾后插：index == lines.len() 那一档（新任务块追加到文件末尾走的就是这条路）。
     if let Some(tail) = inserts.remove(&lines.len()) {
-        for t in tail {
-            out.push(Line { text: t.clone(), ending: new_line_ending });
+        for (i, t) in tail.iter().enumerate() {
+            let ending = if i + 1 == tail.len() && lines.last().is_some_and(|l| l.ending.is_empty()) {
+                ""
+            } else {
+                new_line_ending
+            };
+            out.push(Line { text: t.clone(), ending });
         }
     }
     debug_assert!(inserts.is_empty(), "apply_plan 收到了超出文件长度的插入行号");
@@ -828,7 +867,7 @@ pub struct Prepared {
 /// 现在就在用的写法，换一种引号就是在一行没动过的内容上制造一次改动；其余用基本串 `"…"`。
 /// 两边都不是"猜"：判据是这一行的字节会不会因此变。
 pub fn toml_string(s: &str) -> String {
-    if s.contains('\\') && !s.contains('\'') {
+    if s.contains('\\') && !s.contains('\'') && !s.chars().any(char::is_control) {
         return format!("'{s}'");
     }
     let mut out = String::from("\"");
@@ -838,8 +877,8 @@ pub fn toml_string(s: &str) -> String {
             '"' => out.push_str("\\\""),
             '\n' => out.push_str("\\n"),
             '\t' => out.push_str("\\t"),
-            '\r' => {}
-            c if (c as u32) < 0x20 => {}
+            '\r' => out.push_str("\\r"),
+            c if c.is_ascii_control() => out.push_str(&format!("\\u{:04X}", c as u32)),
             c => out.push(c),
         }
     }
@@ -898,6 +937,52 @@ fn set_key(lines: &[Line], plan: &mut EditPlan, span: Span, key: &str,
     }
 }
 
+fn set_toml_key(source: &TomlSource<'_>, table: &Table, plan: &mut EditPlan,
+                key: &str, want: Option<String>, label: &str, changes: &mut Vec<Change>)
+    -> Result<(), EditError> {
+    let current = table.get_ref().iter().find(|(name, _)| name.get_ref() == key);
+    let values = want.as_ref().map(|text| toml::from_str::<toml::Table>(text))
+        .transpose().map_err(|e| ConfigError::Parse(e.to_string()))?;
+    match (current, want) {
+        (Some((name, value)), want) => {
+            if values.as_ref().and_then(|fields| fields.get(key)) == Some(value.get_ref()) {
+                return Ok(());
+            }
+            source.header_line(table)?;
+            if !source.is_assignment(name, value) {
+                return Err(toml_layout_refusal());
+            }
+            let span = source.field_lines(name, value);
+            let before = join_lines(&source.lines[span.start..span.end]);
+            let (kind, after) = if let Some(want) = want {
+                let value_range = value.span();
+                let (start, start_col) = source.position(value_range.start);
+                let (last, end_col) = source.position(value_range.end);
+                let encoded = want.split_once('=').expect("TOML assignment").1.trim_start();
+                let after = format!("{}{encoded}{}", &source.lines[start].text[..start_col],
+                    &source.lines[last].text[end_col..]);
+                // Reuse the last line's ending, including an absent final newline.
+                plan.deleted.extend(span.start..last);
+                plan.replaced.push((last, after.clone()));
+                (ChangeKind::Changed, after)
+            } else {
+                plan.deleted.extend(span.start..span.end);
+                (ChangeKind::Removed, String::new())
+            };
+            changes.push(Change { key: key.into(), label: label.into(), kind, after,
+                before: before.trim_end_matches(['\r', '\n']).into() });
+        }
+        (None, Some(want)) => {
+            let at = source.insert_at(table)?;
+            changes.push(Change { key: key.into(), label: label.into(), before: String::new(),
+                after: want.clone(), kind: ChangeKind::Added });
+            insert_lines(source.lines, plan, at, want);
+        }
+        (None, None) => {}
+    }
+    Ok(())
+}
+
 /// 段内最后一个键行之后插（那才是"这一段的内容"的末尾；后面那些空行与注释是留给下一段的）。
 fn span_end_insert_index(lines: &[Line], span: Span) -> usize {
     (span.start..span.end)
@@ -909,12 +994,20 @@ fn span_end_insert_index(lines: &[Line], span: Span) -> usize {
 
 /// 追加到段末尾。同一档位置上第二次插会**并进去**（`EditPlan.inserted` 按位置归并）。
 fn insert_at_span_end(lines: &[Line], plan: &mut EditPlan, span: Span, text: String) {
-    let at = span_end_insert_index(lines, span);
+    insert_lines(lines, plan, span_end_insert_index(lines, span), text);
+}
+
+fn insert_lines(lines: &[Line], plan: &mut EditPlan, at: usize, text: String) {
     if let Some((_, group)) = plan.inserted.iter_mut().find(|(i, _)| *i == at) {
         group.push(text);
         return;
     }
-    plan.inserted.push((at, vec![text]));
+    let mut group = Vec::new();
+    if at == lines.len() && lines.last().is_some_and(|line| line.ending.is_empty()) {
+        group.push(String::new());
+    }
+    group.push(text);
+    plan.inserted.push((at, group));
 }
 
 /// 落地的公共一步：应用方案 → **装载侧校验** → "只改了这些行"断言。
@@ -937,25 +1030,39 @@ fn finish(jobs: bool, path: PathBuf, original_text: String, old: Vec<Line>,
 /// 造新字节。**不做拒绝（有任务在跑）也不落盘**——那是 `WriteRegistry` 的事。
 /// 这一条通路不起进程：路径已经定好了（问 rclone 是读侧那一步的事）。
 pub fn plan_bytes(intent: &Intent, files: &Files) -> Result<Prepared, EditError> {
+    plan_file(intent, config_path(intent, files)?)
+}
+
+fn config_path<'a>(intent: &Intent, files: &'a Files) -> Result<&'a Path, EditError> {
     match intent.target() {
-        Target::Jobs => plan_jobs(intent, files),
-        Target::Conf => plan_conf(intent, files),
+        Target::Jobs => Ok(&files.jobs),
+        Target::Conf => files.conf.as_deref().ok_or_else(|| EditError::Refused(
+            "问不出 rclone 的配置文件在哪（那要拿配置里那一份 rclone 去问它自己），\
+             所以这一项没有地方可写。".into())),
     }
 }
 
-fn plan_jobs(intent: &Intent, files: &Files) -> Result<Prepared, EditError> {
-    let original_text = read_text(&files.jobs)?;
+fn plan_file(intent: &Intent, path: &Path) -> Result<Prepared, EditError> {
+    match intent.target() {
+        Target::Jobs => plan_jobs(intent, path),
+        Target::Conf => plan_conf(intent, path),
+    }
+}
+
+fn plan_jobs(intent: &Intent, path: &Path) -> Result<Prepared, EditError> {
+    let original_text = read_text(path)?;
     // 装载侧那一份口径读现在的内容：界面上显示的值与这里比较的值必须是同一个来源。
     let current = JobsFile::parse(&original_text)?;
     let old = split_lines(&original_text);
+    let layout: JobsLayout = toml::from_str(&original_text)
+        .map_err(|e| ConfigError::Parse(e.to_string()))?;
+    let source = TomlSource::new(&original_text, &old);
     let mut plan = EditPlan::default();
     let mut changes = Vec::new();
     let mut notes = Vec::new();
 
     let subject = match intent {
         Intent::Defaults { rclone_bin, log_dir, flags, exclude } => {
-            let span = defaults_span(&old).ok_or_else(|| EditError::Refused(
-                "这份文件里没有 [defaults] 那一段，面板不知道往哪儿写。".into()))?;
             // 存在性只在这一项**被改动**时检查：不动它就不拿一个操作员没碰过的路径去拦他
             // （面板现在就是用那一条跑起来的；要拦的是"改成另一个"这一件事）。
             if rclone_bin != &current.defaults.rclone_bin && rclone_bin.trim().is_empty() {
@@ -987,21 +1094,21 @@ fn plan_jobs(intent: &Intent, files: &Files) -> Result<Prepared, EditError> {
                 });
             }
             let mut want = |key: &str, line: Option<String>, label: &str|
-                set_key(&old, &mut plan, span, key, line, label, &mut changes);
+                set_toml_key(&source, &layout.defaults, &mut plan, key, line, label, &mut changes);
             want("rclone_bin", Some(format!("rclone_bin = {}", toml_string(rclone_bin))),
-                "rclone 程序在哪");
-            want("log_dir", Some(format!("log_dir = {}", toml_string(log_dir))), "日志放哪");
-            want("flags", Some(format!("flags = {}", toml_array(flags))), "每次都要带的参数");
-            want("exclude", Some(format!("exclude = {}", toml_array(exclude))), "哪些东西不进去");
+                "rclone 程序在哪")?;
+            want("log_dir", Some(format!("log_dir = {}", toml_string(log_dir))), "日志放哪")?;
+            want("flags", Some(format!("flags = {}", toml_array(flags))), "每次都要带的参数")?;
+            want("exclude", Some(format!("exclude = {}", toml_array(exclude))), "哪些东西不进去")?;
             "这台面板每次跑都要用的那几项".to_string()
         }
 
         Intent::JobAdd { .. } | Intent::JobSet { .. } => {
             let (id, name, job_kind, src, dst, open_dir, manifest) =
                 intent.job_fields().expect("上面已经按 target 分过支");
-            let span = job_span(&old, id);
+            let table = layout.job(id);
             let adding = matches!(intent, Intent::JobAdd { .. });
-            match (adding, span) {
+            match (adding, table) {
                 (true, Some(_)) => return Err(EditError::Refused(format!(
                     "已经有一条 id 是 {id} 的任务了。要改它就是「改这条」，\
                      新加一条得换一个 id——两个同名的任务，面板跑的时候会拿错那一个。"))),
@@ -1028,26 +1135,31 @@ fn plan_jobs(intent: &Intent, files: &Files) -> Result<Prepared, EditError> {
             if *job_kind == JobKindWire::Sync && !name.contains("删") {
                 return Err(EditError::Refused(delete_word_in_name_reason()));
             }
-            let pair = match span {
-                // 更新与删除核对的是**文件里现在**那一串位置；新加的用意图里的那一串。
-                Some(s) => pairing(&old, s),
-                None => format!("{} → {}", src, dst),
-            };
-            match span {
-                Some(s) => {
+            let job = current.jobs.iter().find(|job| job.id == id);
+            let pair = job.map_or_else(|| format!("{src} → {dst}"),
+                |job| format!("{} → {}", job.src, job.dst));
+            match table {
+                Some(table) => {
                     let mut want = |key: &str, line: Option<String>, label: &str|
-                        set_key(&old, &mut plan, s, key, line, label, &mut changes);
-                    want("name", Some(format!("name = {}", toml_string(&name))), "这条叫什么名字");
+                        set_toml_key(&source, table, &mut plan, key, line, label, &mut changes);
+                    want("name", Some(format!("name = {}", toml_string(&name))), "这条叫什么名字")?;
                     want("kind", Some(format!("kind = {}", toml_string(job_kind.toml_token()))),
-                        "这一条算哪类");
-                    want("src", Some(format!("src = {}", toml_string(src))), "从哪里来");
-                    want("dst", Some(format!("dst = {}", toml_string(dst))), "到哪里去");
+                        "这一条算哪类")?;
+                    want("src", Some(format!("src = {}", toml_string(src))), "从哪里来")?;
+                    want("dst", Some(format!("dst = {}", toml_string(dst))), "到哪里去")?;
                     want("open_dir", if open_dir.trim().is_empty() { None } else {
                         Some(format!("open_dir = {}", toml_string(open_dir))) },
-                        "顺手打开哪个目录");
-                    want("manifest", if manifest {
-                        Some("manifest = { kind = \"localdir\" }".to_string())
-                    } else { None }, "这一条要对账");
+                        "顺手打开哪个目录")?;
+                    let keep_manifest = job.is_some_and(|job| match job.manifest {
+                        Some(Manifest::LocalDir) => manifest,
+                        // The settings form cannot represent a file manifest.
+                        Some(Manifest::File(_)) => !manifest && job_kind == &JobKindWire::Gate,
+                        _ => false,
+                    });
+                    if !keep_manifest {
+                        want("manifest", manifest.then(|| "manifest = { kind = \"localdir\" }".into()),
+                            "这一条要对账")?;
+                    }
                 }
                 None => {
                     // 整块追加在文件末尾，前面补一个空行；每一行都是一条 Added 差异。
@@ -1070,45 +1182,96 @@ fn plan_jobs(intent: &Intent, files: &Files) -> Result<Prepared, EditError> {
         }
 
         Intent::RemoveJob { id } => {
-            let span = job_span(&old, id).ok_or_else(|| EditError::Refused(format!(
+            let table = layout.job(id).ok_or_else(|| EditError::Refused(format!(
                 "找不到 id 为 {id} 的那条任务，所以这一次没有要删的东西。")))?;
-            let pair = pairing(&old, span);
+            let job = current.jobs.iter().find(|job| job.id == *id).ok_or_else(toml_layout_refusal)?;
+            let pair = format!("{} → {}", job.src, job.dst);
             // 删的是对账那一类 ⇒ 那个前缀从此没有发布保护（spec §5.3 尾段）。
             // 判据来自那块自己的 kind 行，不是任务名。
-            if block_value(&old, span, "kind").as_deref() == Some("gate") {
+            if job.kind == JobKind::Gate {
                 notes.push(ShortNote::plain(format!(
                     "这一条是对账，删掉它之后 {pair} 这一对位置就没有对账的闸门了——\
                      外部引用了那个前缀的东西，从此没人核对它还在不在。")));
             }
-            plan = deletion_plan(&old, span);
-            for i in span.start..span.end {
-                if let Some(k) = line_key(&old[i].text) {
-                    // 认不出的键（操作员手工加的、面板不认识的那一族）也照样列出来：
-                    // 删一整块必然把它里面的一切一起删掉，差异表不能只报认识的那几行。
-                    let label = job_key_label(k);
-                    changes.push(Change { key: k.into(),
-                        label: if label.is_empty() { k.into() } else { label.into() },
-                        before: old[i].text.clone(), after: String::new(),
-                        kind: ChangeKind::Removed });
+            let start = source.header_line(table)?;
+            let mut end = start + 1;
+            let mut removed = Vec::new();
+            for (key, value) in table.get_ref() {
+                if !source.is_assignment(key, value) {
+                    return Err(toml_layout_refusal());
                 }
+                let span = source.field_lines(key, value);
+                end = end.max(span.end);
+                removed.push((span, key.get_ref()));
+            }
+            removed.sort_by_key(|(span, _)| span.start);
+            plan.deleted.extend(start..end);
+            for (span, key) in removed {
+                let label = job_key_label(key);
+                changes.push(Change { key: key.clone(),
+                    label: if label.is_empty() { key.clone() } else { label.into() },
+                    before: join_lines(&old[span.start..span.end]).trim_end_matches(['\r', '\n']).into(),
+                    after: String::new(), kind: ChangeKind::Removed });
             }
             pair
         }
         Intent::Remote { .. } => unreachable!("远端那一支走 plan_conf"),
     };
 
-    finish(true, files.jobs.clone(), original_text, old, plan, subject, changes, notes)
+    let prepared = finish(true, path.to_path_buf(), original_text, old, plan, subject, changes, notes)?;
+    verify_toml_scope(intent, &prepared)?;
+    Ok(prepared)
 }
 
-/// 那一块的 `(src, dst)` 原样配对，用作确认层正文：名字可以撞，配对才是身份。
-fn pairing(lines: &[Line], span: Span) -> String {
-    let src = block_value(lines, span, "src").unwrap_or_default();
-    let dst = block_value(lines, span, "dst").unwrap_or_default();
-    format!("{src} → {dst}")
+/// Remove only the requested changes before comparing the rest of the decoded documents.
+fn verify_toml_scope(intent: &Intent, prepared: &Prepared) -> Result<(), EditError> {
+    let strip = |bytes: &[u8], before: bool| -> Result<String, EditError> {
+        let text = std::str::from_utf8(bytes).map_err(|_| toml_layout_refusal())?;
+        let mut doc: toml::Table = toml::from_str(text).map_err(|_| toml_layout_refusal())?;
+        if matches!(intent, Intent::Defaults { .. }) {
+            let defaults = doc.get_mut("defaults").and_then(toml::Value::as_table_mut)
+                .ok_or_else(toml_layout_refusal)?;
+            for change in &prepared.changes {
+                defaults.remove(&change.key);
+            }
+        } else {
+            let id = match intent {
+                Intent::JobAdd { id, .. } | Intent::JobSet { id, .. } | Intent::RemoveJob { id } => id,
+                _ => return Err(toml_layout_refusal()),
+            };
+            let mut jobs = match doc.remove("job") {
+                Some(toml::Value::Array(jobs)) => jobs,
+                None => Vec::new(),
+                _ => return Err(toml_layout_refusal()),
+            };
+            let index = jobs.iter().position(|job| job.get("id").and_then(toml::Value::as_str) == Some(id));
+            match (intent, index, before) {
+                (Intent::JobAdd { .. }, Some(i), false) | (Intent::RemoveJob { .. }, Some(i), true) => {
+                    jobs.remove(i);
+                }
+                (Intent::JobAdd { .. }, None, true) | (Intent::RemoveJob { .. }, None, false) => {}
+                (Intent::JobSet { .. }, Some(i), _) => {
+                    let target = jobs[i].as_table_mut().ok_or_else(toml_layout_refusal)?;
+                    for change in &prepared.changes {
+                        target.remove(&change.key);
+                    }
+                }
+                _ => return Err(toml_layout_refusal()),
+            }
+            if !jobs.is_empty() {
+                doc.insert("job".into(), toml::Value::Array(jobs));
+            }
+        }
+        // The serialization is a comparison key only. Disk receives the edited source bytes.
+        toml::to_string(&doc).map_err(|_| toml_layout_refusal())
+    };
+    if strip(&prepared.original, true)? != strip(&prepared.bytes, false)? {
+        return Err(toml_layout_refusal());
+    }
+    Ok(())
 }
 
-/// `[[job]]` 块里那些键的人话说法。空串 = 面板不认识这一行（调用方拿原键名顶上，
-/// 这样差异表不会漏掉任何一行真被删掉的内容）。
+/// 完整任务块的字段标签。
 fn job_key_label(key: &str) -> &'static str {
     match key {
         "id" => "这条的编号",
@@ -1162,14 +1325,11 @@ fn job_block_texts(id: &str, name: &str, job_kind: &JobKindWire, src: &str, dst:
 /// conf 那一支：**只改已有段里的白名单键**，一次一行。
 /// 这里没有"装载侧"可以复用的校验（`rclone.conf` 不是 TOML），所以形状判据自己钉死三条：
 /// 段找得到、值里不许有换行（那是第二行，不是一行的值）、键只可能是那四个（按构造）。
-fn plan_conf(intent: &Intent, files: &Files) -> Result<Prepared, EditError> {
+fn plan_conf(intent: &Intent, path: &Path) -> Result<Prepared, EditError> {
     let Intent::Remote { remote, remote_type, provider, endpoint, region } = intent else {
         unreachable!("上面按 target 分过支：非远端意图不会走到这一支");
     };
-    let path = files.conf.clone().ok_or_else(|| EditError::Refused(
-        "问不出 rclone 的配置文件在哪（那要拿配置里那一份 rclone 去问它自己），\
-         所以这一项没有地方可写。".into()))?;
-    let original_text = read_text(&path)?;
+    let original_text = read_text(path)?;
     let old = split_lines(&original_text);
     let span = section_span(&old, remote)?;
     let mut plan = EditPlan::default();
@@ -1203,7 +1363,7 @@ fn plan_conf(intent: &Intent, files: &Files) -> Result<Prepared, EditError> {
                                          要用 rclone 自己的命令重新配一遍。"));
         }
     }
-    finish(false, path, original_text, old, plan, remote.clone(), changes, notes)
+    finish(false, path.to_path_buf(), original_text, old, plan, remote.clone(), changes, notes)
 }
 
 // ---- 凭证与落盘：看过差异之后才写得出去 ------------------------------------------
@@ -1256,18 +1416,20 @@ impl WriteRegistry {
     pub async fn plan(&self, intent: &Intent, files: &Files,
                       running: &[String]) -> Result<PlanView, EditError> {
         refuse_while_running(running)?;
-        let p = plan_bytes(intent, files)?;
+        let path = config_path(intent, files)?;
+        let target = resolve_config_path(path)?;
+        let p = plan_file(intent, &target)?;
         if p.changes.is_empty() {
             return Err(EditError::Refused(
                 "这一项现在就是你要的值，没有要改的东西。".into()));
         }
         let token = crate::preview::new_token();
         self.inner.lock().await.insert(token.clone(), Pending {
-            intent: intent.clone(), path: p.path.clone(), original: p.original.clone(),
+            intent: intent.clone(), path: target, original: p.original.clone(),
             bytes: p.bytes.clone(), subject: p.subject.clone(),
             changes: p.changes.clone(), notes: p.notes.clone(),
         });
-        Ok(PlanView { token, path: p.path.display().to_string(),
+        Ok(PlanView { token, path: path.display().to_string(),
                       subject: p.subject, changes: p.changes, notes: p.notes })
     }
 
@@ -1276,22 +1438,39 @@ impl WriteRegistry {
     pub async fn apply(&self, token: &str, files: &Files,
                        running: &[String]) -> Result<Applied, EditError> {
         refuse_while_running(running)?;
-        let pending = self.inner.lock().await.remove(token).ok_or_else(|| EditError::Refused(
+        // Hold the same guard through replanning and replacement so a concurrent
+        // confirmation cannot pass the byte check before this one commits.
+        let mut pending_writes = self.inner.lock().await;
+        let pending = pending_writes.remove(token).ok_or_else(|| EditError::Refused(
             "这份确认不作数了（用过一次，或者面板重启过）。要保存就重新看一遍要改哪几行。".into()))?;
-        let now = plan_bytes(&pending.intent, files)?;
-        if now.original != pending.original || now.bytes != pending.bytes {
-            return Err(EditError::Refused(
-                "刚才看的那份和磁盘上的现在对不上——这两份文件在你看过之后被改过\
-                 （可能是你自己在编辑器里存了一份回来）。这次一个字节都没写，\
-                 请重新看一遍要改哪几行。".into()));
+        let path = config_path(&pending.intent, files)?;
+        let target = resolve_config_path(path)?;
+        if target != pending.path {
+            return Err(stale_preview());
         }
-        write_atomically(&now.path, &now.bytes)?;
-        Ok(Applied { path: now.path.display().to_string(),
+        let now = plan_file(&pending.intent, &target)?;
+        if now.original != pending.original || now.bytes != pending.bytes {
+            return Err(stale_preview());
+        }
+        write_atomically(&target, &now.original, &now.bytes)?;
+        drop(pending_writes);
+        Ok(Applied { path: path.display().to_string(),
                      note: ShortNote::with_detail("重开面板后生效。", format!(
                          "写在 {}。面板只在启动那一次读它，所以这一面显示的还是刚才那一份；\
                          重启面板就换成新的。改远端那几项还要 rclone 自己重读它的配置，\
-                         它本来也是启动时读的。", now.path.display())) })
+                         它本来也是启动时读的。", path.display())) })
     }
+}
+
+fn resolve_config_path(path: &Path) -> Result<PathBuf, EditError> {
+    path.canonicalize().map_err(|e| EditError::Read {
+        path: path.display().to_string(), reason: e.to_string(),
+    })
+}
+
+fn stale_preview() -> EditError {
+    EditError::Refused("刚才看的那份和磁盘上的现在对不上。这次一个字节都没写，\
+        请重新看一遍要改哪几行。".into())
 }
 
 /// ①：有任务在跑就不许改配置。
@@ -1312,23 +1491,29 @@ fn refuse_while_running(running: &[String]) -> Result<(), EditError> {
 ///
 /// 临时文件必须与目标同目录：跨卷的 rename 不是原子替换，而那正是"改一半"的来路。
 /// 清理失败**不许静默**——那个文件名进错误话术，因为操作员得知道目录里多了一个什么。
-fn write_atomically(path: &Path, bytes: &[u8]) -> Result<(), EditError> {
+fn write_atomically(path: &Path, original: &[u8], bytes: &[u8]) -> Result<(), EditError> {
     let tmp = path.with_file_name(format!(
-        "{}.rclone-deck-tmp",
-        path.file_name().and_then(|n| n.to_str()).unwrap_or("config")));
-    let attempt = (|| -> Result<(), std::io::Error> {
-        std::fs::write(&tmp, bytes)?;
-        std::fs::rename(&tmp, path)?;
+        ".rclone-deck-tmp-{:032x}", rand::random::<u128>()));
+    let write_error = |e: std::io::Error| EditError::Write(format!("{}：{e}", path.display()));
+    let mut file = std::fs::OpenOptions::new().write(true).create_new(true)
+        .open(&tmp).map_err(write_error)?;
+    let written = file.write_all(bytes).and_then(|()| file.sync_all());
+    drop(file);
+    let attempt = (|| -> Result<(), EditError> {
+        written.map_err(write_error)?;
+        if std::fs::read(path).map_err(write_error)? != original {
+            return Err(stale_preview());
+        }
+        std::fs::rename(&tmp, path).map_err(write_error)?;
         Ok(())
     })();
     match attempt {
         Ok(()) => Ok(()),
         Err(e) => {
-            let leftover = match std::fs::remove_file(&tmp) {
-                Ok(()) => String::new(),
-                Err(r) => format!("；临时文件 {} 也没删掉，请手动删除（{r}）", tmp.display()),
-            };
-            Err(EditError::Write(format!("{}：{e}{leftover}", path.display())))
+            match std::fs::remove_file(&tmp) {
+                Ok(()) => Err(e),
+                Err(r) => Err(EditError::Write(format!("{e}。临时文件 {} 未能清理（{r}）", tmp.display()))),
+            }
         }
     }
 }

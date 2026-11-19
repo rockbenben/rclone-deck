@@ -201,9 +201,9 @@ fn a_spent_mirror_confirmation_is_not_offered_again() {
     let at = confirm.find("key=\"go\"").unwrap_or_else(|| panic!("页脚那颗批准的按钮不见了：{confirm}"));
     let arm: String = confirm[at..].chars().take(520).collect();
     assert!(arm.contains("spent"), "这一份已经交出去了那一档整个不见了：{arm}");
-    // 必须由它**禁用**，不是只在句子里提一句；而它只禁"看过名单"那一档。
-    assert!(arm.contains("disabled={loading || (spent && preview !== null)}"),
-        "凭证花掉了那颗红的还亮着，或者把没名单那一档也一起锁死了：{arm}");
+    // 消费任何一种授权后，禁用确认，直到拿到新的预览。
+    assert!(arm.contains("disabled={loading || spent}"),
+        "交出整树或逐名授权后还能直接再确认：{arm}");
     assert!(arm.contains("照对齐跑（这一趟先核对一遍）"),
         "没名单那一档没有自己的话（它不许读成「按下去删 0 个」）：{arm}");
     assert!(arm.contains("preview.doomedCount === 0"),

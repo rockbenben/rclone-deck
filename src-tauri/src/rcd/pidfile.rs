@@ -28,6 +28,35 @@ pub struct PidRecord {
     pub panel_pid: u32,
 }
 
+#[derive(Serialize, Deserialize)]
+pub(super) struct StoredRecord {
+    #[serde(flatten)]
+    pub record: PidRecord,
+    #[serde(default)]
+    pub creation_time: Option<u64>,
+}
+
+pub(super) fn read_checked(path: &Path) -> std::io::Result<Option<StoredRecord>> {
+    let text = match std::fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(e),
+    };
+    serde_json::from_str(&text).map(Some).map_err(std::io::Error::other)
+}
+
+pub(super) fn write_owned(path: &Path, record: PidRecord, creation_time: u64) -> std::io::Result<()> {
+    let pending = path.with_extension("pid.tmp");
+    let record = StoredRecord { record, creation_time: Some(creation_time) };
+    let bytes = serde_json::to_vec(&record).map_err(std::io::Error::other)?;
+    std::fs::write(&pending, bytes)?;
+    let result = std::fs::rename(&pending, path);
+    if result.is_err() {
+        let _ = std::fs::remove_file(&pending);
+    }
+    result
+}
+
 pub fn read(path: &Path) -> Option<PidRecord> {
     let text = std::fs::read_to_string(path).ok()?;
     serde_json::from_str(&text).ok()

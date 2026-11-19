@@ -15,12 +15,14 @@ use crate::scope::Scope;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PreviewIntent {
     Mirror { job_id: String },
+    /// 授权复核这对根，在执行前固定候选名称。
+    MirrorTree { job_id: String },
     /// "删掉这一层看到的 N 个"（R75）：`prefix` 用于动手前重列比对。
     DeleteVisible { fs: String, prefix: String },
     /// 删除明确点名的那一个/那几个对象。
-    DeleteNames { fs: String, names: Vec<String> },
+    DeleteNames { fs: String, prefix: String },
     /// 清空整个前缀（只在排除规则数为 0 时发得出来，R74）。
-    Purge { fs: String, prefix: String },
+    Purge { fs: String, prefix: String, directories: BTreeSet<String> },
     /// 删一个**空**目录。清单上只有一个名字：那个目录本身。
     /// 空不空在发凭证之前判过一遍，动手之前再判一遍（`runner::browser::run_rmdir`）。
     Rmdir { fs: String, remote: String },
@@ -37,11 +39,7 @@ pub struct StoredPreview {
     /// 存的是**内容**而不是"当时有多少个"，因为要判的是"是不是同一批"，光有数比对不出多了哪个少了哪个。
     /// 用 `BTreeSet`：与 `prune::plan` 交出的有序集合同形，比对就是集合相等。
     ///
-    /// **`None` 是第三种状态，不是空集**：它说"这个人没看过任何一份名单，他批准的是这一趟"
-    /// （对齐那一路可以直接这样确认）。空集说的是"他看过一份名单，那份名单是空的"，
-    /// 两者在动手那一步走的是不同的判据 —— 所以这里用 `Option` 而不是用空集骗守卫。
-    /// 需要一份真名单才能动手的那五路浏览器动作，在 `browser_run` 里对 `None` **拒绝执行**，
-    /// 不是"当成空的下发一遍"。
+    /// 只有 `MirrorTree` 使用 `None`。空集表示已确认零项。
     pub doomed: Option<BTreeSet<String>>,
     /// 这份清单**关于哪些位置**；空集合 = 永远作废不掉，**禁止**。写动作落进其中任何一个，凭证就作废。
     /// 对齐的预览是**两侧**都算（源变了删除候选也会变），所以这个集合不能只放目标端。
@@ -52,31 +50,15 @@ pub struct StoredPreview {
 #[derive(Default)]
 pub struct PreviewRegistry {
     inner: Mutex<BTreeMap<String, StoredPreview>>,
-    /// 人在**只读盘点**里看过的那份删除候选（2026-10-09）。
-    ///
-    /// 它**不是凭证**：没有 token、不能授权任何动作、消费它也不会跑任何东西。
-    /// 它只回答一件事——"人看过哪一份清单"，供对齐动手前那道逐条比对当基准。
-    /// 有了它，「看差异 → 让两边对齐 → 直接确认」就不用再点一次「重新预览」：
-    /// 盘点算的 `plan(local, remote).doomed` 与预览算的**是同一个东西**（同一个 `plan` 内核），
-    /// 重新列一遍只是为了"看一眼"，而人已经看过了。
-    ///
-    /// **键必须带方向**：键是 `src>dst` 而不是无序集合。同一对位置两个方向的 `doomed`
-    /// 互为补集，拿反方向那份当基准会判错（多半每次都拒，但那是撞对的）。
-    /// 顺序进键这件事在构造上就堵死了，不靠调用方的自觉。
-    ///
-    /// **不按 `invalidate` 清空**：写动作让树变了，那正该由动手前那次重列比对出来并**拒绝**，
-    /// 而不是悄悄退到"没看过清单"那一档（更弱）。这一张表是缓存不是授权，清掉它等于降级。
-    /// 大小有上限：超过 `SEEN_CAP` 的不记 —— 那种规模的比例守卫本来就几乎必然拒绝，
-    /// 而在内存里留住几十万条名字是这个进程付不起的（对照：`last_summaries` 只留计数是刻意的）。
-    seen: Mutex<BTreeMap<String, BTreeSet<String>>>,
+    /// 按方向保存最近看到的清单。`None` 表示清单已失效，需重新预览。
+    seen: Mutex<BTreeMap<(Scope, Scope), Option<BTreeSet<String>>>>,
 }
 
-/// 记住一份"看过"的删除候选，超过这个条数就不记（见 `seen` 的字段文档）。
+/// 大范围只缓存凭证清单，跳过额外的盘点副本。
 const SEEN_CAP: usize = 50_000;
 
-/// 有方向的键：`src>dst`。方向进键，见 `PreviewRegistry::seen`。
-fn dir_key(src: &Scope, dst: &Scope) -> String {
-    format!("{}>{}", src.key(), dst.key())
+fn dir_key(src: &Scope, dst: &Scope) -> (Scope, Scope) {
+    (src.clone(), dst.clone())
 }
 
 /// 一次性凭证。沿用子项目 1 的做法：随机数、不落盘、不进日志（`prev-` 前缀也是原来的形状）。
@@ -122,8 +104,14 @@ impl PreviewRegistry {
 
     /// **写**动作用它作废：任何与被写过的前缀有交集的清单都不再作数。
     pub async fn invalidate(&self, touched: &[Scope]) {
-        let mut map = self.inner.lock().await;
-        map.retain(|_, stored| !stored.scopes.iter().any(|s| touched.iter().any(|t| s.conflicts(t))));
+        self.inner.lock().await.retain(|_, stored| {
+            !stored.scopes.iter().any(|scope| touched.iter().any(|t| scope.conflicts(t)))
+        });
+        for ((src, dst), names) in self.seen.lock().await.iter_mut() {
+            if touched.iter().any(|t| src.conflicts(t) || dst.conflicts(t)) {
+                *names = None;
+            }
+        }
     }
 
     /// **发新预览**用它顶掉旧的：只按"scope 集合完全相同"删。
@@ -138,16 +126,31 @@ impl PreviewRegistry {
     }
 
     /// 记下一份"人在只读盘点里看过"的删除候选（**方向敏感**）。
-    /// 超上限的那一份不记，理由见 `seen` 的字段文档。
+    /// 超上限的清单和已作废的清单都需要显式预览。
     pub async fn remember_seen(&self, src: &Scope, dst: &Scope, doomed: BTreeSet<String>) {
-        if doomed.len() > SEEN_CAP {
-            return;
+        let key = dir_key(src, dst);
+        let mut seen = self.seen.lock().await;
+        if !matches!(seen.get(&key), Some(None)) {
+            let names = (doomed.len() <= SEEN_CAP).then_some(doomed);
+            seen.insert(key, names);
         }
-        self.seen.lock().await.insert(dir_key(src, dst), doomed);
+    }
+
+    pub(crate) async fn remember_preview(&self, src: &Scope, dst: &Scope, doomed: BTreeSet<String>) {
+        let names = (doomed.len() <= SEEN_CAP).then_some(doomed);
+        self.seen.lock().await.insert(dir_key(src, dst), names);
     }
 
     /// 取"人看过的那一份"当基准。**不消费** —— 它是缓存不是授权，取过还能再取。
     pub async fn peek_seen(&self, src: &Scope, dst: &Scope) -> Option<BTreeSet<String>> {
-        self.seen.lock().await.get(&dir_key(src, dst)).cloned()
+        self.seen.lock().await.get(&dir_key(src, dst)).cloned().flatten()
+    }
+
+    pub(crate) async fn require_review(&self, src: &Scope, dst: &Scope) {
+        self.seen.lock().await.insert(dir_key(src, dst), None);
+    }
+
+    pub(crate) async fn review_required(&self, src: &Scope, dst: &Scope) -> bool {
+        matches!(self.seen.lock().await.get(&dir_key(src, dst)), Some(None))
     }
 }

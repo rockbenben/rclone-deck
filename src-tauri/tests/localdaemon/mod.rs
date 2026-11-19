@@ -112,6 +112,7 @@ pub fn err_variant(e: &RcdError) -> &'static str {
         RcdError::SpawnFailed(_) => "SpawnFailed",
         RcdError::NotHealthy(..) => "NotHealthy",
         RcdError::Io(_) => "Io",
+        RcdError::HomeBusy(_) => "HomeBusy",
     }
 }
 
@@ -328,7 +329,13 @@ pub async fn setup_with_conf(
 pub async fn setup_with_conf_and_exclude(
     root: &Path, rclone_config: Option<PathBuf>, jobs: Vec<Job>, exclude: Vec<String>,
 ) -> (Runner, DaemonGuard) {
-    setup_full(root, rclone_config, jobs, exclude, vec![]).await
+    setup_full(root, rclone_config, jobs, exclude, vec![], false).await
+}
+
+pub async fn setup_with_hash_check(
+    root: &Path, rclone_config: PathBuf, jobs: Vec<Job>, exclude: Vec<String>,
+) -> (Runner, DaemonGuard) {
+    setup_full(root, Some(rclone_config), jobs, exclude, vec![], true).await
 }
 
 /// 与上面两个入口同体，只差 `flags` 那一串：它**同时**喂给 rcd 的启动参数与 runner 那份
@@ -339,14 +346,22 @@ pub async fn setup_with_conf_and_exclude(
 pub async fn setup_with_flags(
     root: &Path, jobs: Vec<Job>, flags: Vec<String>,
 ) -> (Runner, DaemonGuard) {
-    setup_full(root, None, jobs, vec![], flags).await
+    setup_full(root, None, jobs, vec![], flags, false).await
 }
 
 #[allow(clippy::too_many_arguments)]
 async fn setup_full(
     root: &Path, rclone_config: Option<PathBuf>, jobs: Vec<Job>,
-    exclude: Vec<String>, flags: Vec<String>,
+    exclude: Vec<String>, flags: Vec<String>, check_by_hash: bool,
 ) -> (Runner, DaemonGuard) {
+    let (handle, app, defaults, guard) = start_fixture(root, rclone_config, exclude, flags, check_by_hash).await;
+    (Runner::new(std::sync::Arc::new(handle), app, defaults, jobs), guard)
+}
+
+pub async fn start_fixture(
+    root: &Path, rclone_config: Option<PathBuf>, exclude: Vec<String>,
+    flags: Vec<String>, check_by_hash: bool,
+) -> (rclone_deck_lib::rcd::RcdHandle, AppConfig, Defaults, DaemonGuard) {
     let spec = RcdSpec {
         rclone_bin: PathBuf::from(rclone_bin()),
         port: *PORT,
@@ -359,10 +374,8 @@ async fn setup_full(
         log_level_debug: false,
     };
     let mut guard = DaemonGuard::before_start(&spec, root);
-    let handle = std::sync::Arc::new(
-        RcdSupervisor::start(spec.clone()).await
-            .unwrap_or_else(|e| panic!("rcd 起不来：{}", err_variant(&e))),
-    );
+    let handle = RcdSupervisor::start(spec.clone()).await
+        .unwrap_or_else(|e| panic!("rcd 起不来：{}", err_variant(&e)));
     guard.arm(handle.pid);
     let app = AppConfig {
         rclone_bin: PathBuf::from(rclone_bin()),
@@ -375,9 +388,66 @@ async fn setup_full(
         flags,
         exclude,
         log_dir: fwd(&root.join("logs")),
-        check_by_hash: false,
+        check_by_hash,
     };
-    (Runner::new(handle, app, defaults, jobs), guard)
+    (handle, app, defaults, guard)
+}
+
+/// Forward RC calls to this fixture's real daemon. The hook runs immediately
+/// before dispatch so tests can change the scratch tree after the Runner's checks.
+/// Returning false forwards the request and drops the response.
+pub async fn relay_fixture(
+    fx: &Fx, jobs: Vec<Job>, before_dispatch: impl Fn(&str, &str) -> bool + Send + Sync + 'static,
+) -> (Runner, DaemonGuard, tokio::task::AbortHandle) {
+    use rclone_deck_lib::rc::RcClient;
+    use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+
+    let (mut handle, app, defaults, guard) = start_fixture(
+        fx.root(), Some(fx.conf()), vec![], vec![], false,
+    ).await;
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+    let relay_port = listener.local_addr().unwrap().port();
+    let real_port = handle.port;
+    let auth = handle.secrets().to_vec();
+    handle.client = RcClient::new(relay_port, "fixture", "fixture");
+    let http = reqwest::Client::builder().no_proxy().build().unwrap();
+    let relay = tokio::spawn(async move {
+        while let Ok((connection, _)) = listener.accept().await {
+            let mut io = BufReader::new(connection);
+            let mut request = String::new();
+            if io.read_line(&mut request).await.unwrap() == 0 { continue; }
+            let method = request.split_whitespace().nth(1).unwrap().trim_start_matches('/');
+            let mut length = 0;
+            loop {
+                let mut header = String::new();
+                if io.read_line(&mut header).await.unwrap() == 0 || header == "\r\n" {
+                    break;
+                }
+                let Some((key, value)) = header.split_once(':') else { continue; };
+                if key.eq_ignore_ascii_case("content-length") {
+                    length = value.trim().parse::<usize>().unwrap();
+                }
+            }
+            let mut body = vec![0; length];
+            io.read_exact(&mut body).await.unwrap();
+            let forward_response = before_dispatch(method, std::str::from_utf8(&body).unwrap());
+            let response = http.post(format!("http://127.0.0.1:{real_port}/{method}"))
+                .basic_auth(&auth[0], Some(&auth[1]))
+                .header("content-type", "application/x-www-form-urlencoded")
+                .body(body).send().await.unwrap();
+            if forward_response {
+                let status = response.status().as_u16();
+                let body = response.bytes().await.unwrap();
+                let header = format!(
+                    "HTTP/1.1 {status} Fixture\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len(),
+                );
+                io.write_all(header.as_bytes()).await.unwrap();
+                io.write_all(&body).await.unwrap();
+            }
+        }
+    });
+    (Runner::new(std::sync::Arc::new(handle), app, defaults, jobs), guard, relay.abort_handle())
 }
 
 pub fn job(id: &str, kind: JobKind, src: &Path, dst: &Path) -> Job {

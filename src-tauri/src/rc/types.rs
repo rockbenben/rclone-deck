@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone, PartialEq, Eq)]
 pub struct SubmitAck {
     #[serde(rename = "executeId")]
     pub execute_id: String,
@@ -10,6 +10,8 @@ pub struct SubmitAck {
 #[derive(Debug, Deserialize, Clone)]
 pub struct JobStatus {
     pub id: i64,
+    #[serde(default, rename = "executeId")]
+    pub execute_id: String,
     pub group: String,
     pub finished: bool,
     pub success: bool,
@@ -17,6 +19,12 @@ pub struct JobStatus {
     pub error: String,
     #[serde(default)]
     pub duration: f64,
+}
+
+impl JobStatus {
+    pub(crate) fn matches_ack(&self, ack: &SubmitAck) -> bool {
+        self.id == ack.jobid && (ack.execute_id.is_empty() || self.execute_id == ack.execute_id)
+    }
 }
 
 /// `core/stats` 的完整字段集（实测枚举，spec §3.2）。
@@ -103,6 +111,14 @@ pub struct ListEntry {
     pub is_dir: bool,
 }
 
+#[derive(Debug, Deserialize)]
+pub(crate) struct InventoryEntry {
+    #[serde(rename = "Path")] pub path: String,
+    #[serde(rename = "IsDir")] pub is_dir: bool,
+    #[serde(default, rename = "Size")] pub size: serde_json::Value,
+    #[serde(default, rename = "ModTime")] pub mod_time: serde_json::Value,
+}
+
 /// `ListEntry` 那一族的**加料版**：多带一个 `ModTime`，只给"两边都有、想比是不是同一份"那一档用。
 ///
 /// 为什么不给 [`ListEntry`] 加字段：那一份是 gate 与浏览器两条链路的输入，`tests/gate.rs`
@@ -143,17 +159,15 @@ pub struct Sizes {
     #[serde(rename = "count")] pub count: u64,
 }
 
-/// `operations/check` 的真值在三个列表里，**不在 `error` 里**（F7：那里的 `error` 是数组）。
-/// 所以这个结构**不读 `error`**：读了就要决定"空数组算不算失败"，而答案是"那不是失败也不是成功"。
+/// `operations/check` 返回相对任务根的名字，`error` 列出读文件或计算哈希失败的条目。
 #[derive(Debug, Deserialize, Clone, Default)]
 pub struct CheckOutcome {
     #[serde(default, rename = "success")] pub success: bool,
     #[serde(default, rename = "missingOnSrc")] pub missing_on_src: Vec<String>,
     #[serde(default, rename = "missingOnDst")] pub missing_on_dst: Vec<String>,
     #[serde(default, rename = "differ")] pub differ: Vec<String>,
-    /// 用了哪一种哈希算出来的（rclone 自己挑两侧都支持的那一种，见 `fs.HashSet.Overlap().GetOne()`）。
-    /// **可能整个键缺失** —— 那就是说"没报"，不是"没有哈希可用"，两种要分得开
-    /// （`Option` 而不是 `String::new()`：空串会被读成"用的是空哈希"）。
+    #[serde(default, rename = "error")] pub errors: Vec<String>,
+    /// rclone 报告的共同哈希算法。没有共同算法时可能为 `none` 或不返回该字段。
     #[serde(default, rename = "hashType")] pub hash_type: Option<String>,
 }
 

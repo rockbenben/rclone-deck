@@ -37,17 +37,38 @@ expect_rejected() {
 }
 
 gh() {
-  [[ "$*" == "api repos/$repo/releases/assets/123 --jq .browser_download_url" ]] || return 1
-  printf '%s\n' "$fixture_asset_url"
+  if [[ "${1:-} ${2:-}" == "api repos/$repo/releases/assets/123" ]]; then
+    printf '%s\n' "$fixture_asset_url"
+    return 0
+  fi
+  if [[ "${1:-} ${2:-} ${3:-}" == "api --paginate repos/$repo/releases" ]]; then
+    printf '%s\n' "${fixture_release_assets:-123}"
+    return 0
+  fi
+  return 1
 }
 
 export -f gh
-export repo fixture_asset_url="$direct_url"
+export repo fixture_asset_url="$direct_url" fixture_release_assets
 
 write_feed "$direct_url" "$signature"
 verify
 write_feed "$api_url" "$signature"
 verify
+
+# 草稿 release：GitHub 在 draft=false 之前只给 untagged-<hash> 地址，tag 形态要发布之后才有
+untagged_url="${direct_url/"$tag"/untagged-436cb4e569d161a1116d}"
+fixture_asset_url="$untagged_url"
+write_feed "$api_url" "$signature"
+verify
+
+fixture_release_assets=999
+expect_rejected '不属于该标签的 release'
+fixture_release_assets=
+
+fixture_asset_url="${untagged_url/$name/rclone-deck_0.0.9_x64-setup.exe}"
+write_feed "$api_url" "$signature"
+expect_rejected '未指向该标签'
 fixture_asset_url="${direct_url/"$tag"/v0.1.0}"
 expect_rejected '未指向该标签'
 write_feed "https://example.com/$repo/releases/download/$tag/$name" "$signature"

@@ -28,8 +28,24 @@ if [[ "$url" == "$api_prefix"* ]]; then
   asset_id="${url#"$api_prefix"}"
   [[ "$asset_id" =~ ^[0-9]+$ ]] || fail 'latest.json 的 GitHub 资产 ID 无效'
   url="$(gh api "repos/$repo/releases/assets/$asset_id" --jq .browser_download_url)"
+else
+  asset_id=''
 fi
-[[ "$url" == "$canonical_url" ]] || fail 'latest.json 未指向该标签的 Windows x64 安装包'
+
+# 草稿 release 的资产地址拿 `untagged-<hash>` 当路径段：GitHub 要到 draft=false 之后才把它
+# 改回 `releases/download/<tag>/`。release job 建的就是草稿，所以这一步本来只会看到 untagged
+# 形态；只认 tag 形态等于让第一次发布永远红在这一行。草稿那种改判「这个资产 id 属于该标签的
+# release」——地址换了个路径段，指的是同一份产物。
+if [[ "$url" != "$canonical_url" ]]; then
+  [[ "$url" == "https://github.com/$repo/releases/download/untagged-"*"/$name" ]] ||
+    fail 'latest.json 未指向该标签的 Windows x64 安装包'
+  [[ -n "$asset_id" ]] || fail 'latest.json 指向的安装包没有资产 ID，核不了归属'
+  release_assets="$(gh api --paginate "repos/$repo/releases" \
+    --jq ".[] | select(.tag_name == \"$tag\") | .assets[].id")" ||
+    fail '读不到该标签 release 的资产列表'
+  grep -qx "$asset_id" <<<"$release_assets" ||
+    fail 'latest.json 指向的资产不属于该标签的 release'
+fi
 [[ -s "$dist/$name" && -s "$dist/$name.sig" ]] || fail '缺少 Windows x64 安装包或对应的 .sig'
 [[ "$signature" == "$(<"$dist/$name.sig")" ]] || fail 'latest.json 的签名与安装包 .sig 不一致'
 

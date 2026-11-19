@@ -43,6 +43,9 @@ rand = "0.10.3"
 # 而默认的 `wasmbind` 会给这个 Windows-only crate 的依赖图加 js-sys / wasm-bindgen。
 chrono = { version = "0.4.45", default-features = false, features = ["clock"] }
 
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_Threading"] }
+
 [dev-dependencies]
 futures = "0.3.34"
 tempfile = "3.27.0"

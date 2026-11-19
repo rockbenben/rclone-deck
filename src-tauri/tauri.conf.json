@@ -31,7 +31,11 @@
     "publisher": "top.aishort.rclone-deck",
     "icon": ["icons/icon.ico"],
     "windows": {
-      "nsis": { "installMode": "currentUser" }
+      "nsis": {
+        "installMode": "currentUser",
+        "languages": ["English"],
+        "displayLanguageSelector": false
+      }
     }
   },
   "plugins": {

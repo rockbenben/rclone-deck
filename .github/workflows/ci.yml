@@ -11,8 +11,8 @@
 #   · rust-cache 还是 v2、tauri-action 还是 v1 —— 这两个没有更新的 major。
 #     install-action 的 `cargo-audit` 标签与 `releases/cargo-audit` 分支指向同一个提交，
 #     换过去没有意义。
-#   · node-version 仍钉 24（不带 .x）：package.json 的 engines 要求 >=24，
-#     而"24 这一支的最新版"就是升级策略本身，26 出了也不跟着跳。
+#   · node-version 钉 26（Active LTS，2026-10-28 起）：package.json 的 engines
+#     仍保持 >=24 以兼容存量开发环境，CI 构建线统一对齐 Active LTS。
 name: CI
 
 on:
@@ -43,9 +43,9 @@ jobs:
 
       - uses: actions/setup-node@v7
         with:
-          # package.json 的 engines 要求 >=24，所以这里钉 24（**不带 .x**：
-          # 意思是"24 这一支的最新版"，26 出了也不会跟着跳）。
-          node-version: 24
+          # CI 对齐 Active LTS（Node 26，2026-10-28 起）。
+          # package.json engines 保持 >=24 兼容存量环境。
+          node-version: 26
           cache: npm
 
       # 官方源：npmmirror 这类镜像不实现 audit 端点（/-/npm/v1/security/* not implemented），
@@ -219,7 +219,7 @@ jobs:
 
       - uses: actions/setup-node@v7
         with:
-          node-version: 24
+          node-version: 26
           cache: npm
 
       - uses: dtolnay/rust-toolchain@stable
@@ -257,8 +257,8 @@ jobs:
     # 标签是唯一版本源：第一步先断言 tag 与 package/tauri/Cargo 一致，然后 tauri-action
     # 直接使用**推送的 tag** 建唯一草稿；不再用 v__VERSION__ 让 action 按配置版本命名
     # （那会让错位标签落到另一个 release 名下）。
-    # 测试门禁：frontend / rust 两条 job 全绿之后才启动这一条。
-    needs: [frontend, rust]
+    # 前端检查、Rust 测试与依赖审计通过后才出发布包。
+    needs: [frontend, rust, security]
     if: github.ref_type == 'tag' && startsWith(github.ref, 'refs/tags/v')
     runs-on: windows-latest
     # 建 release 要写权限：仓里默认给的是 `contents: read`（`permissions` 那块）。
@@ -269,7 +269,7 @@ jobs:
 
       - uses: actions/setup-node@v7
         with:
-          node-version: 24
+          node-version: 26
           cache: npm
 
       - name: 断言 tag 与三处版本一致
@@ -278,7 +278,10 @@ jobs:
           TAG: ${{ github.ref_name }}
         run: |
           set -euo pipefail
-          [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$ ]] || { echo "::error::$TAG 不是 vX.Y.Z"; exit 1; }
+          [[ "$TAG" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] || {
+            echo "::error::稳定发布只接受 vX.Y.Z 正式版标签"
+            exit 1
+          }
           v="${TAG#v}"
           pkg="$(node -p "require('./package.json').version")"
           conf="$(node -p "require('./src-tauri/tauri.conf.json').version")"
@@ -340,7 +343,7 @@ jobs:
     if: github.ref_type == 'tag' && startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     # 自动发布是本仓的显式取舍（.desktop-policy.json 的 release-auto-publish 有 reason/revisitWhen）；
-    # 测试门禁由 release.needs [frontend, rust] 保证。
+    # release 已等待前端检查、Rust 测试与依赖审计，并验证正式版标签。
     permissions:
       contents: write
       id-token: write
@@ -351,6 +354,13 @@ jobs:
       REPO: ${{ github.repository }}
       TAG: ${{ github.ref_name }}
     steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: 安装更新签名校验工具
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends minisign
       - name: 取回这一趟的草稿资产
         run: |
           set -euo pipefail
@@ -358,24 +368,8 @@ jobs:
           gh release download "$TAG" -R "$REPO" -D dist
       - name: 校验 updater feed 与 Windows 安装包
         run: |
-          set -euo pipefail
-          v="${TAG#v}"
-          jq -e --arg v "$v" '.version == $v' dist/latest.json
-          url="$(jq -r '.platforms["windows-x86_64"].url // empty' dist/latest.json)"
-          sig="$(jq -r '.platforms["windows-x86_64"].signature // empty' dist/latest.json)"
-          [ -n "$url" ] && [ -n "$sig" ] || { echo "::error::latest.json 缺 windows-x86_64 的 url/signature"; exit 1; }
-          # tauri-action 的 feed 历史上用过 API asset URL（/releases/assets/<id>），
-          # 不能只拿 basename 当文件名；两种形状都解析到真正的资产名再查盘。
-          if [[ "$url" == *"api.github.com/repos/"*"/releases/assets/"* ]]; then
-            asset_id="${url%%\?*}"; asset_id="${asset_id##*/}"
-            name="$(gh api "repos/${REPO}/releases/assets/${asset_id}" --jq .name)"
-          else
-            name="$(basename "${url%%\?*}")"
-          fi
-          [ -n "$name" ] && [ -f "dist/$name" ] || { echo "::error::feed 指向不存在的资产 $url"; exit 1; }
-          ls dist/*-setup.exe >/dev/null
-          ls dist/*.sig >/dev/null
-          echo "feed version=$v asset=$name"
+          bash tools/verify-release-assets.test.sh
+          bash tools/verify-release-assets.sh dist "$REPO" "$TAG" src-tauri/tauri.conf.json
       - name: 生成并上传 SHA256SUMS（LF）
         run: |
           set -euo pipefail
@@ -402,13 +396,13 @@ jobs:
           set -euo pipefail
           v="${TAG#v}"
           url="https://github.com/${REPO}/releases/latest/download/latest.json"
+          expected="$(jq -cS . dist/latest.json)"
           for i in $(seq 1 10); do
-            body="$(curl -fsSL "$url" 2>/dev/null || true)"
-            if [ -n "$body" ] && printf '%s' "$body" | jq -e --arg v "$v"               '.version == $v and (.platforms["windows-x86_64"].url != null)' >/dev/null; then
+            if actual="$(curl -fsSL "$url" 2>/dev/null | jq -cS . 2>/dev/null)" && [ "$actual" = "$expected" ]; then
               echo "anonymous latest.json version=$v"
               exit 0
             fi
             echo "latest.json 尚未就绪（第 ${i}/10 次），60 秒后重试"
             sleep 60
           done
-          echo "::error::10 分钟后匿名 latest.json 仍不是 $v"; exit 1
+          echo "::error::10 分钟后公开 latest.json 仍与已校验的 $v 清单不一致"; exit 1

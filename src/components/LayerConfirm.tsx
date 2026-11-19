@@ -21,6 +21,7 @@ export function LayerConfirm(props: {
   busy: boolean;
   preview: BrowserPreview | null;
   deletion: boolean;
+  wholeTree: boolean;
   /** 非空 = 这一次是改名来的，撞名之后要能就地换一个名字再来一遍。 */
   canRenameAgain: boolean;
   spent: boolean;
@@ -30,7 +31,7 @@ export function LayerConfirm(props: {
   onConfirm: () => void;
   onRenameAgain: () => void;
 }) {
-  const { open, busy, preview: p, deletion, canRenameAgain, spent, error } = props;
+  const { open, busy, preview: p, deletion, wholeTree, canRenameAgain, spent, error } = props;
   // 复核那一句与对齐那层共用开头半句（「确认之后后台会重新列一遍」），后半各说各自真做的事：
   // 这一层再看的是**那一个位置**现在有什么，不是拿一份逐条清单去比集合。
   // 旧写法是「再看一次那个位置」——"看一次"比"重新列一遍"弱，人会读成瞄一眼。
@@ -66,9 +67,9 @@ export function LayerConfirm(props: {
         ) : (
           <Alert type="warning" showIcon
             title={deletion ? '这一步不可撤销' : '源位置会空出来'}
-            description={recheck} />
+            description={wholeTree ? `${recheck} 清空授权涵盖这棵树。后台逐个删除清单里的文件，再移除已复核且仍为空的目录。` : recheck} />
         )}
-        {error && <Alert type="error" showIcon title="没改成" description={<NoteLine note={error} />} />}
+        {error && <Alert type="error" showIcon title="操作未完成" description={<NoteLine note={error} />} />}
         {p && <NoteLine note={p.filteredNote} tone="warning" />}
         {p && (
           <Table size="small" rowKey={(row) => row.name}

@@ -68,18 +68,17 @@ export function MirrorConfirm(props: {
         </Button>,
         <Button key="cancel" onClick={props.onCancel}>取消</Button>,
         <Button key="go" danger type="primary"
-          disabled={loading || (spent && preview !== null)}
+          disabled={loading || spent}
           onClick={() => props.onConfirm(job.id, preview?.token ?? null)}>
           {/* 三档话各说各的（默认那一档是"没有名单"）：
               · 没看过名单 —— 批的是**这一趟**，数还没列，所以这里**不编一个数**；
               · 看过名单 —— 说得出删多少、补多少，那颗红的亮着就是在说"这些名字我看过"；
               · 名单是空的 —— 照它跑一次，它同样要先过动手前那两道拒绝。
-              `spent` 只锁"看过名单"那一档：那份已经交出去了，再按只会拿到同一句拒绝；
-              没名单那一档没有陈旧可言 —— 再确认一次就是一份新凭证。
+              两种授权消费后都需要新的预览才能重试。
               两趟等待（列清单 / 按下去之后后台重列比对）都在这颗上说话：以前列举途中它写着
               「还没清单，先重新预览」，等于人家正在算的时候叫他再去按一颗。 */}
           {loading ? '正在核对清单…'
-            : spent && preview ? '这一份已经交出去了，要看新的名单就再预览一次'
+            : spent ? '这一份已经交出去了，要看新的名单就再预览一次'
             : !preview ? '照对齐跑（这一趟先核对一遍）'
             : preview.doomedCount === 0 ? '这一份没有要删的，照它跑一次'
             // 那个数读后台交出来的 `doomedCount`，不读数组长度：确认层显示上是按页截的，
@@ -113,9 +112,9 @@ export function MirrorConfirm(props: {
             // ——它说的是"我们还没量"，操作员对它做不了任何事。留下来的那半句是可行动的：
             // 挡不挡由那一趟自己说，而不是让人去猜那条线画得准不准。
             // 同一族的另一层（`LayerConfirm`）早就只说"照实报，它不是放行或挡住的依据"。
-            ? `还可能删掉若干空目录——清单只列文件。这次要删的占比 ${preview.doomedRatio}；要删的占到一半以上会被挡下，挡下的时候会说原因。`
-            : '还可能删掉若干空目录——清单只列文件。要删的占到一半以上会被挡下，挡下的时候会说原因。'} />
-        {error && <Alert type="error" showIcon title="没改成" description={<NoteLine note={error} />} />}
+            ? `这次要删的占比 ${preview.doomedRatio}。达到一半就会被挡下，后台会说原因。`
+            : '达到一半就会被挡下，后台会说原因。'} />
+        {error && <Alert type="error" showIcon title="对齐未完成" description={<NoteLine note={error} />} />}
         {!preview && (
           // 这一档必须自己把"你批的是什么"说完：没有名单不等于没有担保 ——
           // 动手前那两道拒绝（占比过半 / 这一侧空着）照旧在，而想看逐条名字有一条现成的路。
@@ -126,8 +125,7 @@ export function MirrorConfirm(props: {
           <Alert type="info" showIcon title="这一趟还没列逐条名单"
             description={<Space orientation="vertical" size={2} style={{ width: '100%' }}>
               <Typography.Text>
-                按下去之后，后台先把这两个位置各列一遍。
-                要删的占到一半以上，或者这一侧一个对象都没有，它就拒绝并说出为什么。
+                确认后先复核这两个位置。复制成功后才会逐个删除清单里的文件。空目录会保留。
               </Typography.Text>
               <Typography.Text type="secondary">
                 {job.lastSummary
@@ -144,7 +142,7 @@ export function MirrorConfirm(props: {
             </Space>} />
         )}
         {preview && preview.doomedCount === 0 && (
-          <Alert type="success" showIcon title="这两个位置现在是齐的，没有要删的东西。" />
+          <Alert type="success" showIcon title="这份清单没有要删除的文件。" />
         )}
         {preview && doomed.length > 0 && (
           // 分页列全，而不是"截断 + 其余去日志"：每一个名字都要在这层里**够得着**。
@@ -168,7 +166,7 @@ export function MirrorConfirm(props: {
             这里再复述一遍就是同一层里说两遍（DESIGN 文案第 1 条）。所以这一支不再摆第二句。 */}
         {preview && (
           <Typography.Text type="secondary">
-            确认之后后台会重新列一遍并逐条比对，跟这份对不上就不会动手。
+            确认之后后台会重新列一遍并逐条比对，跟这份对不上就不会动手。复制成功后才删这份清单里的文件，空目录会保留。
           </Typography.Text>
         )}
       </Space>

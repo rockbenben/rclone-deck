@@ -172,6 +172,11 @@ let mode: ThemeMode = typeof window === 'undefined' ? 'light' : storedMode();
 let current: ThemeName = resolveTheme(mode, systemDark());
 const subs = new Set<() => void>();
 
+function subscribe(cb: () => void) {
+  subs.add(cb);
+  return () => { subs.delete(cb); };
+}
+
 function apply(): void {
   current = resolveTheme(mode, systemDark());
   document.documentElement.dataset.theme = current;
@@ -187,11 +192,9 @@ if (typeof window !== 'undefined') {
 
 /** `[生效值, 选择, 改选择]`：画颜色读生效值，点亮那颗切换口读**选择**。 */
 export function useTheme(): [ThemeName, ThemeMode, (next: ThemeMode) => void] {
-  const value = useSyncExternalStore(
-    (cb) => { subs.add(cb); return () => { subs.delete(cb); }; },
-    () => current,
-  );
-  return [value, mode, (next: ThemeMode) => {
+  const value = useSyncExternalStore(subscribe, () => current);
+  const chosen = useSyncExternalStore(subscribe, () => mode);
+  return [value, chosen, (next: ThemeMode) => {
     mode = next;
     try {
       localStorage.setItem(STORE_KEY, next);

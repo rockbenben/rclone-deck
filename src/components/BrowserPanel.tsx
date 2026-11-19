@@ -37,6 +37,7 @@ interface Layer {
   preview: BrowserPreview | null;
   /** 这一份是在删东西（页脚那颗按钮要说对动词），还是在搬东西。 */
   deletion: boolean;
+  wholeTree: boolean;
   /** 非空 = 这一次是改名来的，撞名之后要能就地换一个名字再来一遍。 */
   renaming: { side: Side; src: string; typed: string } | null;
   /** token 已经被吃掉一次（动手前被拒也算）：这一份不能再按第二次。
@@ -53,7 +54,7 @@ const EMPTY_NOTE: ShortNote = { short: '', detail: '' };
  * 编排层：两栏的状态、跨栏的源（`picked`）、确认层与命名框都归这里。
  * 一栏长什么样在 `BrowserPane`，确认层长什么样在 `LayerConfirm` —— 这一面只决定"谁把什么交给谁"。
  */
-export function BrowserPanel() {
+export function BrowserPanel({ rootsRevision }: { rootsRevision: number }) {
   const { notification } = AntdApp.useApp();
   /** 与 `Panel.tsx` 那个同形状：标题是人话，正文才是原文（后台交出来的两段，见 `errNote`）。
    *  仍然走 `useApp()`，R57 那个 provider 形状没动。 */
@@ -87,7 +88,14 @@ export function BrowserPanel() {
   const [listErrors, setListErrors] = useState<Record<Side, ShortNote | null>>({ local: null, remote: null });
   // 动作跑完之后刷新两栏，用的是**当下**站的位置；回调里那份 `panes` 是这次点击开始时的旧副本。
   const panesRef = useRef(panes);
-  panesRef.current = panes;
+  const listRequests = useRef<Record<Side, number>>({ local: 0, remote: 0 });
+  const refsRequest = useRef(0);
+
+  const setPane = useCallback((side: Side, pane: PaneState) => {
+    const next = { ...panesRef.current, [side]: pane };
+    panesRef.current = next;
+    setPanes(next);
+  }, []);
 
   /** 动成了一次 = 上一次那句「没改成」就作废。少这一步，屏幕会在刚删完东西之后说什么都没改成。 */
   const commit = useCallback((side: Side, r: RunReport) => {
@@ -99,74 +107,57 @@ export function BrowserPanel() {
 
   const refused = useCallback((side: Side, reason: ShortNote) => setResult({ side, refusal: reason }), []);
 
-  const loadRefs = useCallback(() => {
-    setRefsLoading(true);
-    api.browserRemotes()
-      .then((r) => {
-        setRefs(r);
-        setRefsError(null);
-        // **默认看本地**（2026-10-11）：位置一到手，本地那一栏就自己站上去。
-        //
-        // 这一面多数时候不是"要比两栏"，就是"翻本地那一堆图片"——原来两栏都空着，
-        // 人得先想清楚挑哪个位置才看得见第一张图，而"翻文件夹"这件事本来不需要这一步。
-        // 站到**第一个**本地目录而不是"最近用过的那个"：这一面不记浏览历史（`prefs.ts`
-        // 那一节「偏好记，会动东西的选择记不得」管的是会改东西的选择，这里是只读的位置），
-        // 硬记一个反而多一份要维护的状态。
-        //
-        // 云端那一栏**不自动站**：左右比是可选动作，自动站上去等于替人挑了"要比谁"，
-        // 而挑错位置比多一次点击贵得多（挑错的那一栏列出来的东西会让人以为那就是云端）。
-        setPanes((p) => {
-          if (p.local.fs !== null) return p;      // 已经站过了，不动它
-          const first = r.find((x) => x.isLocal);
-          // 这一步只落 `fs`，**不直接列**：列要走 `go`（它才管错误那句话要留在屏上）。
-          // 所以真正的那一次列由下面那个 effect 在 refs 到位之后触发。
-          return first === undefined ? p : { ...p, local: { ...p.local, fs: first.id } };
-        });
-      })
-      // 两栏的端点都由后台交出，取不到就是没有：这里不猜，也不拿任务里那两条路径凑一份。
-      // 但"没问到"要说在屏幕上，并且留一条重新问一次的路。
-      .catch((e) => setRefsError(errNote(e)))
-      .finally(() => setRefsLoading(false));
-  }, []);
-
-  useEffect(() => { loadRefs(); }, [loadRefs]);
-
   /** 换位置 = 重新问一次那一层。列不出来要把原因留在原地，不许读成"这一层是空的"。 */
   const go = useCallback(async (side: Side, next: PaneState) => {
-    setPanes((p) => ({ ...p, [side]: { ...next, listing: null } }));
+    const request = ++listRequests.current[side];
+    const previous = panesRef.current[side];
+    if (previous.fs !== next.fs || previous.prefix !== next.prefix) {
+      setPicked((p) => p?.side === side ? null : p);
+    }
+    setPane(side, { ...next, listing: null });
+    setListErrors((p) => ({ ...p, [side]: null }));
     if (next.fs === null || next.fs === '') return;
     try {
       const listing = await api.browserList(next.fs, next.prefix);
-      setPanes((p) => ({ ...p, [side]: { ...next, listing } }));
-      setListErrors((p) => ({ ...p, [side]: null }));
+      if (request === listRequests.current[side]) setPane(side, { ...next, listing });
     } catch (e) {
-      // 后台那句原文（远端名打错的 500、点段那句）留在这栏杆上，清单那一格明确是空的。
-      // 两条都说一遍是有意的：栏上那句是"这一栏现在没有读数"的常驻解释，toast 是给
-      // 焦点在别处（另一栏、确认层里）的操作员的现场提示 —— 少任何一条都会让"列不出来"
-      // 与"这一层是空的"在界面上长成同一个样子。
+      if (request !== listRequests.current[side]) return;
       const note = errNote(e);
       setListErrors((p) => ({ ...p, [side]: note }));
-      setPanes((p) => ({ ...p, [side]: { ...next, listing: null } }));
       say(`${SIDE_TITLE[side]}那一栏列不出来`, note);
     }
-  }, [say]);
+  }, [say, setPane]);
+
+  const loadRefs = useCallback(async () => {
+    const request = ++refsRequest.current;
+    setRefsLoading(true);
+    try {
+      const roots = await api.browserRemotes();
+      if (request !== refsRequest.current) return;
+      setRefs(roots);
+      setRefsError(null);
+      const { local, remote } = panesRef.current;
+      if (!roots.some((root) => root.isLocal && root.id === local.fs)) {
+        const fs = roots.find((root) => root.isLocal)?.id ?? null;
+        if (fs !== local.fs) void go('local', { ...EMPTY_PANE, fs });
+      }
+      if (remote.fs !== null && !roots.some((root) => !root.isLocal && root.id === remote.fs)) {
+        void go('remote', EMPTY_PANE);
+      }
+    } catch (e) {
+      if (request === refsRequest.current) setRefsError(errNote(e));
+    } finally {
+      if (request === refsRequest.current) setRefsLoading(false);
+    }
+  }, [go]);
+
+  useEffect(() => { void loadRefs(); }, [loadRefs, rootsRevision]);
 
   /** 动过东西之后两栏都重新问一次：作废是后台的事，这里的清单只是它的一份副本。 */
   const reloadBoth = useCallback(async () => {
     const now = panesRef.current;
     await Promise.all([go('local', now.local), go('remote', now.remote)]);
   }, [go]);
-
-  /** 默认那一步的**列**：位置落定了但清单还是空的（`loadRefs` 只落 `fs`），
-   *  这里补上那一发。判据是"有位置、没清单、刚落的"——
-   *  已经列过一次（`listing` 有值）或操作员正在挑位置时都不该再发一次，
-   *  否则每换一个下拉框都会并发打两发远端列举。
-   */
-  useEffect(() => {
-    const p = panes.local;
-    if (p.fs === null || p.listing !== null || listErrors.local !== null) return;
-    void go('local', p);
-  }, [panes.local.fs, panes.local.listing, listErrors.local, go]);
 
   /** 不发凭证的动作（建目录、下载、上传）：跑完刷新两栏，结果落在那句报告里。 */
   const plain = useCallback(async (side: Side, label: string, fn: () => Promise<RunReport>) => {
@@ -186,10 +177,11 @@ export function BrowserPanel() {
 
   /** 打开确认层。**拒绝也要开层**：层没打开时，那句拒绝落进一个没挂载的地方，等于没有拒绝。 */
   const openLayer = useCallback(async (side: Side, make: () => Promise<BrowserPreview>, deletion: boolean,
-                                       renaming: { side: Side; src: string; typed: string } | null) => {
+                                       renaming: { side: Side; src: string; typed: string } | null,
+                                       wholeTree = false) => {
     setBusy(true);
     setLayerError(null);
-    const base: Layer = { side, make, preview: null, deletion, renaming, spent: false };
+    const base: Layer = { side, make, preview: null, deletion, wholeTree, renaming, spent: false };
     setLayer(base);
     try {
       setLayer({ ...base, preview: await make() });
@@ -224,6 +216,7 @@ export function BrowserPanel() {
       const note = errNote(e);
       setLayerError(note);
       refused(side, note);
+      await reloadBoth();
     } finally {
       setBusy(false);
     }
@@ -281,7 +274,7 @@ export function BrowserPanel() {
   const resultFor = (side: Side) => {
     if (result === null || result.side !== side) return null;
     if ('refusal' in result) {
-      return { tone: 'refused' as const, title: '没改成', detail: <NoteLine note={result.refusal} />, logPath: '' };
+      return { tone: 'refused' as const, title: '操作未完成', detail: <NoteLine note={result.refusal} />, logPath: '' };
     }
     const report = result.report;
     return {
@@ -374,15 +367,15 @@ export function BrowserPanel() {
         //
         // **只从本地那一侧联动**：反过来（先挑云端再挪本地）这时没有理由动本地 ——
         // 本地那栏往往已经站在操作员要看的那一处了。
-        const mate = refs.find((r) => r.id === fs)?.pairedWith;
-        if (side === 'local' && mate != null && mate !== '' && panesRef.current.remote.fs !== mate) {
+        const mate = pairedRemote(fs);
+        if (side === 'local' && mate != null && panesRef.current.remote.fs !== mate) {
           void go('remote', { ...EMPTY_PANE, fs: mate });
         }
       },
       onJump: (prefix: string) => {
         void go(side, { ...pane, prefix });
-        const mate = refs.find((r) => r.id === pane.fs)?.pairedWith;
-        const paired = side === 'local' && mate != null && mate !== ''
+        const mate = pairedRemote(pane.fs);
+        const paired = side === 'local' && mate != null
           && panesRef.current.remote.fs === mate;
         if (paired) { void go('remote', { ...panesRef.current.remote, prefix }); }
       },
@@ -391,8 +384,8 @@ export function BrowserPanel() {
         // **导航也联动**：两边配着的时候，往里走一层要**两边一起走**。
         // 只动一边的话，走两层之后就站在不同的深度上了 —— 而"同一层的本地 vs 同一层的
         // 云端"才是能比的那一档。配着（对面那栏有位置且这一面是本地）才跟。
-        const mate = refs.find((r) => r.id === pane.fs)?.pairedWith;
-        const paired = side === 'local' && mate != null && mate !== ''
+        const mate = pairedRemote(pane.fs);
+        const paired = side === 'local' && mate != null
           && panesRef.current.remote.fs === mate;
         if (paired) { void go('remote', { ...panesRef.current.remote, prefix: name }); }
       },
@@ -428,7 +421,7 @@ export function BrowserPanel() {
       },
       onPurge: () => {
         if (here === null || pane.listing === null || !pane.listing.canClearPrefix) return;
-        void openLayer(side, () => api.browserPreviewPurge(here, pane.prefix), true, null);
+        void openLayer(side, () => api.browserPreviewPurge(here, pane.prefix), true, null, true);
       },
       onRmdir: (row: BrowserEntry) => {
         if (here === null) return;
@@ -443,6 +436,10 @@ export function BrowserPanel() {
   // 「和云端比一比」那枚按钮的落点：第一个远端。后台已经把"列桶根对某些钥匙不存在"
   // 那一档挡在候选之外了（`browser_remotes` 的注释里记着那次实测），所以这里挑第一个即可。
   const firstRemote = refs.find((r) => !r.isLocal);
+  function pairedRemote(localId: string | null): string | undefined {
+    const mate = refs.find((r) => r.isLocal && r.id === localId)?.pairedWith;
+    return refs.find((r) => !r.isLocal && r.id === mate)?.id;
+  }
 
   /**
    * **单边 = 翻图，比对 = 并排**（2026-10-11 定下的形状）。
@@ -462,14 +459,8 @@ export function BrowserPanel() {
 
   return (
     <Space orientation="vertical" size={12} style={{ width: '100%' }}>
-      <Space size={8} wrap>
-        {/* 那句只说这一面是干什么的，**不指路**：那颗按钮就在它右边，指一次读者要多走一步
-            （DESIGN 的"指路也要挑时机"那条，与配对那一面「还没算过差异」同一口径）。 */}
-        <Typography.Text className="fs-note">
-          {comparing
-            ? '左右是同一个位置的两面：要动哪个名字就点哪个。删东西的那几颗先列清单，确认交出去的是一次性的凭证。'
-            : '看本地的文件与图片。'}
-        </Typography.Text>
+      <div className="workspace-heading">
+        <h1 className="workspace-title">{comparing ? '本地与远端对照' : '浏览本地文件'}</h1>
         {!comparing ? (
           // 点不动也要说得出为什么：没有远端位置时那颗是灰的，而屏上刚说过"看本地"，
           // 两句之间缺的就是"那为什么比不了"。句子是这一面自己判的（候选名单在手里），
@@ -477,7 +468,7 @@ export function BrowserPanel() {
           <LockHint title={noteTip(firstRemote === undefined
             ? plainNote('这台机器上还没有远端位置')
             : (busy ? plainNote('上一件事还没跑完') : EMPTY_NOTE))}>
-            <Button size="small" style={firstRemote === undefined || busy ? HIT_OFF : undefined}
+            <Button style={firstRemote === undefined || busy ? HIT_OFF : undefined}
               disabled={firstRemote === undefined || busy}
               onClick={() => {
                 // 进比对时**云端站到本地这一栏配对的那一头**（不是随便挑一个远端）——
@@ -486,10 +477,10 @@ export function BrowserPanel() {
                 // **前缀也要带上**：本地已经进到 `photos/` 而云端回根，两栏就不是同一层了；
                 // 屏上那句「左右是同一个位置的两面」会变成一句假话。没有配对时也一样带前缀：
                 // 至少两边说的是同一个深度，"那一层有没有这个子目录"才是能看的读法。
-                const mate = refs.find((r) => r.id === panes.local.fs)?.pairedWith;
+                const mate = pairedRemote(panes.local.fs);
                 void go('remote', {
                   ...EMPTY_PANE,
-                  fs: mate != null && mate !== '' ? mate : (firstRemote?.id ?? ''),
+                  fs: mate ?? firstRemote?.id ?? '',
                   prefix: panes.local.prefix,
                 });
               }}>
@@ -497,11 +488,11 @@ export function BrowserPanel() {
             </Button>
           </LockHint>
         ) : (
-          <Button size="small" onClick={() => void go('remote', { ...EMPTY_PANE, fs: null })}>
+          <Button onClick={() => void go('remote', { ...EMPTY_PANE, fs: null })}>
             不比了，回去看本地
           </Button>
         )}
-      </Space>
+      </div>
       {refsError !== null && (
         <Alert showIcon type="error" title="取不到可以打开的位置" description={
           <Space orientation="vertical" size={4}>
@@ -520,13 +511,13 @@ export function BrowserPanel() {
 
            `compact` 也只在单边时给：翻图时那族"动文件"的动作一个都用不上，占着半屏；
            进了比对才是搬东西的场合，那些动作正是那时才有用。 */}
-      <div style={{ display: 'flex', gap: 16, alignItems: 'flex-start' }}>
-        <div className="surface" style={{ flex: 1, minWidth: 0, padding: 12 }}>
+      <div className="browser-panes">
+        <div className="surface browser-pane">
           <BrowserPane {...viewFor('local')} {...actionsFor('local')}
             wide={!comparing} compact={!comparing} />
         </div>
         {comparing && (
-          <div className="surface" style={{ flex: 1, minWidth: 0, padding: 12 }}>
+          <div className="surface browser-pane">
             <BrowserPane {...viewFor('remote')} {...actionsFor('remote')} />
           </div>
         )}
@@ -537,10 +528,11 @@ export function BrowserPanel() {
         busy={busy}
         preview={p}
         deletion={layer?.deletion ?? true}
+        wholeTree={layer?.wholeTree ?? false}
         canRenameAgain={(layer?.renaming ?? null) !== null}
         spent={layer?.spent ?? false}
         error={layerError}
-        onRepreview={() => { if (layer) void openLayer(layer.side, layer.make, layer.deletion, layer.renaming); }}
+        onRepreview={() => { if (layer) void openLayer(layer.side, layer.make, layer.deletion, layer.renaming, layer.wholeTree); }}
         onCancel={closeLayer}
         onConfirm={() => void confirmLayer()}
         onRenameAgain={() => {

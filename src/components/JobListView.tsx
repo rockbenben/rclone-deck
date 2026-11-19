@@ -1,5 +1,5 @@
 import { Button, Dropdown, Listy, Select, Space, Tag, Typography } from 'antd';
-import { CloudUploadOutlined, DiffOutlined, FolderOpenOutlined, SwapOutlined, SyncOutlined } from '@ant-design/icons';
+import { ArrowDownOutlined, CloudUploadOutlined, DiffOutlined, FolderOpenOutlined, SwapOutlined, SyncOutlined } from '@ant-design/icons';
 import type { ReactNode } from 'react';
 import { useEffect, useRef, useState } from 'react';
 
@@ -12,7 +12,6 @@ import { canInventory, KIND_LABEL, runningHint } from '../types';
 // 颜色按**会不会删**给，不按 kind 给：同一对位置两种模式都摆得出来，"配对"本身没有危险程度，
 // 站在哪一格才有。值取自 CSS 变量，与 `theme.ts` 色板同名同值（组件里不写字面色值这条判据不动）。
 const MODE_VAR: Record<Mode, string> = { add: 'var(--ink-2)', mirror: 'var(--kind-warm)' };
-const INK = 'var(--ink-2)';
 
 /** 「只补，不删」那一档下面的一句，**挂在「看看会动什么」那颗的悬停上，不常驻在卡上**。
  *  它要说的话一个字没少（并排两颗时最容易按错的就是这两颗），但它说的是"这两颗的区别"，
@@ -118,19 +117,21 @@ const ICON = {
   folder: <FolderOpenOutlined />,
 };
 
-/** 那一对完整路径，**截中段**（`DESIGN.md` 的 Typography 那一条：「过长时截断中段并给 Tooltip 全文」）。
- *
- *  认家靠的是**尾巴那个目录名**。尾部截断把 `…\Local\Temp\d…` 留在屏上 —— 认不出是哪一家，
- *  而这一行存在的理由恰恰是"挑错一家靠全文认"（那一段钉名字撤不撤的判据）。
- *  三段纯 CSS：头是可缩可省略的那一段，箭头与尾钉住不缩，全值挂原生 `title`
- *  （与 `log-ellipsis` 同一个形状：那一格不许被收进浮层，规程 R68）。
- */
-function PairPath({ src, dst }: { src: string; dst: string }) {
+/** 源和目标各占一行，长路径可换行，避免在执行前漏看目录名。 */
+function PairPath({ src, dst, compare = false }: { src: string; dst: string; compare?: boolean }) {
   return (
-    <div className="fs-code path-line">
-      <span className="path-head" title={src}>{src}</span>
-      <span className="path-arrow">→</span>
-      <span className="path-tail" title={dst}>{dst}</span>
+    <div className="transfer-route">
+      <span className="route-node" aria-hidden="true"><FolderOpenOutlined /></span>
+      <div className="route-location">
+        <div className="route-label">{compare ? '基准位置' : '源位置'}</div>
+        <div className="fs-code path-head" title={src}>{src}</div>
+      </div>
+      <span className="route-direction" aria-hidden="true"><ArrowDownOutlined /></span>
+      <span className="route-node route-destination" aria-hidden="true"><FolderOpenOutlined /></span>
+      <div className="route-location">
+        <div className="route-label">{compare ? '核对位置' : '目标位置'}</div>
+        <div className="fs-code path-tail" title={dst}>{dst}</div>
+      </div>
     </div>
   );
 }
@@ -349,7 +350,7 @@ export function PairCell(props: Props & { choice: Choice }) {
       ...(job.isDraft ? [act('save', '存成常用（写进配置）', () => props.onSaveDraft(job), busy)] : []),
     ];
     return (
-      <Space wrap size={4}>
+      <Space wrap size={8}>
         {face.map((a) => {
           // 灰着的那颗必须说得出为什么（R54），而"为什么"有三个来源，优先级是：
           // ① 被别的任务占着（后台那句，它比这颗自己的说明更要紧——人此刻问的是"为什么点不动"）；
@@ -359,11 +360,10 @@ export function PairCell(props: Props & { choice: Choice }) {
           const why = (a.off && locked && lockedHint !== null)
             ? lockedHint
             : (a.hint ?? (a.off ? BUSY_NOTE : null));
-          // `HIT_OFF` 的条件是"这一颗挂着 Tooltip"，不是"它没有自己的说明"：
-          // Chromium 不给 disabled 控件派发 hover，少了那层让位，真鼠标悬停永远弹不出来。
+          // 禁用时让外层接收悬停。可操作的按钮保留点击和自身的说明。
           const btn = (
-            <Button size="small" type={a.strong ? 'primary' : 'default'}
-              style={why !== null ? HIT_OFF : undefined} disabled={a.off} onClick={a.run}>
+            <Button type={a.strong ? 'primary' : 'default'}
+              style={a.off && why !== null ? HIT_OFF : undefined} disabled={a.off} onClick={a.run}>
               {a.icon !== undefined && <span className="act-icon">{a.icon}</span>}
               {a.label}
             </Button>
@@ -384,7 +384,7 @@ export function PairCell(props: Props & { choice: Choice }) {
               })),
             }}
           >
-            <Button size="small">更多</Button>
+            <Button>更多</Button>
           </Dropdown>
         )}
       </Space>
@@ -430,7 +430,13 @@ export function PairCell(props: Props & { choice: Choice }) {
     return (
       // 这一块的类名是**验收驱动器读的锚点**：量它得有个不依赖文字的说法
       //（改名、换措辞都不该让那一格忽然量不到）。
-      <Space orientation="vertical" size={8} style={{ width: '100%' }} className="pairs-cell">
+      <Space orientation="vertical" size={14} style={{ width: '100%' }} className="pairs-cell">
+        <div className="workspace-heading">
+          <h2 className="pane-title">传输路径</h2>
+          {selectedId !== job.id && (
+            <Button size="small" type="link" onClick={() => onSelect(job.id)}>查看进度</Button>
+          )}
+        </div>
         {/* 这一格只交**完整那两条路径**。名字不在这里说（它在右列开头那一行），
             方向不在这里说（它在选择条上那枚框里），模式也不在这里说（它那枚框的字会变色）。 */}
         <PairPath src={job.src} dst={job.dst} />
@@ -458,19 +464,14 @@ export function PairCell(props: Props & { choice: Choice }) {
     const locked = job.lockedBy !== null;
     const lockedHint = runningHint(job);
     return (
-      <div
-        onClick={() => onSelect(job.id)}
-        style={{
-          cursor: 'pointer',
-          background: selectedId === job.id ? 'var(--sel-bg)' : undefined,
-        }}
-      >
-        <Space orientation="vertical" size={4} style={{ width: '100%' }}>
+      <div className="gate-task" data-selected={selectedId === job.id}>
+        <Space orientation="vertical" size={8} style={{ width: '100%' }}>
           <Space wrap size={4}>
-            <span>{job.name}</span>
+            <button type="button" className="gate-select" aria-pressed={selectedId === job.id}
+              onClick={() => onSelect(job.id)}>{job.name}</button>
             {locked && <Tag color="red">{lockedHint}</Tag>}
           </Space>
-          <PairPath src={job.src} dst={job.dst} />
+          <PairPath src={job.src} dst={job.dst} compare />
           {cellButtons(job, gatePrimary(job.id, busy || locked))}
         </Space>
       </div>
@@ -481,11 +482,20 @@ export function PairCell(props: Props & { choice: Choice }) {
   // 对账仍然一列摆开 —— 它是只读对账，不是"某一对位置的一格"，混进位置那枚下拉
   // 就等于把两种危险程度摆在同一个选择里。
   return (
-    <Space orientation="vertical" size={8} style={{ width: '100%' }}>
+    <Space orientation="vertical" size={18} style={{ width: '100%' }}>
       {shown !== undefined && renderCell(shown)}
+      {shown === undefined && (
+        <div className="workspace-empty">
+          <FolderOpenOutlined aria-hidden="true" />
+          <Typography.Text>还没有可传输的位置</Typography.Text>
+          <Typography.Text type="secondary" className="fs-note">
+            从上方添加两个位置后，就可以在它们之间传输。
+          </Typography.Text>
+        </div>
+      )}
       {gates.length > 0 && (
         <div className="cell-divider">
-          <Tag style={{ color: INK, background: 'transparent' }}>{KIND_LABEL.gate}</Tag>
+          <h2 className="pane-title">{KIND_LABEL.gate}</h2>
           <Listy<JobView> items={gates} rowKey={(j) => j.id} itemRender={renderGate} />
         </div>
       )}

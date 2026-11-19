@@ -63,20 +63,146 @@
 html, body, #root { height: 100%; margin: 0; }
 body { background: var(--canvas); color: var(--ink); font-family: "Segoe UI", "Microsoft YaHei", system-ui, sans-serif; }
 
-/* ---- 骨架：顶栏 → 视图切换 → 内容。内容区不再靠 `minHeight: 100vh` 撑，
-   撑出来的下半屏是**空的画布**，而"界面没画完"与"这一格还没跑过"在屏上长得一模一样。 ---- */
+.deck-shell { min-height: 100%; --workspace-gutter: clamp(16px, 3vw, 40px); }
+.deck-header {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px 32px;
+  padding: 13px var(--workspace-gutter);
+  background: var(--surface);
+  border-bottom: 1px solid var(--hairline);
+}
+.deck-brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 17px;
+  font-weight: 650;
+  color: var(--ink);
+}
+.deck-mark, .route-node {
+  display: grid;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  border-radius: var(--r-ctl);
+  color: var(--link);
+  background: var(--sel-bg);
+  font-size: 19px;
+}
+.deck-nav.ant-segmented { padding: 3px; }
+.deck-nav .ant-segmented-item-label { padding-inline: 13px; }
+.deck-nav .ant-segmented-item-selected { color: var(--link); }
+.deck-status .surface.bar {
+  padding: 7px var(--workspace-gutter);
+  border: 0;
+  border-bottom: 1px solid var(--hairline);
+  border-radius: 0;
+  background: var(--surface-muted);
+  box-shadow: none;
+}
+.deck-status .ant-alert { flex: 1 1 400px; min-width: 0; overflow-wrap: anywhere; }
+.deck-workspace {
+  box-sizing: border-box;
+  width: 100%;
+  max-width: 1536px;
+  margin-inline: auto;
+  padding: 24px var(--workspace-gutter) 32px;
+}
+.workspace-heading {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+}
+.workspace-title {
+  margin: 0;
+  font-size: 23px;
+  line-height: 1.35;
+  font-weight: 650;
+  color: var(--ink);
+}
+.settings-title { margin-bottom: 14px; }
+.settings-nav { display: flex; flex-wrap: wrap; gap: 12px; }
+.settings-nav a {
+  padding: 5px 11px;
+  border: 1px solid var(--hairline-strong);
+  border-radius: var(--r-ctl);
+  background: var(--surface);
+  color: var(--link);
+}
+.settings-nav a:hover { background: var(--sel-bg); }
+.settings-section { scroll-margin-top: 76px; }
+.pane-title { margin: 0; color: var(--ink); font-size: 15px; line-height: 22px; font-weight: 650; }
 
-/* 配对那一面：选择条横跨整窗，下面左格右列并排。
-   两栏仍然是 antd 的 `Layout hasSider`（`.ant-layout-sider` / `.ant-layout-content`）：
-   那一对类名是验收驱动器 `tools/ui-acceptance.mjs` 取左右两栏的锚点
-   （`openCardSelect` / `selectValue` / 右列首行那几处都按它们找）——
-   换成普通 div 能画出一样的画面，却会让那几百条断言一起找不到元素。骨架不动。 */
-.pairs-layout { display: flex; flex-direction: column; gap: 12px; }
-.pairs-split { gap: 12px; align-items: flex-start; }
-/* 两块卡片同高起手：以前右列空着时它塌成一条，左列却拖着一串文字，整屏看着像半张没画完。
-   下限压到 170 而不是更高 —— 右列在"还没跑过"时本来就只有一句话，撑到 300 只是把同一片空白
-   从画布搬进卡片里。 */
-.pairs-aside, .pairs-main { padding: 12px; min-height: 170px; }
+.pairs-layout { display: flex; flex-direction: column; gap: 14px; }
+.pairs-layout .pairs-split {
+  display: grid;
+  grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr);
+  gap: 14px;
+  align-items: start;
+}
+.pairs-split > .ant-layout-sider.pairs-aside,
+.pairs-split > .ant-layout-content.pairs-main {
+  box-sizing: border-box;
+  min-width: 0;
+  width: 100%;
+  max-width: none;
+  padding: 18px;
+}
+.task-context { display: grid; gap: 14px; }
+.task-context-heading { display: grid; gap: 3px; }
+.task-name { font-size: 13px; overflow-wrap: anywhere; }
+.task-context-body { min-width: 0; overflow-wrap: anywhere; }
+.task-context-body .ant-table-wrapper { overflow: auto; }
+.workspace-empty {
+  display: grid;
+  justify-items: start;
+  gap: 5px;
+  padding: 16px;
+  border: 1px dashed var(--hairline-strong);
+  border-radius: var(--r-ctl);
+  background: var(--surface-muted);
+}
+.workspace-empty > .anticon { font-size: 19px; color: var(--link); margin-bottom: 3px; }
+
+.transfer-route {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  column-gap: 12px;
+  padding: 12px;
+  border: 1px solid var(--hairline);
+  border-radius: var(--r-ctl);
+}
+.route-node { background: var(--surface-muted); color: var(--ink-2); font-size: 16px; }
+.route-destination { background: var(--sel-bg); color: var(--link); }
+.route-direction {
+  grid-column: 1 / -1;
+  justify-self: start;
+  display: grid;
+  place-items: center;
+  width: 36px;
+  height: 20px;
+  color: var(--link);
+  font-size: 12px;
+}
+.route-label { font-size: 12px; font-weight: 600; color: var(--ink-2); }
+.route-location .path-head, .route-location .path-tail {
+  color: var(--ink);
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.browser-panes { display: flex; align-items: flex-start; flex-wrap: wrap; gap: 14px; }
+.browser-pane { box-sizing: border-box; flex: 1 1 340px; min-width: 0; padding: 16px; }
+.browser-pane-heading { display: grid; gap: 4px; }
+.browser-position.ant-select { width: 190px; max-width: 100%; }
 
 /* 卡面按钮上的图标：装饰，紧挨着动作名。**不靠 margin 拉开距离** —— 图标与名字之间
    留出的那一格必须由 gap 管，所以它是一个 inline-flex 的小盒子，不带任何外边距：
@@ -90,44 +216,40 @@ body { background: var(--canvas); color: var(--ink); font-family: "Segoe UI", "M
 .consequence {
   background: var(--surface-muted);
   border-radius: var(--r-ctl);
-  padding: 6px 8px;
+  padding: 9px 12px;
 }
 
 /* 对账那一段与当前那一格之间的一道细线：两件事不是同一类（一个动东西、一个只读检查），
    光靠一个灰色小标签分开时，它读起来像上面那一格漏下来的一行字。 */
-.cell-divider { border-top: 1px solid var(--hairline); padding-top: 8px; }
+.cell-divider { border-top: 1px solid var(--hairline); padding-top: 14px; }
+.gate-task { padding: 10px; border-radius: var(--r-ctl); }
+.gate-task[data-selected="true"] { background: var(--sel-bg); }
+.gate-select {
+  padding: 4px 0;
+  color: var(--link);
+  font: inherit;
+  font-weight: 600;
+  text-align: start;
+  overflow-wrap: anywhere;
+  background: none;
+  border: 0;
+  cursor: pointer;
+}
+.gate-select:hover { text-decoration: underline; }
+.gate-select:focus-visible { outline: 2px solid var(--link); outline-offset: 3px; }
 
 /* 选择条那一行。两枚并排（模式与方向 2026-10-09 并成一枚「要做什么」），标签成列 ——
    标签在框左边时，窄了就会折成三段竖排文字。 */
-.pair-bar { align-items: flex-end; gap: 10px; }
-.pair-field { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
-.pair-select { min-width: 148px; }
-.pair-bar-act { margin-left: auto; }
+.bar.pair-bar { align-items: flex-end; gap: 12px; padding: 14px 18px; }
+.pair-field { display: flex; flex: 1 1 190px; flex-direction: column; gap: 5px; min-width: 0; }
+.pair-field:nth-child(2) { flex-grow: 1.4; }
+.pair-field > .fs-caption { font-size: 12px; font-weight: 600; color: var(--ink-2); }
+.pair-select.ant-select { width: 100%; }
+.pair-bar-act { flex: 0 0 auto; }
 
-/* 窄到左列 384px 会把右列压没的时候才上下堆叠。窗口默认 1100、最小 900，
-   所以断点取 980 而不是 1100 —— 写 1100 的话，正好 1100 宽的默认窗口会命中
-   （`max-width` 含端点），于是默认尺寸下反而是两栏变上下堆叠。
-   两处都写成两级选择器：antd 的 `.ant-layout-has-sider` 是**运行时注入**的
-   `.ant-layout { flex-direction: row }`，同特异度比不过它（谁后写谁赢），
-   一条 `.pairs-split { flex-direction: column }` 会被静默吃掉 —— 量出来的现象是
-   视口 900 时 `flexDirection` 仍然是 `row`。
-   Sider 那颗要连 `flex` 一起压：它在行向容器里是 `flex: 0 0 <宽>px`，
-   尺寸取自 flex-basis，只改 `width` 一点用都没有（第一次就踩了这个）。
-   还要把 `align-items` 放回 `stretch`：横向时我们用它让两块卡片各自贴顶（`flex-start`），
-   纵向堆叠时同一个属性管的是**横向**轴 —— `flex-start` 会把右列按最小内容宽度收，
-   于是"图床批量上传（夹具）"被挤成每行一个字（第二次才量出来的那一格）。 */
-@media (max-width: 980px) {
-  .pairs-layout .pairs-split { flex-direction: column; align-items: stretch; }
-  .pairs-layout .pairs-split > .ant-layout-sider,
-  .pairs-layout .pairs-split > .ant-layout-content {
-    flex: 0 0 auto !important;
-    align-self: stretch !important;
-    width: 100% !important;
-    max-width: 100% !important;
-  }
-  /* 堆叠时右列吃掉余下的高度（上面那块是内容多高的就多高）。
-     不钉的话 `flex: 0 0 auto` 让它只占自己那点高度，日志那一段一长就把整页撑得很长。 */
-  .pairs-layout .pairs-split > .ant-layout-content { flex: 1 1 auto !important; }
+@media (max-width: 760px) {
+  .pairs-layout .pairs-split { grid-template-columns: minmax(0, 1fr); }
+  .deck-status .bar-right { flex-wrap: wrap; margin-left: 0; }
 }
 
 /* 等宽族只写一次：数字、路径与日志尾巴共用。 */
@@ -167,18 +289,16 @@ code.ant-typography, .ant-typography code { font-size: 12px; line-height: 18px; 
 .bar-right .ant-typography-copy { position: relative; }
 .bar-right .ant-typography-copy::after { content: ''; position: absolute; inset: -5px -4px; }
 
-/* 那一对路径：三段式**截中段**。头可缩可省略，箭头与尾钉住 —— 认家靠的正是尾巴那个目录名，
-   尾部截断（antd 默认那个 `ellipsis`）会把它换成 `…\Local\Temp\d…`，这一行就白摆了。 */
+/* 浏览器位置栏保留路径末段的目录名。 */
 .path-line { display: flex; align-items: baseline; min-width: 0; }
 .path-head {
   flex: 0 1 auto; min-width: 0;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
-.path-arrow, .path-tail { flex: 0 0 auto; white-space: nowrap; }
-.path-tail { color: var(--ink-2); }
+.path-tail { flex: 0 0 auto; white-space: nowrap; color: var(--ink-2); }
 
 /* 日志目录那一串是全屏最长的东西：横着铺满会把「详情」挤到第二行。
-   尾部省略（一整条串，中段那套三段结构只用在 `PairPath` 上 —— 认家靠尾巴那个目录名才中截），
+   目录预览使用尾部省略，
    全值在原生 title 上（不是浮层——那一格不许被收起来，规程 R68）。 */
 .log-ellipsis {
   display: inline-block;

@@ -1,5 +1,5 @@
 import { Alert, Button, Divider, Select, Space, Table, Typography } from 'antd';
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import type { ReactNode } from 'react';
 
 import { Crumbs } from './Crumbs';
@@ -7,12 +7,13 @@ import { NoteLine, noteTip } from './NoteLine';
 import { HIT_OFF, LockHint } from './LockHint';
 import { ResultDock } from './ResultDock';
 import type { DockTone } from './ResultDock';
-import { ThumbCell, looksLikeImage } from './ThumbCell';
+import { ThumbCell } from './ThumbCell';
 import { plainNote } from '../errors';
-import { baseName, formatBytes } from '../format';
+import { baseName, classifyBrowserEntries, formatBytes } from '../format';
 import type { BrowserEntry, BrowserListing, ShortNote } from '../types';
 
 const TABLE_PAGE = 100;
+const EMPTY_ENTRIES: BrowserEntry[] = [];
 
 /** 网格一次摆多少格。200 是个折中：一屏满宽大约看 40–60 格，
  *  所以首批已经把整屏铺满还多留了几屏；再多只是白铺 DOM，再少会让人连点「再看」。 */
@@ -93,13 +94,12 @@ interface Act {
 export function BrowserPane(v: PaneProps) {
   const { listing, hints, clearNote } = v;
   const a: PaneActions = v;
-  const entries = listing?.entries ?? [];
+  const entries = listing?.entries ?? EMPTY_ENTRIES;
   // 网格只在**满宽且本地**那一档摆。半宽时一屏只放得下三四张、看下去要横着拖好几回，
   // 而并排比要的是"左右对同一行"；云端那一栏根本没有可摆的图（rc 上没有只读前若干字节的
   // 出口，理由写在 `ThumbCell` 与 `runner::browser` 上），摆出来就是一屏「看不了」。
-  const grid = v.wide === true && !v.isRemote
-    ? entries.filter((e) => !e.isDir && looksLikeImage(e.name)) : [];
-  const rest = grid.length > 0 ? entries.filter((e) => !grid.includes(e)) : entries;
+  const showGrid = v.wide === true && !v.isRemote;
+  const { grid, rest } = useMemo(() => classifyBrowserEntries(entries, showGrid), [entries, showGrid]);
   // 图片行被网格接走之后，表格里就没有它们那一行了 —— 而"改这一张 / 删这一张"是
   // 每一类对象都该有的一种处理。所以那一格点中之后的动作挂在动作条上（点中=要动的那个）。
   const picked = v.pickedName === null ? null : entries.find((e) => e.name === v.pickedName) ?? null;
@@ -184,14 +184,14 @@ export function BrowserPane(v: PaneProps) {
 
   return (
     <Space orientation="vertical" size={8} style={{ width: '100%' }}>
-      <div>
-        <Typography.Text strong>{v.title}</Typography.Text>
+      <div className="browser-pane-heading">
+        <h2 className="pane-title">{v.title}</h2>
         <Crumbs root={v.rootLabel} prefix={v.prefix} onJump={a.onJump} />
       </div>
       <Space wrap size={4}>
         {/* 没有占位句：框下面那一句「选一个位置，这一栏会列出那里有什么。」已经说了同一件事，
             而框本身空着就是"没选"的样子（DESIGN 文案第 1 条：同一屏幕同一件事只说一遍）。 */}
-        <Select popupMatchSelectWidth={false} style={{ minWidth: 170 }} value={v.fs ?? undefined}
+        <Select aria-label={`${v.title}位置`} popupMatchSelectWidth={false} className="browser-position" value={v.fs ?? undefined}
           onChange={(next: string) => a.onSelectPosition(next)}
           options={v.choices.map((r) => ({ label: r.label, value: r.value }))} />
         {listing && <PanePath path={listing.path} />}
@@ -237,9 +237,7 @@ export function BrowserPane(v: PaneProps) {
           </Space>
           {/* 收起来的那一族给一颗粒在行上：折叠起来不等于找不着。 */}
           {v.compact && !showMove && (
-            <Typography.Link className="fs-caption" onClick={() => setShowMove(true)}>
-              要新建、传输或删除这一层里的东西？
-            </Typography.Link>
+            <Button size="small" onClick={() => setShowMove(true)}>文件操作</Button>
           )}
           {v.compact && showMove && (
             <Space size={4} wrap>

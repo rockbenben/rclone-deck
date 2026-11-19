@@ -3,18 +3,8 @@ import { useEffect, useRef, useState } from 'react';
 
 import { previewLocalImage, previewPaneImage } from '../api';
 import { errNote } from '../errors';
+import { looksLikeImage } from '../format';
 import type { ShortNote } from '../types';
-
-/** 只认这一族扩展名，与后端 `IMAGE_EXTS` 同一张表（两边不一致就是"点得动但读不出"）。 */
-const IMAGE_EXTS = ['.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.avif'];
-
-/** 只认这一族扩展名，与后端 `IMAGE_EXTS` 同一张表（两边不一致就是"点得动但读不出"）。
- *  `export`：浏览面板把图片与非图片分开摆时要问同一句 —— 两处各写一张表，
- *  漂开的那一次是"有的进网格、有的进列表"，而人只会以为这是本来就那样。 */
-export const looksLikeImage = (name: string): boolean => {
-  const lower = name.toLowerCase();
-  return IMAGE_EXTS.some((e) => lower.endsWith(e));
-};
 
 /**
  * 一格缩略图。

@@ -1,5 +1,5 @@
 import { Alert, Button, Card, Input, Listy, Modal, Select, Space, Table, Typography } from 'antd';
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 
 import * as api from '../api';
@@ -149,8 +149,16 @@ export function SettingsPanel(props: {
   const [spent, setSpent] = useState(false);
   const [result, setResult] = useState<Applied | null>(null);
   const [busy, setBusy] = useState(false);
+  const attemptedLoad = useRef(false);
+  const newJobForm = useRef<HTMLDivElement>(null);
+  const showNewJob = props.active && view !== null && job?.isNew === true;
+
+  useEffect(() => {
+    if (showNewJob) newJobForm.current?.scrollIntoView({ block: 'start' });
+  }, [showNewJob, props.prefill]);
 
   const load = useCallback(async () => {
+    attemptedLoad.current = true;
     setBusy(true);
     try {
       const v = await api.settingsCurrent();
@@ -169,11 +177,10 @@ export function SettingsPanel(props: {
     }
   }, []);
 
-  // 只在这一面被点亮、且还没读过时读一次：那三条动作读的是磁盘文件与一次 rclone 探针，
-  // 不该跟着每秒一次的轮询跑。
+  // 首次进入时读取。失败后由「再读一次」发起新请求。
   useEffect(() => {
-    if (props.active && view === null && !busy) void load();
-  }, [props.active, view, busy, load]);
+    if (props.active && !attemptedLoad.current) void load();
+  }, [props.active, load]);
 
   const ask = useCallback(async (intent: ConfigIntent) => {
     setBusy(true);
@@ -260,7 +267,7 @@ export function SettingsPanel(props: {
 
   if (view === null) {
     return (
-      <Card title="改设置" className="surface">
+      <Card title="配置加载" className="surface">
         <Space orientation="vertical" size="small" style={{ width: '100%' }}>
           {/* 这一面第一次被点亮时要读两份文件、再 spawn 两次只读 rclone 探针（冷启动实测 2s 以上）。
               旧写法在**读的过程中**就摆着「再读一次」，看起来像已经失败了；用户会点它，
@@ -346,7 +353,12 @@ export function SettingsPanel(props: {
   if (jobDirty) unsaved.push(job !== null && job.isNew ? '新加的那一条' : `任务 ${job !== null ? job.id : ''}`);
 
   return (
-    <Space orientation="vertical" size="large" style={{ width: '100%' }}>
+    <Space orientation="vertical" size="middle" style={{ width: '100%' }}>
+      <nav aria-label="设置分区" className="settings-nav">
+        <a href="#settings-local">本机配置</a>
+        <a href="#settings-remotes">远端</a>
+        <a href="#settings-jobs">任务</a>
+      </nav>
       {/* 有事在跑时后台会拒下每一次保存，并把是哪一条说出来。这句写在最上面：
           让人填了半天才发现"现在不能改"，等于让人白填一次。 */}
       {view.running.length > 0 && (
@@ -369,7 +381,7 @@ export function SettingsPanel(props: {
         <Alert type="error" showIcon title="没改成" description={<NoteLine note={error} />} />
       )}
 
-      <Card title="这台机器上" className="surface">
+      <Card id="settings-local" title="本机配置" className="surface settings-section">
         <Space orientation="vertical" size="middle" style={{ width: '100%' }}>
           {/* 路径由后台交，界面只渲染（面板可以跑在别的家上，写死的那一句在夹具里就骗人）。
               两份文件各说各的话：以前只说一句「配置文件在 …」，指的却是面板自己那份，
@@ -425,7 +437,7 @@ export function SettingsPanel(props: {
         </Space>
       </Card>
 
-      <Card title="你的远端" className="surface">
+      <Card id="settings-remotes" title="远端" className="surface settings-section">
         <Space orientation="vertical" size="middle" style={{ width: '100%' }}>
           {/* 名字就是那份文件里有的那几段（后台只交段名，密钥的值在返回类型里就不存在）。
               段读不出来（坏了、或同名两段）时那句「这一栏列不出来」由后台带着原文来——
@@ -442,7 +454,7 @@ export function SettingsPanel(props: {
         </Space>
       </Card>
 
-      <Card title="任务" className="surface" extra={<Button size="small" disabled={job !== null || busy} onClick={addJob}>
+      <Card id="settings-jobs" title="任务" className="surface settings-section" extra={<Button size="small" disabled={job !== null || busy} onClick={addJob}>
         新加一条
       </Button>}>
         <Space orientation="vertical" size="middle" style={{ width: '100%' }}>
@@ -461,18 +473,20 @@ export function SettingsPanel(props: {
             </Space>
           )}
           {job !== null && job.isNew && (
-            <Card size="small" title="新加一条">
-              <Space orientation="vertical" size="small" style={{ width: '100%' }}>
-                {fromDraft && (
-                  // R97 那句实话：面板不热重载（这条是实测过的）。所以存完**当场**这一面还是那张
-                  // 临时卡，重开面板它才换成一张配对卡。不说这一句，人就以为按下保存那张卡就变了。
-                  <Alert type="info" showIcon
-                    title="这条是从刚才那张临时卡带过来的：存完之后跑的那一面还是那张临时卡，重开面板它才作为一张配对卡出现。" />
-                )}
-                <JobFields job={job} patch={patchJob} busy={busy}
-                  onSave={askJob} onCancel={() => { setJob(null); setFromDraft(false); }} />
-              </Space>
-            </Card>
+            <div ref={newJobForm} className="settings-section">
+              <Card size="small" title="新加一条">
+                <Space orientation="vertical" size="small" style={{ width: '100%' }}>
+                  {fromDraft && (
+                    // R97 那句实话：面板不热重载（这条是实测过的）。所以存完**当场**这一面还是那张
+                    // 临时卡，重开面板它才换成一张配对卡。不说这一句，人就以为按下保存那张卡就变了。
+                    <Alert type="info" showIcon
+                      title="这条是从刚才那张临时卡带过来的：存完之后跑的那一面还是那张临时卡，重开面板它才作为一张配对卡出现。" />
+                  )}
+                  <JobFields job={job} patch={patchJob} busy={busy}
+                    onSave={askJob} onCancel={() => { setJob(null); setFromDraft(false); }} />
+                </Space>
+              </Card>
+            </div>
           )}
         </Space>
       </Card>

@@ -1,4 +1,5 @@
-import { Segmented, Space, Typography } from 'antd';
+import { Segmented, Typography } from 'antd';
+import { FileTextOutlined } from '@ant-design/icons';
 
 import { GatePanel } from './GatePanel';
 import { InventoryPanel } from './InventoryPanel';
@@ -55,51 +56,55 @@ export function JobContextPanel({
   onRunInventory: () => void;
   onRunGate: () => void;
 }) {
-  if (job === null) {
-    return (
-      <Space orientation="vertical" size="middle" style={{ width: '100%' }}>
-        <Segmented value={tab} onChange={(v) => onTab(v as Tab)} options={TABS} />
-        <Typography.Text type="secondary" className="fs-note">先选一个任务。</Typography.Text>
-      </Space>
-    );
-  }
   // 这一段那两颗"现在就重算一次"的按钮与卡面上同一颗**共用同一道闸**：
   // 后台的 `run_gate` / `run_inventory` 第一件事就是申领那两棵树的锁，所以以前从右列点下去
   // 不是"能不能点"的问题，而是必然吃一条拒绝——而卡面那一颗是灰的、还写着谁挡着。
   // `lockedBy` 就是那份数据（`Runner::blocking_owner` 按 Scope 包含关系算出来的持有者名）。
-  const locked = job.lockedBy !== null;
-  const lockedHint = runningHint(job);
+  const locked = job !== null && job.lockedBy !== null;
+  const lockedHint = job === null ? null : runningHint(job);
   return (
-    <Space orientation="vertical" size="middle" style={{ width: '100%' }}>
-      <Typography.Text strong>{job.name}</Typography.Text>
-      <Segmented value={tab} onChange={(v) => onTab(v as Tab)} options={TABS} />
-      <div style={{ display: tab === 'progress' ? 'block' : 'none' }}>
-        <JobDetailPanel kind={job.kind} state={state} />
+    <section className="task-context" aria-labelledby="task-context-title">
+      <div className="task-context-heading">
+        <h2 id="task-context-title" className="pane-title">任务结果</h2>
+        {job !== null && <Typography.Text type="secondary" className="task-name">{job.name}</Typography.Text>}
       </div>
-      <div style={{ display: tab === 'diff' ? 'block' : 'none' }}>
-        <InventoryPanel report={inventory} loading={busy} off={locked} lockHint={lockedHint}
-          deletesLocal={job.dstIsLocal} jobId={job.id}
-          onRefresh={onRunInventory} />
-      </div>
-      <div style={{ display: tab === 'check' ? 'block' : 'none' }}>
-        <GatePanel report={gate} running={busy} off={locked} lockHint={lockedHint} onRun={onRunGate}
-          jobKind={job.kind} />
-      </div>
-      <div style={{ display: tab === 'log' ? 'block' : 'none' }}>
-        {/* 那一句以前停在"完整内容在日志文件里"就没了：日志**每次动作新开一个带时间戳的文件**
-            （`TaskLog::create`），所以那一格不指着哪一个文件，就等于没指。路径由后台交
-            （`tail_log` 为了读尾巴本来就把路径拿到了），界面不拼文件名；中段省略 + 原生
-            `title` 全文 + 复制入口，与顶栏那一格同一个形状（`DESIGN.md`：路径不是密码）。 */}
-        <Typography.Text type="secondary" className="fs-note">
-          {log !== null && log.logPath !== '' ? '最近这一段 · 完整内容在这个文件 ' : '最近这一段'}
-        </Typography.Text>
-        {log !== null && log.logPath !== '' && (
-          <Typography.Text className="num" copyable={{ text: log.logPath }}>
-            <span className="log-ellipsis" title={log.logPath}>{log.logPath}</span>
-          </Typography.Text>
-        )}
-        <pre className="log-tail">{log === null || log.text === '' ? '还没有日志。' : log.text}</pre>
-      </div>
-    </Space>
+      <Segmented block aria-label="任务结果" value={tab} onChange={(v) => onTab(v as Tab)} options={TABS} />
+      {job === null ? (
+        <div className="workspace-empty">
+          <FileTextOutlined aria-hidden="true" />
+          <Typography.Text type="secondary">先选一个任务。</Typography.Text>
+        </div>
+      ) : (
+        <div className="task-context-body">
+          <div style={{ display: tab === 'progress' ? 'block' : 'none' }}>
+            <JobDetailPanel kind={job.kind} state={state} />
+          </div>
+          <div style={{ display: tab === 'diff' ? 'block' : 'none' }}>
+            <InventoryPanel report={inventory} loading={busy} off={locked} lockHint={lockedHint}
+              deletesLocal={job.dstIsLocal} jobId={job.id}
+              onRefresh={onRunInventory} />
+          </div>
+          <div style={{ display: tab === 'check' ? 'block' : 'none' }}>
+            <GatePanel report={gate} running={busy} off={locked} lockHint={lockedHint} onRun={onRunGate}
+              jobKind={job.kind} />
+          </div>
+          <div style={{ display: tab === 'log' ? 'block' : 'none' }}>
+            {/* 那一句以前停在"完整内容在日志文件里"就没了：日志**每次动作新开一个带时间戳的文件**
+                （`TaskLog::create`），所以那一格不指着哪一个文件，就等于没指。路径由后台交
+                （`tail_log` 为了读尾巴本来就把路径拿到了），界面不拼文件名；中段省略 + 原生
+                `title` 全文 + 复制入口，与顶栏那一格同一个形状（`DESIGN.md`：路径不是密码）。 */}
+            <Typography.Text type="secondary" className="fs-note">
+              {log !== null && log.logPath !== '' ? '最近这一段 · 完整内容在这个文件 ' : '最近这一段'}
+            </Typography.Text>
+            {log !== null && log.logPath !== '' && (
+              <Typography.Text className="num" copyable={{ text: log.logPath }}>
+                <span className="log-ellipsis" title={log.logPath}>{log.logPath}</span>
+              </Typography.Text>
+            )}
+            <pre className="log-tail">{log === null || log.text === '' ? '还没有日志。' : log.text}</pre>
+          </div>
+        </div>
+      )}
+    </section>
   );
 }

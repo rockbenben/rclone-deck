@@ -1,8 +1,10 @@
 import { App as AntdApp, Layout, Segmented } from 'antd';
+import { CloudSyncOutlined, FolderOpenOutlined, SettingOutlined, SwapOutlined } from '@ant-design/icons';
 import { useCallback, useEffect, useRef, useState } from 'react';
+import type { ReactNode } from 'react';
 
 import * as api from './api';
-import { errNote, noteKey } from './errors';
+import { errNote, noteKey, plainNote } from './errors';
 import { BrowserPanel } from './components/BrowserPanel';
 import { JobContextPanel, TABS } from './components/JobContextPanel';
 import { JobListView, PairCell, usePairChoice } from './components/JobListView';
@@ -28,7 +30,7 @@ type View = 'pairs' | 'browser' | 'settings';
 
 /** 那三档的**名单只有一份**：Segmented 摆的是它，持久层校验存的也是它。
  *  两处各抄一份，下一档加进来就会有一处忘改 —— 那一处的症状是"存了却开不出来"。 */
-const FACES: { label: string; value: View }[] = [
+const FACES: { label: string; value: View; icon: ReactNode }[] = [
   // 2026-10-09 三个档位名一起换过，理由三条：
   //  * 「按配对同步」→「配好的位置」：「配对」是内部坐标系（`pairKey` / 配对卡），操作员从没
   //    在界面上见过"配对"这个东西；而「同步」是刚从这一族里撤走的词（`copy` 那一档叫「复制」、
@@ -40,9 +42,9 @@ const FACES: { label: string; value: View }[] = [
   //    （改设置）混在一排 segmented 里，读起来像三句不同的话。
   //  `value` 三个 token 一律不动：那是持久层存的值，改它等于让已经记住"上次停在哪一面"的人
   //  回到默认那一面。
-  { label: '配好的位置', value: 'pairs' },
-  { label: '浏览文件', value: 'browser' },
-  { label: '设置', value: 'settings' },
+  { label: '配好的位置', value: 'pairs', icon: <SwapOutlined /> },
+  { label: '浏览文件', value: 'browser', icon: <FolderOpenOutlined /> },
+  { label: '设置', value: 'settings', icon: <SettingOutlined /> },
 ];
 
 /**
@@ -105,11 +107,11 @@ export function Panel() {
   // 操作员就会对着两张卡按下一颗按钮。挑哪一格仍然由卡面那层自己说（见 `JobListView` 的 `pick`）。
   const [draftOpen, setDraftOpen] = useState(false);
   const [focusPair, setFocusPair] = useState<string | null>(null);
+  const [rootsRevision, setRootsRevision] = useState(0);
   // 「存成常用」带进设置面那张**已有的**「新加一条」表单的那一格（R97）。
   // 这里一份文件都不写：写得进那条路只有设置面那三条（读现状 / 要差异 / 带凭证落盘），
   // 多一条就是第二份确认流程，而两份确认流程迟早有一份忘记问人。
   const [prefill, setPrefill] = useState<JobDraft | null>(null);
-  const timer = useRef<number | null>(null);
   // 轮询失败的「已经报过」门（裁定 R57 第三条）：这一条 catch 每秒跑一次，不加门就是一句拒绝刷屏。
   // 门里存的是**上一次那句原因**而不是一个布尔：同一个原因每秒重复不许再喊，但原因换了
   // （还是读不到，错却变成另一个）就必须重新说一句——用布尔的那版只在轮询成功后重新武装，
@@ -120,16 +122,25 @@ export function Panel() {
    *  "正在连接后台…"，旁边还飘着一条说它失败的通知，同一屏上两句互相打脸。 */
   const [pollError, setPollError] = useState<ShortNote | null>(null);
 
-  const refresh = useCallback(async () => {
-    try {
-      const [s, j] = await Promise.all([api.rcdStatus(), api.getJobs()]);
-      setStatus(s);
+  const refreshRound = useCallback(async () => {
+    const statusRead = api.rcdStatus().then((value) => {
+      setStatus(value);
+      setPollError(null);
+      return value;
+    }, (error: unknown) => {
+      setPollError(errNote(error));
+      throw error;
+    });
+    const tasksRead = (async () => {
+      const j = await api.getJobs();
       setJobs(j);
       const next: Record<string, TaskState> = {};
-      await Promise.all(j.map(async (job) => {
+      const stateReads = await Promise.allSettled(j.map(async (job) => {
         // 状态**每个任务都要**：卡面那颗灰不灰、「正在写这棵目录树：X」那一句都读它。
         next[job.id] = await api.jobState(job.id);
       }));
+      const failed = stateReads.find((result) => result.status === 'rejected');
+      if (failed !== undefined) throw failed.reason;
       setStates(next);
       // 日志只读**选中那一个**：那一段尾巴只有右列用得上，而旧写法每一轮给每个任务
       // 都开一次文件读 8 KiB —— N 份文本里 N−1 份一次都没被看过（每秒都在付这个钱）。
@@ -139,26 +150,43 @@ export function Panel() {
         const tail = await api.tailLog(selectedId);
         setLogs((prev) => ({ ...prev, [selectedId]: tail }));
       }
-      // 跑完一轮就把原因清空：下一次失败无论同因还是换因，都该重新说一次。
+    })();
+    const [statusResult, tasksResult] = await Promise.allSettled([statusRead, tasksRead]);
+    const taskError = statusResult.status === 'fulfilled' && statusResult.value.ok && statusResult.value.alive
+      && tasksResult.status === 'rejected' ? errNote(tasksResult.reason) : null;
+    const note = statusResult.status === 'rejected' ? errNote(statusResult.reason) : taskError;
+    if (note === null) {
       lastPollError.current = null;
-      setPollError(null);
-    } catch (e) {
-      // 两段都要进比较键：只比 `short` 的话，两次不同位置的 403 会被当成同因吞掉第二次
-      // —— 而那正是这道门要防的反面（同因不刷屏，**换因要再说一次**）。
-      const note = errNote(e);
-      const reason = noteKey(note);
-      setPollError(note);
-      if (reason !== lastPollError.current) {
-        lastPollError.current = reason;
-        say('向后台要状态', note);
-      }
+      return;
+    }
+    const reason = noteKey(note);
+    if (reason !== lastPollError.current) {
+      lastPollError.current = reason;
+      say(statusResult.status === 'rejected' ? '向后台要状态' : '读取任务', note);
     }
   }, [say, selectedId]);
 
+  const latestRound = useRef(refreshRound);
+  const inFlight = useRef<Promise<void> | null>(null);
+  const refresh = useCallback(async () => {
+    // An explicit refresh waits for the old round, then shares one fresh round.
+    await inFlight.current;
+    if (inFlight.current === null) {
+      inFlight.current = latestRound.current().finally(() => { inFlight.current = null; });
+    }
+    await inFlight.current;
+  }, []);
+
   useEffect(() => {
+    latestRound.current = refreshRound;
     void refresh();
-    timer.current = window.setInterval(() => void refresh(), POLL_MS);
-    return () => { if (timer.current) window.clearInterval(timer.current); };
+  }, [refreshRound, refresh]);
+
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      if (inFlight.current === null) void refresh();
+    }, POLL_MS);
+    return () => window.clearInterval(timer);
   }, [refresh]);
 
   // 更新检查：默认**关着**（那一档存在 `src/updates.ts` 那一层里），所以这一段平时什么也不做。
@@ -175,10 +203,10 @@ export function Panel() {
     });
   }, [notification]);
 
-  const act = useCallback(async (
+  const act = useCallback(async <T,>(
     label: string,
-    fn: () => Promise<unknown>,
-  ): Promise<{ ok: boolean; value: unknown }> => {
+    fn: () => Promise<T>,
+  ): Promise<{ ok: true; value: T } | { ok: false }> => {
     setBusy(true);
     try {
       const value = await fn();
@@ -186,7 +214,8 @@ export function Panel() {
       return { ok: true, value };
     } catch (e) {
       say(label, errNote(e));
-      return { ok: false, value: undefined };
+      await refresh();
+      return { ok: false };
     } finally {
       setBusy(false);
     }
@@ -204,10 +233,27 @@ export function Panel() {
    *  操作员只看得见所有按钮一起变灰（`busy` 是全局的），而右栏还在讲上一张卡的事。
    *  操作员报的就是这个。`openInventory`/`openMirror` 本来就自己选中，
    *  它们不走这里（各自还要顺带翻右列那一面）。 */
-  const cardAct = useCallback((id: string, label: string, fn: () => Promise<unknown>, done?: (value: unknown) => void) => {
+  const cardAct = useCallback(<T,>(id: string, label: string, fn: () => Promise<T>, done?: (value: T) => void) => {
     setSelectedId(id);
     void act(label, fn).then((r) => { if (r.ok) done?.(r.value); });
   }, [act]);
+
+  const runTransfer = useCallback((id: string, dryRun: boolean) => {
+    const label = dryRun ? '试跑' : '传输';
+    cardAct(id, label, async () => {
+      const value = await api.runJob(id, dryRun);
+      setStates((prev) => ({ ...prev, [id]: value }));
+      return value;
+    }, (value) => {
+      if (isDone(value) && value.dry_run === dryRun) {
+        notifyDone(label, dryRun);
+      } else if (value.state === 'failed') {
+        say(label, value.error);
+      } else if (value.state === 'unknown') {
+        notification.warning({ message: `${label}结果未知`, description: value.reason, duration: 10 });
+      }
+    });
+  }, [cardAct, notification, notifyDone, say]);
 
   /** 对账的两个入口（卡上那颗 + 右列那一段里那颗）走**同一条路**：选中、把右列翻到「对账」那一段、跑。
    *  跑完不翻面等于把报告掉在看不见的第二段里：四段以前只有盘点那一段会自己翻（`openInventory`），
@@ -288,6 +334,7 @@ export function Panel() {
   const foldPair = useCallback((pairKey: string) => {
     void act('收起这张卡', async () => {
       await api.dropDraft(pairKey);
+      setRootsRevision((revision) => revision + 1);
       // 收完把"指哪一张"那条指令也撤了：同一对位置再立一次时拿的是同一把键，
       // 不撤就会因为"这张已经指过了"而不把右列指过去。
       setFocusPair(null);
@@ -300,95 +347,96 @@ export function Panel() {
   }, []);
 
   return (
-    <Layout style={{ minHeight: '100vh', padding: 16, gap: 16 }}>
-      {/* 顶栏是一条 chrome 带（`.surface .bar`），配置路径那句在它**里面**说：
-          起不来那一条与"改完重开面板就行"是同一件事，分成两块飘着像两条无关的通知。 */}
-      <RcdStatusBar status={status} pollError={pollError} />
-      {/* 不带 `block`：全宽那一条看着像列表的表头，不像"我在哪一面"。
-          档位名说的是**这一面是什么地方**，不是一个内部名词：「对子」是黑话，而「浏览器」
-          第一眼像网页浏览器。2026-10-09 把三个动宾短语换成三个地方名（`DESIGN.md` 词表那张表），
-          三个 `value` 一个字没动 —— 那是持久层存的值，改它等于让记住"上次停在哪一面"的人回到默认。 */}
-      <Segmented value={view} onChange={(v) => setView(v as View)} options={FACES} />
-      {/* 浏览器那一面必须是 AntdApp 的**后代**：`AntdApp.useApp()` 写在渲染 provider 的同一个组件里
-          拿到的是兜底上下文，每一条 message.error 会静默消失（见 App.tsx 里那条 R57 的形状）。 */}
-      {/* 两面都**一直挂着**，只用 display 切换：切回来还站在原来那一层。
-          浏览器那一面不轮询、也不在挂载之外自己发请求（端点列表只在挂载时问一次），
-          留着它不比藏起来更贵；而卸载重建会把操作员站的位置丢掉。 */}
-      <div style={{ display: view === 'pairs' ? 'block' : 'none' }} className="pairs-layout">
-        {/* 「选哪一对位置」横跨整窗，下面才是当前那一格与它的上下文。
-            以前这两件事挤在同一个 340px 的左列里，三枚框加三行标签一行也放不下，被折成三行 ——
-            一眼看过去像一张竖排的表，而它问的其实是"我在哪"。 */}
-        <JobListView
-          choice={choice}
-          jobs={jobs}
-          states={states}
-          selectedId={selectedId}
-          busy={busy}
-          onSelect={(id) => setSelectedId(id)}
-          onNewPair={() => setDraftOpen(true)}
-          focusPair={focusPair}
-          onSaveDraft={saveDraft}
-          onFoldPair={foldPair}
-          onTrialRun={(id) => cardAct(id, '试跑', () => api.runJob(id, true), (value) => {
-            if (isDone(value) && value.dry_run) notifyDone('试跑', true);
-          })}
-          onStart={(id) => cardAct(id, '传输', () => api.runJob(id, false), (value) => {
-            if (isDone(value) && !value.dry_run) notifyDone('传输');
-          })}
-          onPreviewMirror={openMirror}
-          onGate={runGate}
-          onInventory={openInventory}
-          onOpenDir={(id) => cardAct(id, '打开目录', () => api.openDir(id))}
-        />
-        <Layout hasSider className="pairs-split">
-          <Layout.Sider width={384} className="surface pairs-aside">
-            <PairCell
-              choice={choice}
-              jobs={jobs}
-              states={states}
-              selectedId={selectedId}
-              busy={busy}
-              onSelect={(id) => setSelectedId(id)}
-              onNewPair={() => setDraftOpen(true)}
-              focusPair={focusPair}
-              onSaveDraft={saveDraft}
-              onFoldPair={foldPair}
-              onTrialRun={(id) => cardAct(id, '试跑', () => api.runJob(id, true), () => notifyDone('试跑', true))}
-              onStart={(id) => cardAct(id, '传输', () => api.runJob(id, false), () => notifyDone('传输'))}
-              onPreviewMirror={openMirror}
-              onGate={runGate}
-              onInventory={openInventory}
-              onOpenDir={(id) => cardAct(id, '打开目录', () => api.openDir(id))}
-            />
-          </Layout.Sider>
-          <Layout.Content className="surface pairs-main">
-            <JobContextPanel
-              job={selected}
-              state={selectedId ? states[selectedId] : undefined}
-              log={selected ? logs[selected.id] ?? null : null}
-              inventory={selected ? inventory[selected.id] ?? null : null}
-              gate={selected ? gate[selected.id] ?? null : null}
-              busy={busy}
-              tab={railTab}
-              onTab={setRailTab}
-              onRunInventory={() => { if (selected) openInventory(selected.id); }}
-              onRunGate={() => { if (selected) runGate(selected.id); }}
-            />
-          </Layout.Content>
-        </Layout>
-      </div>
-      <div style={{ display: view === 'browser' ? 'block' : 'none' }}>
-        <BrowserPanel />
-      </div>
-      {/* 第三面：那两份文件。它不轮询，也不在挂载之外自己发请求（读一次 = 读两份文件 +
-          一次问 rclone 的只读探针），所以挂着不比藏起来更贵；切走再回来还站在原来那一格。
-          「打开这个目录」接的是卡上「打开所在目录」同一条通路：失败了由 `act` 念出
-          「打开目录失败 + 后台那句为什么」，而不是让这一面顶着一句不相干的「没改成」。 */}
-      <div style={{ display: view === 'settings' ? 'block' : 'none' }}>
-        <SettingsPanel active={view === 'settings'}
-          prefill={prefill}
-          onOpenFolder={() => void act('打开目录', () => api.openConfigFolder())} />
-      </div>
+    <Layout className="deck-shell">
+      <header className="deck-header">
+        <div className="deck-brand">
+          <span className="deck-mark" aria-hidden="true"><CloudSyncOutlined /></span>
+          <span>rclone-deck</span>
+        </div>
+        <nav aria-label="工作区">
+          <Segmented className="deck-nav" value={view} onChange={(v) => setView(v as View)} options={FACES} />
+        </nav>
+      </header>
+      <div className="deck-status"><RcdStatusBar status={status} pollError={pollError} /></div>
+      <main className="deck-workspace">
+        {/* 切换时保留浏览位置。新建或收起草稿后更新可选位置。 */}
+        <div style={{ display: view === 'pairs' ? undefined : 'none' }} className="pairs-layout">
+          <h1 className="workspace-title">传输与对账</h1>
+          {/* 「选哪一对位置」横跨整窗，下面才是当前那一格与它的上下文。
+              以前这两件事挤在同一个 340px 的左列里，三枚框加三行标签一行也放不下，被折成三行 ——
+              一眼看过去像一张竖排的表，而它问的其实是"我在哪"。 */}
+          <JobListView
+            choice={choice}
+            jobs={jobs}
+            states={states}
+            selectedId={selectedId}
+            busy={busy}
+            onSelect={(id) => setSelectedId(id)}
+            onNewPair={() => setDraftOpen(true)}
+            focusPair={focusPair}
+            onSaveDraft={saveDraft}
+            onFoldPair={foldPair}
+            onTrialRun={(id) => runTransfer(id, true)}
+            onStart={(id) => runTransfer(id, false)}
+            onPreviewMirror={openMirror}
+            onGate={runGate}
+            onInventory={openInventory}
+            onOpenDir={(id) => cardAct(id, '打开目录', () => api.openDir(id))}
+          />
+          <Layout hasSider className="pairs-split">
+            <Layout.Sider width="100%" className="surface pairs-aside">
+              <PairCell
+                choice={choice}
+                jobs={jobs}
+                states={states}
+                selectedId={selectedId}
+                busy={busy}
+                onSelect={(id) => {
+                  setSelectedId(id);
+                  setRailTab(choice.gates.some((job) => job.id === id) ? 'check' : 'progress');
+                }}
+                onNewPair={() => setDraftOpen(true)}
+                focusPair={focusPair}
+                onSaveDraft={saveDraft}
+                onFoldPair={foldPair}
+                onTrialRun={(id) => runTransfer(id, true)}
+                onStart={(id) => runTransfer(id, false)}
+                onPreviewMirror={openMirror}
+                onGate={runGate}
+                onInventory={openInventory}
+                onOpenDir={(id) => cardAct(id, '打开目录', () => api.openDir(id))}
+              />
+            </Layout.Sider>
+            <Layout.Content className="surface pairs-main">
+              <JobContextPanel
+                job={selected}
+                state={selectedId ? states[selectedId] : undefined}
+                log={selected ? logs[selected.id] ?? null : null}
+                inventory={selected ? inventory[selected.id] ?? null : null}
+                gate={selected ? gate[selected.id] ?? null : null}
+                busy={busy}
+                tab={railTab}
+                onTab={setRailTab}
+                onRunInventory={() => { if (selected) openInventory(selected.id); }}
+                onRunGate={() => { if (selected) runGate(selected.id); }}
+              />
+            </Layout.Content>
+          </Layout>
+        </div>
+        <div style={{ display: view === 'browser' ? 'block' : 'none' }}>
+          <BrowserPanel rootsRevision={rootsRevision} />
+        </div>
+        {/* 第三面：那两份文件。它不轮询，也不在挂载之外自己发请求（读一次 = 读两份文件 +
+            一次问 rclone 的只读探针），所以挂着不比藏起来更贵；切走再回来还站在原来那一格。
+            「打开这个目录」接的是卡上「打开所在目录」同一条通路：失败了由 `act` 念出
+            「打开目录失败 + 后台那句为什么」，而不是让这一面顶着一句不相干的「没改成」。 */}
+        <div style={{ display: view === 'settings' ? 'block' : 'none' }}>
+          <h1 className="workspace-title settings-title">设置</h1>
+          <SettingsPanel active={view === 'settings'}
+            prefill={prefill}
+            onOpenFolder={() => void act('打开目录', () => api.openConfigFolder())} />
+        </div>
+      </main>
       {previewJob && (
         <MirrorConfirm
           job={previewJob}
@@ -403,6 +451,7 @@ export function Panel() {
             try {
               // 没名单那一档：凭证要现登记（发起点只有这一处，两处就有两处话术）。
               finished = await api.runMirror(id, token ?? await api.confirmMirror(id));
+              setStates((prev) => ({ ...prev, [id]: finished }));
             } catch (e) {
               // 后台那句拒绝（清单变了 / 这份确认不作数 / 复核不过）要留在眼前这份清单上：
               // toast 自己会消失，而人正对着同一屏的清单决定要不要再来一次。
@@ -411,6 +460,13 @@ export function Panel() {
               // 再来一次的路只有「重新预览」。
               setPreviewSpent((p) => ({ ...p, [id]: true }));
               throw e;   // 仍然交给 act 报失败：那一条 toast 与 busy 的收尾是它管的。
+            }
+            setPreviewSpent((p) => ({ ...p, [id]: true }));
+            if (!isDone(finished)) {
+              setPreviewError(finished.state === 'failed' ? finished.error
+                : finished.state === 'unknown' ? plainNote('执行结果未知', finished.reason)
+                : plainNote('对齐未完成，请重新预览。'));
+              return finished;
             }
             closeMirror();
             // 这份确认已经交出去了（单次消费），留着它就是一份再也换不来任何东西的旧清单。
@@ -427,6 +483,7 @@ export function Panel() {
         onCreated={(pairKey) => {
           setDraftOpen(false);
           setFocusPair(pairKey);
+          setRootsRevision((revision) => revision + 1);
           void refresh();
         }} />
     </Layout>

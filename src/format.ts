@@ -1,3 +1,5 @@
+import type { BrowserEntry } from './types';
+
 /** 相对名的最后一段。清单行上的名字是**根内相对名**（`pics/2026/a.webp`），
  *  而界面上"这一层里有什么"那一格只该摆最后那一段 —— 前面那几段面包屑已经说过了。
  *  两处都要用（动作条算落点、网格那一格写名字），所以只写在这一处。 */
@@ -32,4 +34,24 @@ export function formatDuration(sec: number): string {
   if (h > 0) return `${h} 小时 ${m} 分`;
   if (m > 0) return `${m} 分 ${r} 秒`;
   return `${r} 秒`;
+}
+
+/** 与后台的图片扩展名列表一致，供缩略图和网格共用。 */
+const IMAGE_EXTS = ['.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.avif'];
+
+export function looksLikeImage(name: string): boolean {
+  const lower = name.toLowerCase();
+  return IMAGE_EXTS.some((ext) => lower.endsWith(ext));
+}
+
+export function classifyBrowserEntries(entries: BrowserEntry[], showGrid: boolean) {
+  const grid: BrowserEntry[] = [];
+  if (!showGrid) return { grid, rest: entries };
+
+  const rest: BrowserEntry[] = [];
+  for (const entry of entries) {
+    if (!entry.isDir && looksLikeImage(entry.name)) grid.push(entry);
+    else rest.push(entry);
+  }
+  return { grid, rest };
 }

@@ -9,10 +9,12 @@
 // 这里读 Chromium 自己写在 WebView2 用户目录里的 `DevToolsActivePort` 第一行。
 // 每次调用都重读一遍：面板重启后那个号会变，缓存的那一份就是下一次"连不上"的假象。
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 
-/** WebView2 那份用户目录的名字来自 `tauri.conf.json` 的 identifier（不是另抄一份应用名）。 */
-function portFile() {
+/** 夹具使用独立的 WebView2 配置目录，普通面板按 Tauri identifier 寻址。 */
+function portFile(fixtureDir) {
+  if (fixtureDir) return path.join(fixtureDir, 'webview', 'EBWebView', 'DevToolsActivePort');
   const conf = JSON.parse(fs.readFileSync(path.join(process.cwd(), 'src-tauri', 'tauri.conf.json'), 'utf8'));
   const id = conf.identifier ?? conf?.app?.identifier;
   if (!id) throw new Error('tauri.conf.json 里没有 identifier，认不出 WebView2 用户目录');
@@ -20,11 +22,12 @@ function portFile() {
   return path.join(local, id, 'EBWebView', 'DevToolsActivePort');
 }
 
-export function cdpPort() {
+export function cdpPort(fixtureDir) {
   const given = process.argv.find((a) => a.startsWith('--port='))?.split('=')[1]
     ?? process.env.DECK_CDP_PORT;
   if (given) return given;
-  const file = portFile();
+  const home = process.argv.find((a) => a.startsWith('--home='))?.slice('--home='.length).toUpperCase();
+  const file = portFile(fixtureDir ?? (home && path.join(os.tmpdir(), 'deck-ui-' + home)));
   let text = '';
   try {
     text = fs.readFileSync(file, 'utf8');
@@ -37,4 +40,4 @@ export function cdpPort() {
   return port;
 }
 
-export const cdpEndpoint = () => `http://127.0.0.1:${cdpPort()}/json/list`;
+export const cdpEndpoint = (fixtureDir) => `http://127.0.0.1:${cdpPort(fixtureDir)}/json/list`;

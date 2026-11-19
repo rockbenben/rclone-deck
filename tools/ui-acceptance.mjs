@@ -106,8 +106,10 @@ async function cellJob(rowKey) {
   if (rowKey !== undefined) await showPair(rowKey);
   const s = JSON.parse(String(await ev('(() => { const r=document.querySelector(".pairs-cell");'
     + 'if (!r) return JSON.stringify({ err: "当前那一格不在" });'
-    + 'const p=r.querySelector(".fs-code");'
-    + 'return JSON.stringify({ paths:p?p.textContent.trim():"" }); })()')));
+    + 'const route=r.querySelector(".transfer-route");'
+    + 'const src=route?.querySelector(".path-head")?.textContent;'
+    + 'const dst=route?.querySelector(".path-tail")?.textContent;'
+    + 'return JSON.stringify({ paths:src && dst ? src+"→"+dst : "" }); })()')));
   if (s.err) throw new Error(s.err);
   s.rail = await railHead();
   const flat = (x) => String(x).replace(/\\/g, '/').replace(/\s+/g, '');
@@ -154,15 +156,19 @@ async function connect() {
   // 驱动直接死在 fetch 上、什么读数都不留）。等它，而不是把一次启动当成失败。
   // 每一轮都重新问一次端口：那个号是系统挑的（见 `cdp-endpoint.mjs` 里为什么不能写死），
   // 面板重启还会换一次，缓存的那一份就是下一次"连不上"的假象。
-  let targets = null;
+  let page;
   let last = '';
   for (let i = 0; i < 40; i++) {
-    try { targets = await (await fetch(cdpEndpoint())).json(); break; }
-    catch (e) { last = String(e && e.message || e); await sleep(1000); }
+    try {
+      const targets = await (await fetch(cdpEndpoint(PROC.fx))).json();
+      page = targets.find((t) => t.type === 'page' && t.url && t.url !== 'about:blank'
+        && !t.url.startsWith('devtools://'));
+      if (page) break;
+      last = '夹具的 CDP 端口还没有应用页面';
+    } catch (e) { last = String(e && e.message || e); }
+    await sleep(1000);
   }
-  if (!targets) throw new Error('等 40 秒还是没有 CDP 端口：面板起来了吗？最后一次：' + last);
-  const page = targets.find((t) => t.type === 'page' && !t.url.startsWith('devtools://'));
-  if (!page) throw new Error('没有可驱动的页面');
+  if (!page) throw new Error('等 40 秒仍没连上夹具页面。最后一次：' + last);
   const ws = new WebSocket(page.webSocketDebuggerUrl);
   await new Promise((ok, bad) => { ws.onopen = ok; ws.onerror = bad; });
   let seq = 0;
@@ -423,12 +429,12 @@ async function pickPane(pane, optionText) {
  *  于是凡是要 `pickPane(1, ...)` 或 `waitListed()` 的步骤都必须先走这里 ——
  *  不走进来就红成「可见的位置选择器不足 2 个（总共 1 个）」，读着像界面坏了，
  *  其实那是尺子还按"这一面永远两栏"的老形状走路（整段 20 步一起红就是这么级联的）。
- *  幂等：已经在比对就什么都不做（顶栏那一句换成「左右是同一个位置的两面」，认它）。
+ *  已经进入比对时可以直接选位置。
  *  进比对之后两栏都不是 `compact`，那一族"动文件"的动作与「上一级」都在明面上，
  *  所以这里只负责把形状摆对，各步自己走自己的下一步。 */
 async function twoPanes() {
   await click('浏览文件', 'any'); await sleep(900);
-  const comparing = Number(await ev('document.body.innerText.includes("左右是同一个位置的两面") ? 1 : 0'));
+  const comparing = Number(await ev('document.querySelectorAll(".browser-pane").length === 2 ? 1 : 0'));
   if (comparing === 0) {
     await click('和云端比一比', 'any'); await sleep(1200);
   }
@@ -787,10 +793,6 @@ async function cardShape(rowKey) {
     // 所以 `note` 这一档量的是"屏上没有它"= 0；"悬停时它出现"由
     // `pair-card-one-per-position` 用真悬停量（量得到 Tooltip 弹层里那一句）。
     + ' note: txt.includes("只告诉你会动哪些") ? 1 : 0,'
-    // 这一格**不再有名字那一行**（撤的：它在两行之内复述「模式」与「方向」两枚框）。
-    // 它交出来的是那两条完整路径，读这一枚 `.fs-code` 而不是整格文字：整格里还有那颗
-    // 「正在写这棵目录树：…」的红标，它带着别的任务的名字（同一族教训见这里的历史版本）。
-    + ' paths: (() => { const p=r.querySelector(".fs-code"); return p ? p.textContent.trim() : ""; })(),'
     + ' warm: t ? getComputedStyle(t).color : "" }); })()')));
 }
 /** 当前那一格（临时卡那一头）的读数：整格文字、按钮那几颗、那句"试跑不动数据"在不在、
@@ -1466,13 +1468,13 @@ const STEPS = [
       const t0 = Date.now();
       for (;;) {
         const now = String(await ev('(() => document.body.innerText.replace(/\\s+/g," "))()'));
-        if (now.includes('这台机器上')) break;
+        if (now.includes('本机配置')) break;
         if (Date.now() - t0 > 40000) throw new Error('等 40 秒那一面还没读出来（现在屏上：' + now.slice(0, 160) + '）');
         await sleep(500);
       }
       log('WAIT-SETTINGS 那一面读出来等了 ' + (Date.now() - t0) + ' 毫秒');
       const t = await ev('document.body.innerText.replace(/\\s+/g," ")');
-      for (const w of ['这台机器上', '你的远端', '任务', PROC.remote, '已配置，不回显']) {
+      for (const w of ['本机配置', '远端', '任务', PROC.remote, '已配置，不回显']) {
         if (!t.includes(w)) throw new Error('少了一格：' + w);
       }
       if (t.includes('SENTINEL')) throw new Error('界面上出现了密钥值');
@@ -2773,27 +2775,9 @@ const STEPS = [
       //   连续跑 → 这一格站着 mirror-src        → 补上那 1 个 → 绿
       //   重开过 → 这一格站着 mirror-src-changed → 无可补     → 红（而那一趟删得完全正确）
       // 这一格量的应当是「远端 == **这一格当前**那个源」，与它站在谁身上无关。
-      // 全集取**卡上那一格**自己脸上的 `.fs-code` —— 那一处摆的就是这一格的 `src→dst`
-      // （`cellJob` 用的也是它）。不写死夹具里的目录，也不去正则确认层里的一句人话：
-      // 第 45 步 `settings-save-job-pairing` 会把这条任务的 src 改成 mirror-src-changed，
-      // 而面板**故意不热重载**（spec §2），所以它要等重启才生效 —— 连续跑与重开过两种编排
-      // 走的是两个不同的源，而这一格量的应当是「远端 == **这一格当前**那个源」，与它站在谁身上无关。
-      //
-      // （走过一段弯路：先改成从确认层正文里正则那句「这一趟把 X 修剪成 Y 那样」，
-      //   连着几版都不通 —— 而拿盘上那份读数离线验同一个正则又是通的。
-      //   与其继续在"层开着那一瞬间、层内 innerText 的确切形状"上赌，不如换这个本来就稳的锚点：
-      //   卡上那一格一直在屏上、不随层开关消失、而且有一份既有的读法。）
-      // 用**模板字面量**而不是单引号串：这段页面侧代码要跨行，而单引号串不能带换行
-      // （node --check 报的是 "Invalid or unexpected token"，指向这一行，读起来像表达式写坏了）。
-      const shown = String(await ev(`(function () {
-        const r = document.querySelector(".pairs-cell");
-        const p = r ? r.querySelector(".fs-code") : null;
-        if (!p) return "";
-        const arrow = (p.textContent || "").indexOf(String.fromCharCode(8594));
-        return arrow > 0 ? (p.textContent || "").slice(0, arrow).trim() : "";
-      })()`));
-      const srcDir = shown !== "" ? shown : PROC.fx + '/mirror-src';
-      log('MIRROR-RUN 卡上这一格的源是 ' + srcDir + '（从 .fs-code 读的，不是写死的那个目录）');
+      const srcDir = String(await ev('document.querySelector(".pairs-cell .transfer-route .path-head")?.textContent.trim() || ""'));
+      if (srcDir === '') throw new Error('对齐后没有读到传输路径的源位置');
+      log('MIRROR-RUN 卡上这一格的源是 ' + srcDir);
       const src = walkFiles(srcDir).map((p) => path.basename(p)).sort();
       log('MIRROR-RUN 删之前=' + JSON.stringify(before) + ' 删之后=' + JSON.stringify(after) + ' 全集=' + JSON.stringify(src));
       if (JSON.stringify(after) !== JSON.stringify(src)) {

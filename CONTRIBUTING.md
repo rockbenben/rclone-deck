@@ -7,7 +7,7 @@
 
 | 东西 | 版本 | 为什么是它 |
 | --- | --- | --- |
-| Node | **≥ 24**（CI 跑 24） | `package.json` 的 `engines` 钉的下限，也是 CI 验的那一支 |
+| Node | **≥ 24**（CI 跑 26） | `package.json` 声明最低版本，`.nvmrc` 与 CI 使用 26 |
 | Rust | stable，带 clippy | 由 [rust-toolchain.toml](rust-toolchain.toml) 钉住，`cargo` 会自己装 |
 | rclone | 本机装好的 v1.75.1 | 测试起的是**真** `rclone rcd`，不是 mock |
 | WebView2 | Windows 10/11 自带 | Tauri 2 的 WebView |
@@ -57,6 +57,8 @@ node tools/ui-acceptance.mjs --home=A --from=0 --to=20 --out=docs/superpowers/ev
 它在**真窗口**里逐动作走一遍，每屏一张 PNG 加一行 DOM 读数，判定必须读 `<out>/readings.txt` 而不是 stdout（含中文的行会被终端回显吞掉，`Read` 那个文件是唯一可信的读法）。
 
 接不进 CI 的原因是硬的：它要一个起着的面板（CDP）、一个本地临时夹具家（`%TEMP%\deck-ui-A` / `-B`），而这两样都活在这台机器上，远端名又按夹具家写成 `fxa` / `fxb`。先按 `tools/ui-launch.cmd` 的规矩起面板（`RCLONE_DECK_HOME` 必须写在启动命令自己的环境里，见 `evidence/acceptance.md` 记的那两次误启动）。
+
+重开验收前，请用 `tools\ui-launch.cmd B src-tauri\target\release\rclone-deck.exe` 启动对应夹具并完成主跑。启动器在夹具目录记录面板 PID、启动时间与可执行文件路径，重开时核对三项后请求关闭窗口。每套夹具在自己的 `webview` 目录保存界面偏好和 CDP 端口。用其他 CDP 工具连接夹具窗口时，传入对应的 `--home=A` 或 `--home=B`。
 
 **跑它之前有三个坑（2026-10-09 每一个都踩了）：**
 
@@ -167,12 +169,12 @@ node tools/ui-acceptance.mjs --home=A --from=0 --to=20 --out=docs/superpowers/ev
 
 | job | 跑在哪 | 什么时候 | 装什么 |
 | --- | --- | --- | --- |
-| `frontend` | windows-latest | 每个 push / PR | Node 24 + `npm ci` |
+| `frontend` | windows-latest | 每个 push / PR | Node 26 + `npm ci` |
 | `rust` | windows-latest | 每个 push / PR | Rust + **rclone**（五条测试目标要起真后台） |
 | `security` | ubuntu-latest | 每个 push / PR | `cargo-audit` |
 | `bundle` | windows-latest | 推 main / 手动 | 出 NSIS 安装包并传成 artifact |
-| `release` | windows-latest | 打 `v*` 标签 | 出安装包与更新包，建一个草稿 |
-| `publish` | ubuntu-latest | 打 `v*` 标签、`release` 成功后 | 校验 feed/资产、LF `SHA256SUMS`、attestation；发布并匿名核验 |
+| `release` | windows-latest | 正式版标签 `vX.Y.Z`，前端检查、Rust 测试和依赖审计通过后 | 出安装包与更新包，建一个草稿 |
+| `publish` | ubuntu-latest | `release` 成功后 | 校验 feed/资产、LF `SHA256SUMS`、attestation；发布并匿名核验 |
 
 两点说明：
 

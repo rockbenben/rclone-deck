@@ -4,7 +4,7 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE) [![365 开源计划 #041](https://img.shields.io/badge/365%20%E5%BC%80%E6%BA%90%E8%AE%A1%E5%88%92-%23041-1f6feb)](https://github.com/rockbenben/365opensource)
 
-[⬇ 下载安装包（Windows x64）](https://github.com/rockbenben/rclone-deck/releases/latest) · [版本记录](https://github.com/rockbenben/rclone-deck/releases)
+[⬇ 下载安装包](https://github.com/rockbenben/rclone-deck/releases/latest) · [版本记录](https://github.com/rockbenben/rclone-deck/releases)
 
 ![配好的位置那一面](docs/images/pairs-face.webp)
 
@@ -14,8 +14,9 @@
 
 | 方面 | 范围 |
 | --- | --- |
-| GitHub 安装包 | Windows 10 / 11（x64） |
-| 源码运行 | Windows、macOS、Linux（内核 5.3+）。Linux 桌面打开目录需要 `xdg-open`。 |
+| Windows | Windows 10 / 11，x64 或 ARM64 选对应的 NSIS `-setup.exe` |
+| macOS | Intel 或 Apple Silicon，选对应的 `.dmg` |
+| Linux | x64 或 ARM64，选对应的 `.AppImage`、`.deb` 或 `.rpm`。需要 Linux 5.3+ 和支持 WebKitGTK 4.1 的发行版 |
 | 要先装 | rclone（实测用的 v1.75.1）。面板自己把它跑起来当后台，你不用开命令行 |
 | 网盘 | rclone 支持哪家就能用哪家（S3 / R2 / WebDAV / 本地文件夹……）。密钥你自己在 rclone 里配，它不管 |
 | 界面语言 | 只有中文。所以这里也只放一份中文 README |
@@ -39,11 +40,15 @@
 4. 按「看差异」，看清要动的是哪些名字。第一次跑建议就停在这儿。
 5. 觉得对了再按「开始」。要删东西得把「要做什么」换成「让两边对齐（会删）」，那一档会先开一个确认层把这一趟的范围与方向复述给你；要看逐条名字，按层里那颗「重新预览」。
 
-装的是没做代码签名的包，Windows 会弹「未知发布者」；不想凭信任接受就自己编一份——闸门和构建步骤见 [CONTRIBUTING.md](CONTRIBUTING.md)。
+Windows 安装包未做代码签名，首次运行可能提示「未知发布者」。macOS 采用 ad-hoc 签名，尚未公证。确认来源可信后，可在 macOS「系统设置 → 隐私与安全性」里选择「仍要打开」。发布附件的摘要见对应 Release 的 `SHA256SUMS`。
+
+首次运行 AppImage 前，用 `chmod +x <下载的文件>` 赋予执行权限。如果系统没有 FUSE，可用 `APPIMAGE_EXTRACT_AND_RUN=1 ./<下载的文件>` 启动。
+
+「设置 → 版本与更新」的自动检查默认关闭。下载和安装更新需要主动确认，macOS 和 Linux 安装完成后请退出再打开面板。`.app.tar.gz` 和 `.sig` 由更新器使用，macOS 首装选 `.dmg`。
 
 跑完想查账：顶栏「详情」里能打开日志目录，每一趟一份。
 
-macOS 和 Linux 可在安装 Tauri 的系统依赖后，用 `npm ci` 和 `npm run tauri dev` 从源码启动。macOS 默认将配置和运行记录放在 `~/Library/Application Support/rclone-deck`。Linux 默认将 `jobs.toml` 放在 `$XDG_CONFIG_HOME/rclone-deck`，日志和后台记录放在 `$XDG_DATA_HOME/rclone-deck`，未设这两个变量时分别使用 `~/.config` 和 `~/.local/share`。设定绝对路径 `RCLONE_DECK_HOME` 可以将面板的配置和运行记录放在同一目录。
+macOS 默认将配置和运行记录放在 `~/Library/Application Support/rclone-deck`。Linux 默认将 `jobs.toml` 放在 `$XDG_CONFIG_HOME/rclone-deck`，日志和后台记录放在 `$XDG_DATA_HOME/rclone-deck`，未设这两个变量时分别使用 `~/.config` 和 `~/.local/share`。设定绝对路径 `RCLONE_DECK_HOME` 可以将面板的配置和运行记录放在同一目录。Linux 桌面打开目录需要 `xdg-open`。
 
 macOS 面板退出或崩溃时，由拥有该子进程的守护器收尾。如果守护器也被强制终止并留下 rclone，面板会提示手动结束该后台进程。
 

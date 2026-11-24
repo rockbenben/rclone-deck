@@ -17,7 +17,7 @@
 ```powershell
 npm install                 # 前端依赖（package-lock.json 是准的）
 npm run tauri -- dev        # 起开发面板
-npm run tauri build         # 出安装包：src-tauri/target/release/bundle/nsis/
+npm run tauri build         # 当前系统的安装包位于 src-tauri/target/release/bundle/
 ```
 
 ## 闸门
@@ -173,13 +173,13 @@ node tools/ui-acceptance.mjs --home=A --from=0 --to=20 --out=docs/superpowers/ev
 | `rust` | windows-latest | 每个 push / PR | Rust + **rclone**（五条测试目标要起真后台） |
 | `portable-rust` | macos-latest / ubuntu-22.04 | 每个 push / PR | 源码构建、原生配置和后台回归。Linux 另起真实 rclone |
 | `security` | ubuntu-latest | 每个 push / PR | `cargo-audit` |
-| `bundle` | windows-latest | 推 main / 手动 | 出 NSIS 安装包并传成 artifact |
-| `release` | windows-latest | 正式版标签 `vX.Y.Z`，前端检查、Rust 测试和依赖审计通过后 | 出安装包与更新包，建一个草稿 |
+| `bundle` | windows-latest | 推 main / 手动 | 出供检查的 NSIS 安装包，不用更新签名密钥 |
+| `release` | Windows、macOS、Linux 各 x64 / ARM64 | 正式版标签 `vX.Y.Z`，前端、Rust 和依赖审计通过后 | 串行上传六个目标到同一草稿 |
 | `publish` | ubuntu-latest | `release` 成功后 | 校验 feed/资产、LF `SHA256SUMS`、attestation；发布并匿名核验 |
 
 两点说明：
 
-- **安装包仍由 Windows runner 出包。** macOS 和 Linux runner 核验源码运行路径。发布仍使用 GitHub 上的 Windows NSIS 安装包。
+- Linux 使用 Ubuntu 22.04。AppImage 的 ARM64 构建使用 ARM64 runner。三个系统使用各自的 `src-tauri/tauri.<platform>.conf.json` 选定包型。
 - **`bundle` 不在 PR 上跑。** NSIS 要现下、release 模式要重编全量 Rust；PR 上「能编过」由 `rust` 那条 job 兜住。手动触发（workflow_dispatch）可以单独出安装包。
 
 Rust 编译缓存走 [Swatinem/rust-cache](https://github.com/Swatinem/rust-cache)，工作区显式指成 `src-tauri -> target`（`target` 是相对工作区给的；写成 `-> .` 会把整棵源码树装进缓存）—— `Cargo.toml` 不在仓根，不指的话每轮都要从头编 tauri。
@@ -191,17 +191,16 @@ Rust 编译缓存走 [Swatinem/rust-cache](https://github.com/Swatinem/rust-cach
 
 维护者给通过本地验证的提交打稳定标签 `vX.Y.Z` 并推送。前端检查和打包 job 从同一提交检出，按 tag 注入 npm 和 Tauri 应用版本。Cargo crate 版本保持独立，用 Cargo.lock 锁定 Rust 依赖。
 
-Windows NSIS 安装包、更新签名和 `latest.json` 先上传至草稿。发布 job 校验安装包的更新签名、附件摘要与清单，补齐 SHA256SUMS 和来源证明后才公开。只有更高稳定版才提升 Latest，补发旧版可从其 tag 下载。
+Windows 上传 NSIS。macOS 上传 DMG 和 `.app.tar.gz`。Linux 上传 AppImage、DEB 和 RPM。六个打包任务串行合并同一份 `latest.json`。发布 job 用仓库公钥验证所有更新签名，核对全部附件和 GitHub 摘要，然后上传 `SHA256SUMS` 与来源证明并公开。只有更高稳定版才提升 Latest，补发旧版可从其 tag 下载。
 
-重跑选择相应 tag，或在原运行里重试失败的 job。草稿可以复用。公开版本的更正使用新 tag。
+中断后可在原运行里重试失败的 job，或在同一 tag ref 上手动启动 workflow，复用已有草稿。公开版本的更正使用新 tag。校验器的回归可用 `node --test tools/verify-release-assets.test.mjs` 运行，需要本机安装 `minisign`。
 
 **私钥在哪儿**：仓里存的是**公钥**（`src-tauri/rclone-deck.pub`，公钥本来就是公开的）。
 私钥只在本机（`src-tauri/.updater/`，那个目录不入库），并且要存成仓的 secret
 **`TAURI_SIGNING_PRIVATE_KEY`**（值是那整个 PEM 文本）。这把钥匙**没有密码**，
 所以不需要 `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`（留一个空值即可）。
 
-`bundle.createUpdaterArtifacts` 开着的时候，**出包必须有私钥**——没有就出不了更新包，
-`bundle` 与 `release` 两条 job 都会红在这上面。所以这个 secret 要先建好再推 main。
+推送发布 tag 前先配置更新签名 secret，`release` 打包要用它签更新包。日常 `bundle` 只生成 NSIS 冒烟包，关闭更新产物及签名。
 
 ## 踩过的坑
 

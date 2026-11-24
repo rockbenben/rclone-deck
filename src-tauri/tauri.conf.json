@@ -26,17 +26,13 @@
   },
   "bundle": {
     "active": true,
-    "targets": ["nsis"],
     "createUpdaterArtifacts": true,
     "publisher": "top.aishort.rclone-deck",
-    "icon": ["icons/icon.ico", "icons/icon.png"],
-    "windows": {
-      "nsis": {
-        "installMode": "currentUser",
-        "languages": ["English"],
-        "displayLanguageSelector": false
-      }
-    }
+    "homepage": "https://github.com/rockbenben/rclone-deck",
+    "license": "MIT",
+    "category": "Utility",
+    "shortDescription": "Review and run local and cloud file sync with rclone",
+    "icon": ["icons/icon.ico", "icons/icon.png", "icons/icon.icns"]
   },
   "plugins": {
     "updater": {

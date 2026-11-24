@@ -169,8 +169,10 @@ export async function downloadAndInstall(): Promise<void> {
       }
       set({ downloaded, total });
     });
-    set({ downloading: false, note: plainNote('正在装新版本', '装完这个面板会自己重开。') });
+    set({ note: plainNote('正在安装新版本') });
     await update.install();
+    // Windows hands off to its installer and restarts. Installers that return here need a manual restart.
+    set({ downloading: false, version: '', note: plainNote('新版本已安装', '请退出后重新打开面板。') });
   } catch (e) {
     set({ downloading: false, error: { title: '装新版本失败', note: errNote(e) } });
   }

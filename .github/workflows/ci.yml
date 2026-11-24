@@ -1,4 +1,4 @@
-# Windows 继续跑完整发布验证。macOS / Linux 的源码运行路径由 portable-rust 验证。
+# 源码检查通过后，发布标签进入六个目标的打包与草稿校验。
 #
 # action 版本（2026-10 升到当前 major）：
 #   · checkout / setup-node / upload-artifact 都在 v7。三个都跑在 Node 24 运行时上。
@@ -257,7 +257,7 @@ jobs:
     # 只在推 main 与手动触发时跑：NSIS 要现下、release 模式重编全量 Rust，
     # 对每个 PR 都做一遍不值当。PR 上"能编过"由 rust 那条 job 兜住。
     # 打标签的那一趟由 release 那条 job 出包（同一个安装包，还要多一份更新包），这里不重复出一次。
-    if: github.event_name != 'pull_request' && !startsWith(github.ref, 'refs/tags/')
+    if: github.event_name != 'pull_request' && github.ref_type != 'tag'
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v7
@@ -280,14 +280,11 @@ jobs:
 
       - run: npm ci
 
-      # `bundle.createUpdaterArtifacts` 开着时出包**必须**有私钥：更新包要它签名，
-      # 没有私钥就出不了更新包（tauri 自己会拒）。私钥只从仓的 secret 来 ——
-      # 仓里存的是公钥（`src-tauri/rclone-deck.pub`），私钥不入库、也不进这个文件。
-      - name: 出安装包
-        run: npm run tauri build
-        env:
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+      - name: 打包测试用 NSIS
+        run: |
+          $cfg = Join-Path $env:RUNNER_TEMP "smoke-bundle.json"
+          '{"bundle":{"createUpdaterArtifacts":false}}' | Set-Content -LiteralPath $cfg -Encoding utf8
+          npm exec -- tauri build --config $cfg -- --locked
 
       - name: 传安装包
         uses: actions/upload-artifact@v7
@@ -300,9 +297,20 @@ jobs:
   release:
     name: 发布：出安装包与更新包（草稿）
     # 前端检查、Rust 测试与依赖审计通过后才出发布包。
-    needs: [frontend, rust, security]
+    needs: [frontend, rust, portable-rust, security]
     if: github.ref_type == 'tag' && startsWith(github.ref, 'refs/tags/v')
-    runs-on: windows-latest
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      max-parallel: 1  # tauri-action 合并同一份 latest.json，写入需要串行。
+      matrix:
+        include:
+          - { os: windows-latest, target: x86_64-pc-windows-msvc }
+          - { os: windows-11-arm, target: aarch64-pc-windows-msvc }
+          - { os: macos-15-intel, target: x86_64-apple-darwin }
+          - { os: macos-latest, target: aarch64-apple-darwin }
+          - { os: ubuntu-22.04, target: x86_64-unknown-linux-gnu }
+          - { os: ubuntu-22.04-arm, target: aarch64-unknown-linux-gnu }
     # 建 release 要写权限：仓里默认给的是 `contents: read`（`permissions` 那块）。
     permissions:
       contents: write
@@ -321,28 +329,30 @@ jobs:
           cache: npm
 
       - name: Apply the release version
+        shell: bash
         env:
           APP_VERSION: ${{ needs.frontend.outputs.version }}
         run: node .github/scripts/release-version.mjs apply tauri
       - uses: dtolnay/rust-toolchain@stable
         with:
-          components: clippy
+          targets: ${{ matrix.target }}
 
       # 缓存只装 target/，不装整棵 src-tauri —— 理由与前缀为什么换，见上面 rust 那条里的注释。
       - uses: Swatinem/rust-cache@v2
         with:
-          key: ${{ runner.os }}-cargo-release
+          key: ${{ matrix.target }}-cargo-release
           workspaces: src-tauri -> target
           prefix-key: v1-rust
 
       - run: npm ci
 
+      - if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev patchelf xdg-utils
+
       - name: Check the remote tag and published release
         run: node .github/scripts/release-state.mjs guard
-      # 这一步出两样东西：安装包（`*-setup.exe`）与更新包（`latest.json` + 各个 `.sig`）。
-      # 更新包是面板里那一项「检查更新」读的东西：端点写的是
-      # `releases/latest/download/latest.json`，而 `releases/latest` **只认已发布的** release。
-      # 所以出完还要把那个草稿**发布出去**（见下面 `releaseDraft` 那段）。
       - name: 出安装包与更新包
         id: stage
         uses: tauri-apps/tauri-action@v1
@@ -351,20 +361,24 @@ jobs:
           # 私钥只从仓的 secret 来，值不进这个文件。仓里存的是公钥。
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          APPIMAGE_EXTRACT_AND_RUN: ${{ runner.os == 'Linux' && '1' || '' }}
         with:
           tagName: ${{ github.ref_name }}
           releaseName: rclone-deck ${{ github.ref_name }}
           releaseBody: |
-            rclone-deck 桌面版（Windows）。
+            - Windows x64 / ARM64：`-setup.exe`。
+            - macOS Intel / Apple Silicon：对应架构的 `.dmg`。应用采用 ad-hoc 签名，尚未公证。确认下载来源后，可在「系统设置 → 隐私与安全性」里选择「仍要打开」。
+            - Linux x64 / ARM64：`.AppImage`、`.deb` 或 `.rpm`。首次运行 AppImage 前需赋予执行权限。
 
-            面板在「设置」那面有一项「版本与更新」：**默认关着**，开了才会在每次打开时联网问一句
-            有没有新版；也可以随时点「立即检查」。有新版时面板只说版本号，下载与安装要人自己按。
+            「版本与更新」默认关闭自动检查。下载和安装均需主动确认。macOS 和 Linux 版安装更新后请重新打开面板。
 
             **这个安装包没有做 Windows 代码签名**，首次运行会出现「未知发布者」/SmartScreen 提示；
             校验和与来源证明见 release 里的 `SHA256SUMS` 与 GitHub attestation。
           generateReleaseNotes: true
           releaseDraft: true
-          args: -- --locked
+          uploadUpdaterJson: true
+          updaterJsonPreferNsis: true
+          args: --target ${{ matrix.target }} -- --locked
           prerelease: false
 
       - name: Verify the packaged version
@@ -411,17 +425,17 @@ jobs:
           set -euo pipefail
           rm -rf dist
           gh release download "$TAG" -R "$REPO" -D dist
-      - name: 校验 updater feed 与 Windows 安装包
+      - name: 校验六个目标的附件、更新清单与签名
         run: |
-          bash tools/verify-release-assets.test.sh
-          bash tools/verify-release-assets.sh dist "$REPO" "$TAG" src-tauri/tauri.conf.json
+          set -euo pipefail
+          node --test tools/verify-release-assets.test.mjs
+          gh api "repos/$REPO/releases/$RELEASE_ID" > "$RUNNER_TEMP/release.json"
+          node tools/verify-release-assets.mjs dist "$RUNNER_TEMP/release.json" "$REPO" "$TAG" src-tauri/tauri.conf.json
       - name: 生成并上传 SHA256SUMS（LF）
         run: |
           set -euo pipefail
           cd dist
-          rm -f SHA256SUMS
-          sha256sum -- * > SHA256SUMS
-          cat SHA256SUMS
+          sha256sum --strict -c SHA256SUMS
           gh release upload "$TAG" -R "$REPO" SHA256SUMS --clobber
       - uses: actions/attest@v4
         with:

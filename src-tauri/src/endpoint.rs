@@ -16,6 +16,8 @@ pub enum Endpoint {
 /// 同一个冒号规则在 `scope.rs` 的 `is_drive_root()` 里还判了一遍（它问的是已经切好的根：恰好一个字符加
 /// 冒号是盘符，更长的是远端名）；改这里的规则必须同步改那里，否则同一个端点会被一边当远端名、另一边当盘符。
 pub fn remote_split(raw: &str) -> Option<(&str, &str)> {
+    // POSIX local absolute paths may contain a colon in a directory or file name.
+    if raw.starts_with('/') { return None; }
     let (scheme, rest) = raw.split_once(':')?;
     (scheme.len() > 1).then_some((scheme, rest))
 }

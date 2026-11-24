@@ -276,12 +276,31 @@ pub async fn open_dir(
     let dir = runner.job(&id)
         .and_then(|j| j.open_dir.clone())
         .ok_or_else(|| AppError::Run(RunError::Invariant(format!("任务 {id} 没有配 open_dir"))))?;
-    if !Path::new(&dir).is_dir() {
-        return Err(AppError::Run(RunError::Invariant(format!("{dir} 不存在"))));
+    open_folder(Path::new(&dir)).await
+}
+
+async fn open_folder(path: &Path) -> Result<(), AppError> {
+    if !path.is_dir() {
+        return Err(AppError::Run(RunError::Invariant(format!("目录不可用：{}", path.display()))));
     }
-    // explorer 即使成功也返回 1，所以只看有没有拉起来，不看退出码。
-    std::process::Command::new("explorer").arg(&dir).spawn()
-        .map_err(|e| AppError::Io(format!("打不开 {dir}：{e}")))?;
+    let path = std::path::absolute(path).map_err(|e| AppError::Io(e.to_string()))?;
+    #[cfg(windows)]
+    let program = "explorer";
+    #[cfg(target_os = "macos")]
+    let program = "/usr/bin/open";
+    #[cfg(target_os = "linux")]
+    let program = "xdg-open";
+    let mut child = tokio::process::Command::new(program).arg(&path).spawn()
+        .map_err(|e| AppError::Io(format!("打不开 {}：{e}", path.display())))?;
+    #[cfg(windows)]
+    tokio::spawn(async move { let _ = child.wait().await; });
+    #[cfg(unix)]
+    {
+        let status = child.wait().await.map_err(|e| AppError::Io(format!("打不开 {}：{e}", path.display())))?;
+        if !status.success() {
+            return Err(AppError::Io(format!("打不开 {}：{status}", path.display())));
+        }
+    }
     Ok(())
 }
 
@@ -440,17 +459,11 @@ pub async fn open_config_folder() -> Result<(), AppError> {
         .await.map_err(|e| AppError::Io(e.to_string()))?
         .ok_or_else(|| AppError::Config(edit::EditError::Refused(
             "问不出 rclone 的配置文件在哪，所以那一层也不去开。".to_string())))?;
-    let Some(folder) = edit::config_folder_of(&conf.display().to_string()) else {
+    let Some(folder) = edit::config_folder_of(&conf) else {
         return Err(AppError::Config(edit::EditError::Refused(
             format!("它说出的那一个（{conf:?}）里没有目录，不知道要开哪一层。"))));
     };
-    if !Path::new(&folder).is_dir() {
-        return Err(AppError::Run(RunError::Invariant(format!("{folder} 不存在"))));
-    }
-    // explorer 即使成功也返回 1，所以只看有没有拉起来，不看退出码（与 `open_dir` 同一条）。
-    std::process::Command::new("explorer").arg(&folder).spawn()
-        .map_err(|e| AppError::Io(format!("打不开 {folder}：{e}")))?;
-    Ok(())
+    open_folder(folder).await
 }
 
 /// 要差异：①有没有事正在跑 → ②造新字节 + 装载侧校验 → ③"只改了这些行"，然后登记凭证。

@@ -638,12 +638,10 @@ pub fn conf_path_of(bin: &Path) -> Option<PathBuf> {
 
 /// 「打开这个目录」那一颗要开的**层** = rclone 自己报的那份 conf 的所在目录。
 ///
-/// 三种情况交回 `None`，让上层什么都不开：空串（没问到）、只给了个文件名没有分隔符（它在哪一层
-/// 没人知道），以及那一份正好挂在根上（父目录是空串 —— 把空串交给 explorer 开出来的是"文档"，
-/// 那不是这一颗说的事）。尾巴上的换行不用这里刮：`conf_path_of` 那侧读 stdout 时已经逐行 trim 过。
-pub fn config_folder_of(conf_path: &str) -> Option<String> {
-    let (dir, _file) = conf_path.rsplit_once(['\\', '/'])?;
-    (!dir.is_empty()).then(|| dir.to_string())
+/// 只接受系统原生的绝对路径，避免将相对路径解析到面板的工作目录。
+pub fn config_folder_of(conf_path: &Path) -> Option<&Path> {
+    if !conf_path.is_absolute() || conf_path.file_name().is_none() { return None; }
+    conf_path.parent().filter(|folder| folder.parent().is_some())
 }
 
 pub fn version_of(bin: &Path) -> Option<String> {

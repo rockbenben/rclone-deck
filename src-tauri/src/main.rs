@@ -2,5 +2,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 fn main() {
+    #[cfg(target_os = "macos")]
+    rclone_deck_lib::rcd::guardian::run_if_requested();
     rclone_deck_lib::run()
 }

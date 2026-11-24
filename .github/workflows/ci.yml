@@ -1,6 +1,4 @@
-# 本仓只支持 Windows（README「支持范围」里写死了），所以 runner 只有 windows-latest。
-# 别加 linux/macos：Rust 侧与 tools/*.cmd、*.ps1 里有 Windows 专属行为，
-# 在别的系统上"绿"了也证明不了任何事，只会拖慢 PR。
+# Windows 继续跑完整发布验证。macOS / Linux 的源码运行路径由 portable-rust 验证。
 #
 # action 版本（2026-10 升到当前 major）：
 #   · checkout / setup-node / upload-artifact 都在 v7。三个都跑在 Node 24 运行时上。
@@ -206,6 +204,33 @@ jobs:
       # 而那五条目标各要绑一个真后台端口，并发跑就是 "address already in use"。
       - name: 测试
         run: npm test
+
+  portable-rust:
+    name: 本机后台与配置 · ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-22.04]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 26
+          cache: npm
+      - if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev rclone
+          echo "RCLONE_BIN=$(command -v rclone)" >> "$GITHUB_ENV"
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+      - run: npm ci
+      - run: npm run build
+      - run: cargo check --locked --manifest-path src-tauri/Cargo.toml
+      - run: cargo test --locked --manifest-path src-tauri/Cargo.toml --test portable
+      - run: 'cargo test --locked --manifest-path src-tauri/Cargo.toml --lib rcd::'
 
   security:
     name: 依赖漏洞：Rust advisory 数据库

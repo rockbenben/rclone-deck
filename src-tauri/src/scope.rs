@@ -51,6 +51,14 @@ impl Scope {
     }
 
     pub fn local(path: &Path) -> Self {
+        #[cfg(unix)]
+        if path.is_absolute() {
+            let absolute = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+            let prefix = absolute.to_string_lossy().split('/').filter(|segment| !segment.is_empty())
+                .collect::<Vec<_>>().join("/");
+            // Case-fold conservatively for case-insensitive volumes; '/' must cover all descendants.
+            return Self { root: "/".into(), prefix: prefix.to_lowercase() };
+        }
         // 大小写不敏感：归一到小写，否则 `D:\Vault` 与 `d:\vault` 会被判成两棵树。
         let s = norm(&path.to_string_lossy()).to_lowercase();
         // 根 = **第一段**（盘符 `d:`、UNC 的服务器名、或相对路径的首段），prefix = 其余。
@@ -113,6 +121,7 @@ impl Scope {
     /// （构造那一刻本来就知道自己来自 `remote()` 还是 `local()`），不要加进字符串猜测 ——
     /// 长度规则就是这一支的边界，再猜一个字符类别也分不开 `x:` 与 `d:`。
     pub fn describe(&self) -> String {
+        if self.root == "/" { return format!("/{}", self.prefix); }
         if self.is_drive_root() {
             // 盘符根：`d:/vault/img`（正斜杠是 `norm()` 定下的仓库内部规范形状）。
             if self.prefix.is_empty() { self.root.clone() } else { format!("{}/{}", self.root, self.prefix) }

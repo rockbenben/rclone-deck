@@ -39,22 +39,21 @@ pub struct AppConfig {
 /// 那是比现状更糟的形状。选 `$HOME/...` 而不是 `$HOME/rclone-deck/...`：
 /// 变量本身已经叫 DECK_HOME，再套一层 rclone-deck 是冗余，便携配置时也少一级目录。
 ///
-/// 没设 → 一切照旧走已知目录（`%APPDATA%/rclone-deck`、`%LOCALAPPDATA%/rclone-deck`），
-/// 行为与今天完全一致。
+/// 没设则使用当前平台的用户配置目录与本地数据目录。
 ///
 /// 空串按**报错**处理，不当没设：`set RCLONE_DECK_HOME=` 或空展开出来的半设置，
 /// 若静默回落到操作员真配置，正是这条开关要挡的事故；要回落就彻底取消该变量。
 ///
-/// 读的是 `std::env::var`（调用时），不是 `option_env!`（编译期）——夹具窗口是运行时才设的。
+/// 在运行时读取环境变量，保留平台原生路径。
 /// 这不是测试专用开关，操作员拿它做便携配置走的是同一条路径，故不藏进 feature 门。
 /// 它只改根，不改校验：`rclone_bin` / `log_dir` 的绝对路径校验照旧在 `jobs.toml` 里管。
 fn deck_home() -> Result<Option<PathBuf>, ConfigError> {
-    match std::env::var("RCLONE_DECK_HOME") {
-        Err(_) => Ok(None),
-        Ok(s) if s.is_empty() => Err(ConfigError::Invalid(
+    match std::env::var_os("RCLONE_DECK_HOME") {
+        None => Ok(None),
+        Some(s) if s.is_empty() => Err(ConfigError::Invalid(
             "RCLONE_DECK_HOME 被设成空串：要么给出绝对路径，要么彻底取消该变量——空串不是「没设」".into(),
         )),
-        Ok(s) => {
+        Some(s) => {
             let p = PathBuf::from(s);
             if !p.is_absolute() {
                 return Err(ConfigError::Invalid(format!(
@@ -204,20 +203,19 @@ impl AppConfig {
         let home = match deck_home()? {
             Some(home) => home,
             None => dirs::data_local_dir()
-                .ok_or_else(|| ConfigError::Invalid("无法解析 %LOCALAPPDATA%".into()))?
+                .ok_or_else(|| ConfigError::Invalid("无法找到当前用户的本地数据目录".into()))?
                 .join("rclone-deck"),
         };
         Ok(home.join("rcd.pid"))
     }
 
-    /// jobs.toml 的位置：开了 `RCLONE_DECK_HOME` 则是 `$HOME/jobs.toml`，
-    /// 否则照旧 `%APPDATA%/rclone-deck/jobs.toml`。见 `deck_home` 注释（R52）。
+    /// jobs.toml 优先放在 RCLONE_DECK_HOME，否则使用系统的用户配置目录。
     pub fn jobs_toml_path() -> Result<PathBuf, ConfigError> {
         if let Some(home) = deck_home()? {
             return Ok(home.join("jobs.toml"));
         }
         let base = dirs::config_dir()
-            .ok_or_else(|| ConfigError::Invalid("无法解析 %APPDATA%".into()))?
+            .ok_or_else(|| ConfigError::Invalid("无法找到当前用户的配置目录".into()))?
             .join("rclone-deck");
         Ok(base.join("jobs.toml"))
     }

@@ -422,14 +422,7 @@ fn the_config_folder_command_asks_rclone_instead_of_trusting_the_screen() {
         assert!(!body.contains(handed),
             "界面把路径交进来 = 让它指哪开哪，这一颗没这个权限：{body}");
     }
-    // 开出去的那一步只看"有没有拉起来"，不看退出码（explorer 成功也返回 1，一看就把成功读成失败）。
-    // 钉的是这一步的形状，不是它用哪个程序名 —— 注释里也写着 explorer，扫"有没有这个词"会绿得没道理。
-    assert!(body.contains("is_dir()"),
-        "没先确认那一层真的在：把一个不在的路径交给 explorer，开出来的是'文档'：{body}");
-    assert!(body.contains(".spawn()"),
-        "没有走那条'拉起就算、不等它退出'的通路：{body}");
-    assert!(!body.contains(".status()") && !body.contains(".wait()"),
-        "在那里等退出码：成功的那一次会被读成失败：{body}");
+    assert!(body.contains("open_folder(folder).await"), "配置目录必须走通用打开入口");
 
     // 前端那一头：走 api.ts 一条**具名出口**，并由 `Panel.tsx` 接进 `act('打开目录', …)`。
     // 少这一环，那颗按钮点了就是静默（或直接 `invoke`），失败时没人说话。

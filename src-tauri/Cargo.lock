@@ -2717,6 +2717,7 @@ dependencies = [
  "chrono",
  "dirs",
  "futures",
+ "libc",
  "rand",
  "reqwest",
  "rustls",

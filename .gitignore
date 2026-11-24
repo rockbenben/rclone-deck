@@ -16,6 +16,7 @@ docs/superpowers/
 # 仓里现有的图片是 docs/images/*.webp 与 src-tauri/icons/icon.ico，都不在这两条里。
 docs/**/evidence/ui/
 *.png
+!src-tauri/icons/icon.png
 
 # `social-card.png` / `social-card@2x.png` 是**发布资产**，不是证据图：它由
 # social-card.html 渲染出来（那个文件的头里写着用途与渲染命令），漏掉的话

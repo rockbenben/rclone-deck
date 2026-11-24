@@ -165,12 +165,13 @@ node tools/ui-acceptance.mjs --home=A --from=0 --to=20 --out=docs/superpowers/ev
 
 ## CI 跑在哪
 
-`.github/workflows/ci.yml`，六条 job：
+`.github/workflows/ci.yml` 的检查与发布任务：
 
 | job | 跑在哪 | 什么时候 | 装什么 |
 | --- | --- | --- | --- |
 | `frontend` | windows-latest | 每个 push / PR | Node 26 + `npm ci` |
 | `rust` | windows-latest | 每个 push / PR | Rust + **rclone**（五条测试目标要起真后台） |
+| `portable-rust` | macos-latest / ubuntu-22.04 | 每个 push / PR | 源码构建、原生配置和后台回归。Linux 另起真实 rclone |
 | `security` | ubuntu-latest | 每个 push / PR | `cargo-audit` |
 | `bundle` | windows-latest | 推 main / 手动 | 出 NSIS 安装包并传成 artifact |
 | `release` | windows-latest | 正式版标签 `vX.Y.Z`，前端检查、Rust 测试和依赖审计通过后 | 出安装包与更新包，建一个草稿 |
@@ -178,7 +179,7 @@ node tools/ui-acceptance.mjs --home=A --from=0 --to=20 --out=docs/superpowers/ev
 
 两点说明：
 
-- **构建产物只在 Windows runner。** 本仓只支持 Windows（README「支持范围」写死），加 linux/macos 构建绿了也证明不了任何事；`security` 与 `publish` 跑在 ubuntu 上，只做检查和发布编排，不产出应用包。
+- **安装包仍由 Windows runner 出包。** macOS 和 Linux runner 核验源码运行路径。发布仍使用 GitHub 上的 Windows NSIS 安装包。
 - **`bundle` 不在 PR 上跑。** NSIS 要现下、release 模式要重编全量 Rust；PR 上「能编过」由 `rust` 那条 job 兜住。手动触发（workflow_dispatch）可以单独出安装包。
 
 Rust 编译缓存走 [Swatinem/rust-cache](https://github.com/Swatinem/rust-cache)，工作区显式指成 `src-tauri -> target`（`target` 是相对工作区给的；写成 `-> .` 会把整棵源码树装进缓存）—— `Cargo.toml` 不在仓根，不指的话每轮都要从头编 tauri。

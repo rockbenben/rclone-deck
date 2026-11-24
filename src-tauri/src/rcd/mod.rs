@@ -6,11 +6,18 @@
 //! 2. **凭据绝不进 argv**——`--rc-pass` 上命令行会同时泄进 rclone 自己的 DEBUG 日志
 //!    和 `Win32_Process.CommandLine`（probe 有对照组）。只走 `RCLONE_RC_USER` /
 //!    `RCLONE_RC_PASS` 环境变量。
-//! 3. **后台归属**——每个配置家持有独占文件锁。启动时核验旧记录，用同一 Windows
-//!    进程句柄确认身份、回收孤儿和等待退出。选用新端口也要处理上一份记录。
+//! 3. **后台归属**——每个配置家持有独占文件锁。Windows 和 Linux 用进程句柄回收孤儿，
+//!    macOS 由持有子进程的守护器在面板断开时收尾。更换端口也要核验上一份记录。
 
 pub mod pidfile;
+#[cfg_attr(windows, path = "process_windows.rs")]
+#[cfg_attr(target_os = "linux", path = "process_linux.rs")]
+#[cfg_attr(target_os = "macos", path = "process_macos.rs")]
 pub(crate) mod process;
+#[cfg(any(target_os = "macos", all(test, target_os = "linux")))]
+pub mod guardian;
+#[cfg(unix)]
+mod listener;
 
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -130,15 +137,20 @@ pub(crate) struct DaemonHome { _file: std::fs::File }
 
 impl DaemonHome {
     pub(crate) fn claim(pid_path: &Path) -> Result<Self, RcdError> {
-        use std::os::windows::fs::OpenOptionsExt;
-        use windows_sys::Win32::Storage::FileSystem::{FILE_SHARE_READ, FILE_SHARE_WRITE};
         let lock_path = pid_path.with_extension("lock");
         if let Some(dir) = pid_path.parent() {
             std::fs::create_dir_all(dir).map_err(|e| RcdError::Io(format!("{}: {e}", dir.display())))?;
         }
-        let file = std::fs::OpenOptions::new().read(true).write(true).create(true).truncate(false)
-            .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
-            .open(&lock_path).map_err(|e| RcdError::Io(format!("{}: {e}", lock_path.display())))?;
+        let mut options = std::fs::OpenOptions::new();
+        options.read(true).write(true).create(true).truncate(false);
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::OpenOptionsExt;
+            use windows_sys::Win32::Storage::FileSystem::{FILE_SHARE_READ, FILE_SHARE_WRITE};
+            options.share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE);
+        }
+        let file = options.open(&lock_path)
+            .map_err(|e| RcdError::Io(format!("{}: {e}", lock_path.display())))?;
         match file.try_lock() {
             Ok(()) => Ok(Self { _file: file }),
             Err(std::fs::TryLockError::WouldBlock) =>
@@ -165,7 +177,7 @@ impl RcdHandle {
     /// 而调用方（测试守卫）用阻塞轮询自己收。返回 `Result` 而不是 `let _ =`：守卫会把失败说出来。
     #[cfg(feature = "test-helpers")]
     pub fn kill_now(&mut self) -> std::io::Result<()> {
-        self.child.start_kill()
+        request_stop(&mut self.child)
     }
 
     /// **故意不实现 `Drop` 杀进程**：面板崩溃时 rcd 要留下来当孤儿，让下一次启动
@@ -187,11 +199,32 @@ async fn stop_child(child: &mut Child, port: u16, pid: u32) -> Result<(), RcdErr
     if child.try_wait().map_err(|e| uncertain(e.to_string()))?.is_some() {
         return Ok(());
     }
-    child.start_kill().map_err(|e| uncertain(e.to_string()))?;
+    request_stop(child).map_err(|e| uncertain(e.to_string()))?;
     tokio::time::timeout(HEALTH_TIMEOUT, child.wait()).await
         .map_err(|_| uncertain("未能确认后台已退出，保留进程记录".into()))?
         .map_err(|e| uncertain(e.to_string()))?;
     Ok(())
+}
+
+fn request_stop(child: &mut Child) -> std::io::Result<()> {
+    #[cfg(target_os = "macos")]
+    {
+        drop(child.stdin.take());
+        Ok(())
+    }
+    #[cfg(not(target_os = "macos"))]
+    child.start_kill()
+}
+
+#[cfg(target_os = "macos")]
+async fn daemon_pid(child: &mut Child) -> std::io::Result<u32> {
+    use tokio::io::{AsyncBufReadExt, BufReader};
+    let stdout = child.stdout.take().ok_or_else(|| std::io::Error::other("missing guardian pipe"))?;
+    let mut reader = BufReader::new(stdout);
+    let mut pid = String::new();
+    tokio::time::timeout(HEALTH_TIMEOUT, reader.read_line(&mut pid)).await??;
+    pid.trim().parse::<u32>().ok().filter(|pid| *pid > 0)
+        .ok_or_else(|| std::io::Error::other("guardian did not report a daemon PID"))
 }
 
 /// 手写而不是 derive：`RcClient` **故意**不 derive Debug（密码在它的 basic-auth 头里，
@@ -314,8 +347,18 @@ impl RcdSupervisor {
         stderr_file: std::fs::File,
     ) -> Result<RcdHandle, RcdError> {
         let mut child = build_command(&spec, user, pass, stderr_file)
-            .spawn()
+            .and_then(|mut cmd| cmd.spawn())
             .map_err(|e| RcdError::SpawnFailed(format!("{}: {e}", spec.rclone_bin.display())))?;
+        #[cfg(target_os = "macos")]
+        let pid = match daemon_pid(&mut child).await {
+            Ok(pid) => pid,
+            Err(e) => {
+                let guardian_pid = child.id().unwrap_or(0);
+                stop_child(&mut child, spec.port, guardian_pid).await?;
+                return Err(RcdError::SpawnFailed(format!("无法确认后台进程号：{e}")));
+            }
+        };
+        #[cfg(not(target_os = "macos"))]
         let pid = child.id()
             .ok_or_else(|| RcdError::SpawnFailed("子进程刚拉起就读不到 PID（可能已经退出）".into()))?;
 
@@ -344,7 +387,7 @@ impl RcdSupervisor {
             // 写不进去 = 这个 daemon 从此不可回收，正是 item 1 要防的残局。所以这条出口自己收拾：
             // 句柄还在手里，直接 `start_kill()`（比让 `reclaim` 按 PID 号重新查一遍可靠，
             // 见裁定 R42 item 5），终结不掉就把两件事一起报出去，别让操作员只看到一句"pid 文件失败"。
-            match child.start_kill() {
+            match request_stop(&mut child) {
                 Ok(()) => {
                     // 等它真退出，端口才算放掉；`wait()` 报错只会是"已经被回收"，不值得覆盖 pid 文件的错。
                     let _ = child.wait().await;
@@ -623,8 +666,15 @@ pub fn redact_credentials(text: &str, secrets: &[&str]) -> String {
     out
 }
 
-fn build_command(spec: &RcdSpec, user: &str, pass: &str, stderr_file: std::fs::File) -> Command {
+fn build_command(spec: &RcdSpec, user: &str, pass: &str, stderr_file: std::fs::File) -> std::io::Result<Command> {
+    #[cfg(not(target_os = "macos"))]
     let mut cmd = Command::new(&spec.rclone_bin);
+    #[cfg(target_os = "macos")]
+    let mut cmd = {
+        let mut cmd = Command::new(std::env::current_exe()?);
+        cmd.arg(guardian::FLAG).arg(&spec.rclone_bin);
+        cmd
+    };
     // 继承来的 RCLONE_* 全部清掉，但保留两个名字（见 `rclone_env_is_scrubbed` 的裁定 R36）。
     for (key, _) in std::env::vars_os() {
         let key = key.to_string_lossy().into_owned();
@@ -637,6 +687,8 @@ fn build_command(spec: &RcdSpec, user: &str, pass: &str, stderr_file: std::fs::F
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::from(stderr_file));
+    #[cfg(target_os = "macos")]
+    cmd.stdin(Stdio::piped()).stdout(Stdio::piped());
     // 凭据只走环境变量：走 argv 会同时泄进 DEBUG 日志和 Win32_Process.CommandLine。
     // 环境里那两个键正是上面清理循环留下的唯一"我们主动设置"的 RCLONE_* 通道。
     for (k, v) in [("RCLONE_RC_USER", user), ("RCLONE_RC_PASS", pass)] {
@@ -660,7 +712,7 @@ fn build_command(spec: &RcdSpec, user: &str, pass: &str, stderr_file: std::fs::F
         cmd.arg("--log-level").arg("DEBUG");
     }
     apply_no_window(&mut cmd);
-    cmd
+    Ok(cmd)
 }
 
 // tokio 的 `creation_flags` 是 inherent 方法（`Command` 自己带的方法，不是 trait 提供的；
@@ -741,6 +793,7 @@ async fn reclaim(spec: &RcdSpec) -> Result<(), RcdError> {
         }
     }
 
+    #[cfg(not(target_os = "macos"))]
     previous.terminate().map_err(|e| uncertain(format!("无法终结已确认归属的后台：{e}")))?;
     for _ in 0..REAP_ATTEMPTS {
         if previous.exited().map_err(|e| uncertain(format!("无法确认后台已退出：{e}")))? {
@@ -749,6 +802,9 @@ async fn reclaim(spec: &RcdSpec) -> Result<(), RcdError> {
         }
         tokio::time::sleep(REAP_INTERVAL).await;
     }
+    #[cfg(target_os = "macos")]
+    return Err(uncertain("守护器未能确认后台退出。请结束该后台后再启动面板".into()));
+    #[cfg(not(target_os = "macos"))]
     Err(uncertain("已请求终结后台，仍未确认进程退出".into()))
 }
 
@@ -758,6 +814,7 @@ fn foreign_listener(port: u16) -> RcdError {
     RcdError::PortBusyByForeignProcess { port, pid, name }
 }
 
+#[cfg(windows)]
 fn port_owner_pid(port: u16) -> Option<u32> {
     use std::os::windows::process::CommandExt;
     let out = std::process::Command::new("netstat")
@@ -778,6 +835,9 @@ fn port_owner_pid(port: u16) -> Option<u32> {
     }
     None
 }
+
+#[cfg(unix)]
+use listener::port_owner_pid;
 
 struct ProcInfo {
     #[cfg(feature = "test-helpers")]
@@ -810,14 +870,15 @@ fn kill(pid: u32) -> bool {
     }
 }
 
-/// Windows 路径大小写不敏感，且 sysinfo 给的可能是 8.3 短名或不同大小写的盘符。
 fn same_path(a: Option<&Path>, b: &Path) -> bool {
     let Some(a) = a else { return false };
-    let norm = |p: &Path| {
-        std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf())
-            .to_string_lossy().to_lowercase().replace('/', "\\")
-    };
-    norm(a) == norm(b)
+    let canonical = |p: &Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
+    let (a, b) = (canonical(a), canonical(b));
+    #[cfg(windows)]
+    return a.to_string_lossy().to_lowercase().replace('/', "\\")
+        == b.to_string_lossy().to_lowercase().replace('/', "\\");
+    #[cfg(unix)]
+    return a == b;
 }
 
 /// 子进程的命令行。测试用它钉"凭据不上 argv"这条不变量，所以它属于 `test-helpers`，

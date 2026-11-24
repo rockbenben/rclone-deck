@@ -31,23 +31,23 @@ use crate::runner::Runner;
 ///  * **一条 `copy` 示范、零条会删的**。删除那一档（`sync`）不随出厂发 ——
 ///    它必须由人自己配出来、配对了、看清了才按。会删的东西不该由别人替他放进列表。
 ///    需要多对位置 / 多条对账 / 会删那几档的证人改读 `tests/fixtures/full-jobs.toml`。
-pub const DEFAULT_JOBS_TOML: &str = r#"# rclone-deck 任务定义。纯文本，可手工编辑，可进 git 备份。
+macro_rules! default_jobs {
+    ($binary:literal, $source:literal) => {
+        concat!(r#"# rclone-deck 任务定义。纯文本，可手工编辑，可进 git 备份。
 # 这里不放任何密钥；remote 的凭据留在 rclone 自己的配置里。
 #
 # 第一次用先做两件事：
-#   1) 把下面 rclone_bin 改成**你这台机器上** rclone.exe 的完整路径
-#      （在终端里敲 where rclone，第一条就是）；
+#   1) 把下面 rclone_bin 改成本机 rclone 的完整路径
+#      （Windows 用 where.exe rclone，macOS / Linux 用 command -v rclone）；
 #   2) 把下面那条示范任务的 src / dst 换成你自己的两个位置
 #      （云端那一侧的 `r2:img` 要先在 rclone config 里配好这个 remote）。
 # 改完**重开面板**才生效。
 
 [defaults]
-rclone_bin = "C:\\rclone\\rclone.exe"
+rclone_bin = ""#, $binary, r#""
 flags = ["--fast-list", "--transfers", "32", "--checkers", "64"]
 exclude = ["Thumbs.db", "*.DS_Store"]
-# 日志放哪。**留空 = %LOCALAPPDATA%\rclone-deck\logs**（跟着当前用户走，谁装都成立）。
-# 这里没法写 %LOCALAPPDATA% —— jobs.toml 是静态文本，没有变量可展开，
-# 所以出厂那份不写死任何人的路径（改之前写的是作者那台的 D:\Sync\...，没有 D 盘的人连启动都过不去）。
+# 留空时，日志放在面板本地数据目录的 logs 子目录。
 log_dir = ""
 
 # 一条示范：只把缺的补上去，不删任何东西。
@@ -56,9 +56,16 @@ log_dir = ""
 id = "demo"
 name = "示范：只补，不删"
 kind = "copy"
-src = "D:\\我的图片"
+src = ""#, $source, r#""
 dst = "r2:img"
-"#;
+"#)
+    };
+}
+
+#[cfg(windows)]
+pub const DEFAULT_JOBS_TOML: &str = default_jobs!(r"C:\\rclone\\rclone.exe", r"D:\\我的图片");
+#[cfg(unix)]
+pub const DEFAULT_JOBS_TOML: &str = default_jobs!("/usr/local/bin/rclone", "/path/to/photos");
 
 pub fn write_default_jobs_toml(path: &Path) -> Result<(), ConfigError> {
     if let Some(dir) = path.parent() {
@@ -68,7 +75,7 @@ pub fn write_default_jobs_toml(path: &Path) -> Result<(), ConfigError> {
     Ok(())
 }
 
-/// 首次运行时把出厂配置落到 %APPDATA%/rclone-deck/jobs.toml；已存在就不动。
+/// 首次运行时在当前用户的配置目录写入示范，已存在的配置继续沿用。
 pub fn ensure_jobs_toml() -> Result<PathBuf, ConfigError> {
     let path = AppConfig::jobs_toml_path()?;
     if !path.exists() {
@@ -114,7 +121,7 @@ pub async fn bootstrap() -> Result<Arc<Runner>, AppError> {
     if !app.rclone_bin.is_file() {
         return Err(AppError::Startup(format!(
             "那个位置上没有 rclone 可执行文件：{}。去「设置」里「rclone 程序在哪」那一格，\
-             填你这台机器上的完整路径（终端里敲 where rclone，第一条就是），填完重开面板。",
+             填本机 rclone 的完整路径，填完重开面板。",
             app.rclone_bin.display()
         )));
     }

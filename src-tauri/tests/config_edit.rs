@@ -1076,17 +1076,16 @@ fn function_bodies(src: &str) -> Vec<(String, String)> {
 /// 那一份正好挂在根上时也不能开（父目录是空串，交出去等于开"文档"）。
 #[test]
 fn the_folder_to_open_is_the_one_holding_rclone_own_answer() {
-    assert_eq!(
-        config_folder_of("C:\\Users\\me\\AppData\\Roaming\\rclone\\rclone.conf").as_deref(),
-        Some("C:\\Users\\me\\AppData\\Roaming\\rclone"),
-        "Windows 那一份要交回它所在的目录");
-    assert_eq!(
-        config_folder_of("/home/me/.config/rclone/rclone.conf").as_deref(),
-        Some("/home/me/.config/rclone"),
-        "同一颗在类 Unix 的路径上也是取所在目录");
-    assert_eq!(config_folder_of(""), None, "问不出就不该开任何东西");
-    assert_eq!(config_folder_of("rclone.conf"), None, "只有文件名：那一层是谁都不知道");
-    assert_eq!(config_folder_of("/rclone.conf"), None, "挂在根上：交出去的是空串，那不是目录");
+    use std::path::Path;
+    #[cfg(windows)]
+    let folder = Path::new(r"C:\Users\me\AppData\Roaming\rclone");
+    #[cfg(unix)]
+    let folder = Path::new(r"/home/me/.config/rclone\test");
+    assert_eq!(config_folder_of(&folder.join("rclone.conf")), Some(folder));
+    assert_eq!(config_folder_of(Path::new("")), None);
+    assert_eq!(config_folder_of(Path::new("rclone.conf")), None);
+    assert_eq!(config_folder_of(Path::new("relative/rclone.conf")), None);
+    assert_eq!(config_folder_of(Path::new("/rclone.conf")), None);
 }
 
 /// 设置面那一份 `JobDraft` 必须带着**与运行那一面同一个**配对键与槽位。

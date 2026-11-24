@@ -29,7 +29,7 @@
     "targets": ["nsis"],
     "createUpdaterArtifacts": true,
     "publisher": "top.aishort.rclone-deck",
-    "icon": ["icons/icon.ico"],
+    "icon": ["icons/icon.ico", "icons/icon.png"],
     "windows": {
       "nsis": {
         "installMode": "currentUser",

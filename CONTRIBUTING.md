@@ -188,27 +188,11 @@ Rust 编译缓存走 [Swatinem/rust-cache](https://github.com/Swatinem/rust-cach
 面板「设置」那面有一项**「版本与更新」**：默认**关着**，开了才会在每次打开时联网问一句有没有新版；
 也可以随时点「立即检查」。有新版时面板只说版本号——下载与安装要人自己按。
 
-它读的是 GitHub 上的 `releases/latest/download/latest.json`，所以发一个版本要走两步：
+维护者给通过本地验证的提交打稳定标签 `vX.Y.Z` 并推送。前端检查和打包 job 从同一提交检出，按 tag 注入 npm 和 Tauri 应用版本。Cargo crate 版本保持独立，用 Cargo.lock 锁定 Rust 依赖。
 
-1. **先把版本号改对**：`package.json`、`src-tauri/tauri.conf.json`、`src-tauri/Cargo.toml`
-   三处要相等，并且要等于打算打的那个标签（`v0.1.1` 那种）。`release` job 先断言这三处，
-   再用**推送的 tag**（`tagName: ${{ github.ref_name }}`）建草稿；对不上就让这一趟红在第一步。
-2. **打标签**：`git tag v0.1.1` 然后推上去。这一趟 `release` job 出安装包与更新包
-   （`latest.json` 加各个 `.sig`），建一个**草稿**；随后 `publish` job 取回草稿资产，
-   校验 `latest.json` 与安装包、生成 LF `SHA256SUMS`、attestation，再
-   `draft=false make_latest=true` 发布，最后匿名核验 `latest.json`。到这一步就结束了——**不需要人点 Publish**。
+Windows NSIS 安装包、更新签名和 `latest.json` 先上传至草稿。发布 job 校验安装包的更新签名、附件摘要与清单，补齐 SHA256SUMS 和来源证明后才公开。只有更高稳定版才提升 Latest，补发旧版可从其 tag 下载。
 
-   发布之前，草稿是这一趟的**重试锚点**：中途出了事重跑同一趟，tauri-action 会找到那个草稿
-   把产物补进去，而不是撞「release already exists」。发布之后重跑 `publish` 会找回同 tag
-   的已发布 release，重新校验并覆盖 `SHA256SUMS`/attestation。
-
-   ⚠️ **为什么发布那一下要显式带 `make_latest`**：草稿转成已发布时，GitHub **不会**重算
-   `releases/latest` 指向谁——2026-10-20 发 v0.1.1 时就是这样：release 已经 `draft=false`、
-   `prerelease=false`、`published_at` 也填上了，`releases/latest` 却仍然返回 v0.1.0，端点
-   `releases/latest/download/latest.json` 于是 404（v0.1.0 那个 release 里根本没有
-   `latest.json`）。所以 `publish` job 那一步是一次 PATCH 同时给 `draft=false` 与 `make_latest=true`，
-   之后**自己查 API 确认** `releases/latest` 指着这个标签，指错就让这一趟红。
-   （CDN 那层重定向会再滞后几分钟，属正常——判据看 API，不看 CDN。）
+重跑选择相应 tag，或在原运行里重试失败的 job。草稿可以复用。公开版本的更正使用新 tag。
 
 **私钥在哪儿**：仓里存的是**公钥**（`src-tauri/rclone-deck.pub`，公钥本来就是公开的）。
 私钥只在本机（`src-tauri/.updater/`，那个目录不入库），并且要存成仓的 secret

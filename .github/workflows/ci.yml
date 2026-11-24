@@ -25,12 +25,13 @@ on:
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.ref_type != 'tag' }}
 
 permissions:
   contents: read
 
 env:
+  TAG: ${{ github.ref_name }}
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
 
@@ -38,6 +39,9 @@ jobs:
   frontend:
     name: 前端：装依赖 → 类型检查 → 构建
     runs-on: windows-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      commit: ${{ steps.version.outputs.commit }}
     steps:
       - uses: actions/checkout@v7
 
@@ -50,6 +54,22 @@ jobs:
 
       # 官方源：npmmirror 这类镜像不实现 audit 端点（/-/npm/v1/security/* not implemented），
       # 拿镜像跑会得到一个假绿。CI 不用配 registry，沿用默认的 registry.npmjs.org。
+      - id: version
+        if: github.ref_type == 'tag'
+        run: |
+          if ($env:TAG.Contains('-')) { throw 'This release workflow accepts stable tags only' }
+          node .github/scripts/release-version.mjs resolve tauri
+      - name: Check the remote tag and published release
+        if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_COMMIT: ${{ steps.version.outputs.commit }}
+        run: node .github/scripts/release-state.mjs guard
+      - name: Apply the release version
+        if: github.ref_type == 'tag'
+        env:
+          APP_VERSION: ${{ steps.version.outputs.version }}
+        run: node .github/scripts/release-version.mjs apply tauri
       - name: 装依赖（按 package-lock.json 精确还原）
         run: npm ci
 
@@ -254,9 +274,6 @@ jobs:
 
   release:
     name: 发布：出安装包与更新包（草稿）
-    # 标签是唯一版本源：第一步先断言 tag 与 package/tauri/Cargo 一致，然后 tauri-action
-    # 直接使用**推送的 tag** 建唯一草稿；不再用 v__VERSION__ 让 action 按配置版本命名
-    # （那会让错位标签落到另一个 release 名下）。
     # 前端检查、Rust 测试与依赖审计通过后才出发布包。
     needs: [frontend, rust, security]
     if: github.ref_type == 'tag' && startsWith(github.ref, 'refs/tags/v')
@@ -264,33 +281,24 @@ jobs:
     # 建 release 要写权限：仓里默认给的是 `contents: read`（`permissions` 那块）。
     permissions:
       contents: write
+    outputs:
+      release_id: ${{ steps.stage.outputs.releaseId }}
+    env:
+      SOURCE_COMMIT: ${{ needs.frontend.outputs.commit }}
+      GH_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@v7
+        with: { ref: '${{ needs.frontend.outputs.commit }}' }
 
       - uses: actions/setup-node@v7
         with:
           node-version: 26
           cache: npm
 
-      - name: 断言 tag 与三处版本一致
-        shell: bash
+      - name: Apply the release version
         env:
-          TAG: ${{ github.ref_name }}
-        run: |
-          set -euo pipefail
-          [[ "$TAG" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] || {
-            echo "::error::稳定发布只接受 vX.Y.Z 正式版标签"
-            exit 1
-          }
-          v="${TAG#v}"
-          pkg="$(node -p "require('./package.json').version")"
-          conf="$(node -p "require('./src-tauri/tauri.conf.json').version")"
-          cargo="$(node -e "const fs=require('fs');const s=fs.readFileSync('src-tauri/Cargo.toml','utf8');const m=s.match(/^version = \"([^\"]+)\"/m);if(!m)process.exit(2);process.stdout.write(m[1])")"
-          [ "$pkg" = "$v" ] || { echo "::error::version mismatch: package.json $pkg != tag $v"; exit 1; }
-          [ "$conf" = "$v" ] || { echo "::error::version mismatch: tauri.conf.json $conf != tag $v"; exit 1; }
-          [ "$cargo" = "$v" ] || { echo "::error::version mismatch: Cargo.toml $cargo != tag $v"; exit 1; }
-          echo "version $v asserted in package.json / tauri.conf.json / Cargo.toml"
-
+          APP_VERSION: ${{ needs.frontend.outputs.version }}
+        run: node .github/scripts/release-version.mjs apply tauri
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
@@ -304,11 +312,14 @@ jobs:
 
       - run: npm ci
 
+      - name: Check the remote tag and published release
+        run: node .github/scripts/release-state.mjs guard
       # 这一步出两样东西：安装包（`*-setup.exe`）与更新包（`latest.json` + 各个 `.sig`）。
       # 更新包是面板里那一项「检查更新」读的东西：端点写的是
       # `releases/latest/download/latest.json`，而 `releases/latest` **只认已发布的** release。
       # 所以出完还要把那个草稿**发布出去**（见下面 `releaseDraft` 那段）。
       - name: 出安装包与更新包
+        id: stage
         uses: tauri-apps/tauri-action@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -327,19 +338,23 @@ jobs:
             **这个安装包没有做 Windows 代码签名**，首次运行会出现「未知发布者」/SmartScreen 提示；
             校验和与来源证明见 release 里的 `SHA256SUMS` 与 GitHub attestation。
           generateReleaseNotes: true
-          # **草稿先建、后由下面的 publish job 自动发布**：发布之前，草稿是这一趟的
-          # **重试锚点**——中途出了事重跑同一趟，tauri-action 会找到这个草稿把产物补进去，
-          # 而不是撞「release already exists」。发布之后的重跑由 publish job 找回同 tag 的
-          # 已发布 release，重新校验/覆盖校验和与 attestation；本 job 只出包与上传草稿。
           releaseDraft: true
+          args: -- --locked
           prerelease: false
 
-      # 草稿由下面的 publish job 统一校验、计算 SHA256SUMS、生成 attestation、
-      # 发布并标成 latest，再做一次匿名 feed 核验；本 job 只负责出包与上传草稿。
+      - name: Verify the packaged version
+        shell: bash
+        env:
+          PACKAGED_VERSION: ${{ steps.stage.outputs.appVersion }}
+          APP_VERSION: ${{ needs.frontend.outputs.version }}
+        run: test "$PACKAGED_VERSION" = "$APP_VERSION"
 
   publish:
+    concurrency:
+      group: desktop-release-publication
+      queue: max
     name: 发布：校验、SHA256SUMS、attestation、匿名核验
-    needs: [release]
+    needs: [frontend, release]
     if: github.ref_type == 'tag' && startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     # 自动发布是本仓的显式取舍（.desktop-policy.json 的 release-auto-publish 有 reason/revisitWhen）；
@@ -350,13 +365,18 @@ jobs:
       attestations: write
       artifact-metadata: write
     env:
+      RELEASE_ID: ${{ needs.release.outputs.release_id }}
+      SOURCE_COMMIT: ${{ needs.frontend.outputs.commit }}
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       REPO: ${{ github.repository }}
       TAG: ${{ github.ref_name }}
     steps:
       - uses: actions/checkout@v7
-        with:
-          persist-credentials: false
+        with: { ref: '${{ needs.frontend.outputs.commit }}' }
+      - uses: actions/setup-node@v7
+        with: { node-version: 26 }
+      - name: Check the remote tag and published release
+        run: node .github/scripts/release-state.mjs guard
       - name: 安装更新签名校验工具
         run: |
           sudo apt-get update
@@ -381,21 +401,13 @@ jobs:
       - uses: actions/attest@v4
         with:
           subject-checksums: dist/SHA256SUMS
-      - name: 发布这条 release 并标成 latest
-        run: |
-          set -euo pipefail
-          # 不限定 draft：发布成功后匿名核验失败时，重跑必须能找回这条已发布的 release
-          # 重新校验并覆盖 SHA256SUMS/attestation。对已发布的 release，draft=false 是 no-op。
-          id="$(gh api "repos/${REPO}/releases?per_page=100"                  --jq "first(.[] | select(.tag_name == \"${TAG}\") | .id)")"
-          [ -n "$id" ] || { echo "::error::没找到 ${TAG} 的 release"; exit 1; }
-          gh api --method PATCH "repos/${REPO}/releases/${id}" -F draft=false -f make_latest=true >/dev/null
-          latest="$(gh api "repos/${REPO}/releases/latest" --jq .tag_name)"
-          [ "$latest" = "$TAG" ] || { echo "::error::releases/latest 指着 ${latest}，不是 ${TAG}"; exit 1; }
+      - name: Publish the verified draft
+        run: node .github/scripts/release-state.mjs publish dist
       - name: 匿名核验 updater feed
         run: |
           set -euo pipefail
           v="${TAG#v}"
-          url="https://github.com/${REPO}/releases/latest/download/latest.json"
+          url="https://github.com/${REPO}/releases/download/$TAG/latest.json"
           expected="$(jq -cS . dist/latest.json)"
           for i in $(seq 1 10); do
             if actual="$(curl -fsSL "$url" 2>/dev/null | jq -cS . 2>/dev/null)" && [ "$actual" = "$expected" ]; then

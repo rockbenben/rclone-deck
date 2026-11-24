@@ -19,8 +19,8 @@
     "tauriUpdaterKey": "mandatory; private key only in GitHub secrets",
     "windows": "unsigned until a code-signing certificate/Azure Artifact Signing is available; release body carries SmartScreen warning"
   },
-  "versionSource": "git tag vX.Y.Z; package.json, src-tauri/tauri.conf.json and src-tauri/Cargo.toml are asserted equal in the release job",
-  "release": "CI auto-publish is an explicit project choice; release job waits for frontend + rust tests; publish job validates updater feed, writes LF SHA256SUMS, creates attestation, publishes with make_latest, then anonymously verifies latest.json",
+  "versionSource": "稳定 Git tag vX.Y.Z，在测试及打包前注入 npm 与 Tauri 应用版本。Cargo crate 版本保留其独立用途。",
+  "release": "通过前端、Rust 与安全门禁后暂存草稿，验证签名、资产及 SHA256SUMS，按版本决定 Latest 并核验公开下载。",
   "actionPins": "major tags (@v7/@v4); no full SHA",
   "immutableReleases": "not enabled yet",
   "deviations": [

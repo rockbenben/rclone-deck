@@ -412,7 +412,7 @@ export function Panel() {
           </Layout>
         </div>
         <div style={{ display: view === 'browser' ? 'block' : 'none' }}>
-          <BrowserPanel rootsRevision={rootsRevision} />
+          <BrowserPanel active={view === 'browser'} rootsRevision={rootsRevision} />
         </div>
         {/* 第三面：那两份文件。它不轮询，也不在挂载之外自己发请求（读一次 = 读两份文件 +
             一次问 rclone 的只读探针），所以挂着不比藏起来更贵；切走再回来还站在原来那一格。

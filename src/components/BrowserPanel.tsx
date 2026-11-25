@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import * as api from '../api';
 import { errNote, plainNote } from '../errors';
 import { baseName } from '../format';
+import { isRecord, useStoredJson } from '../prefs';
 import { BrowserPane } from './BrowserPane';
 import { LayerConfirm } from './LayerConfirm';
 import { HIT_OFF, LockHint } from './LockHint';
@@ -16,9 +17,20 @@ const other = (side: Side): Side => (side === 'local' ? 'remote' : 'local');
 const SIDE_TITLE: Record<Side, string> = { local: '本地目录', remote: '远端' };
 
 /** 一栏站的位置：发进后台的那个 `fs`（后台给什么就传回什么，见 `RemoteRef.id`）+ 相对根的前缀。 */
-interface PaneState { fs: string | null; prefix: string; listing: BrowserListing | null }
+interface BrowserLocation { fs: string | null; prefix: string }
+interface PaneState extends BrowserLocation { listing: BrowserListing | null }
 
 const EMPTY_PANE: PaneState = { fs: null, prefix: '', listing: null };
+
+function decodeBrowserLocations(value: unknown): Record<Side, BrowserLocation> {
+  function location(side: Side): BrowserLocation {
+    const entry = isRecord(value) ? value[side] : null;
+    return isRecord(entry) && typeof entry.fs === 'string' && typeof entry.prefix === 'string'
+      ? { fs: entry.fs, prefix: entry.prefix }
+      : { fs: null, prefix: '' };
+  }
+  return { local: location('local'), remote: location('remote') };
+}
 
 /** 相对名的唯一一处拼接。两个输入都是后台交出的形状：`dir` 是这一栏的导航状态（它的每个片段
  *  都来自清单行的 `name`），`name` 是行上那个完整相对名或操作员敲进去的一段。
@@ -54,7 +66,7 @@ const EMPTY_NOTE: ShortNote = { short: '', detail: '' };
  * 编排层：两栏的状态、跨栏的源（`picked`）、确认层与命名框都归这里。
  * 一栏长什么样在 `BrowserPane`，确认层长什么样在 `LayerConfirm` —— 这一面只决定"谁把什么交给谁"。
  */
-export function BrowserPanel({ rootsRevision }: { rootsRevision: number }) {
+export function BrowserPanel({ active, rootsRevision }: { active: boolean; rootsRevision: number }) {
   const { notification } = AntdApp.useApp();
   /** 与 `Panel.tsx` 那个同形状：标题是人话，正文才是原文（后台交出来的两段，见 `errNote`）。
    *  仍然走 `useApp()`，R57 那个 provider 形状没动。 */
@@ -87,6 +99,8 @@ export function BrowserPanel({ rootsRevision }: { rootsRevision: number }) {
   // 是一栏空的表 —— "这一层是空的"与"这一层列不出来"在只有一条 toast 的界面里长得一模一样。
   const [listErrors, setListErrors] = useState<Record<Side, ShortNote | null>>({ local: null, remote: null });
   // 动作跑完之后刷新两栏，用的是**当下**站的位置；回调里那份 `panes` 是这次点击开始时的旧副本。
+  const [locations, setLocations] = useStoredJson('deck.browser', decodeBrowserLocations);
+  const initialLocations = useRef<typeof locations | null>(locations);
   const panesRef = useRef(panes);
   const listRequests = useRef<Record<Side, number>>({ local: 0, remote: 0 });
   const refsRequest = useRef(0);
@@ -113,6 +127,7 @@ export function BrowserPanel({ rootsRevision }: { rootsRevision: number }) {
     const previous = panesRef.current[side];
     if (previous.fs !== next.fs || previous.prefix !== next.prefix) {
       setPicked((p) => p?.side === side ? null : p);
+      setLocations((current) => ({ ...current, [side]: { fs: next.fs, prefix: next.prefix } }));
     }
     setPane(side, { ...next, listing: null });
     setListErrors((p) => ({ ...p, [side]: null }));
@@ -126,7 +141,7 @@ export function BrowserPanel({ rootsRevision }: { rootsRevision: number }) {
       setListErrors((p) => ({ ...p, [side]: note }));
       say(`${SIDE_TITLE[side]}那一栏列不出来`, note);
     }
-  }, [say, setPane]);
+  }, [say, setPane, setLocations]);
 
   const loadRefs = useCallback(async () => {
     const request = ++refsRequest.current;
@@ -136,13 +151,18 @@ export function BrowserPanel({ rootsRevision }: { rootsRevision: number }) {
       if (request !== refsRequest.current) return;
       setRefs(roots);
       setRefsError(null);
-      const { local, remote } = panesRef.current;
-      if (!roots.some((root) => root.isLocal && root.id === local.fs)) {
-        const fs = roots.find((root) => root.isLocal)?.id ?? null;
-        if (fs !== local.fs) void go('local', { ...EMPTY_PANE, fs });
-      }
-      if (remote.fs !== null && !roots.some((root) => !root.isLocal && root.id === remote.fs)) {
-        void go('remote', EMPTY_PANE);
+      const restored = initialLocations.current;
+      initialLocations.current = null;
+      for (const side of ['local', 'remote'] as const) {
+        const previous = panesRef.current[side];
+        const wanted = restored?.[side] ?? previous;
+        const available = roots.filter((root) => root.isLocal === (side === 'local'));
+        const next = available.some((root) => root.id === wanted.fs)
+          ? wanted
+          : { fs: side === 'local' ? available[0]?.id ?? null : null, prefix: '' };
+        if (previous.fs !== next.fs || previous.prefix !== next.prefix) {
+          void go(side, { ...next, listing: null });
+        }
       }
     } catch (e) {
       if (request === refsRequest.current) setRefsError(errNote(e));
@@ -151,7 +171,7 @@ export function BrowserPanel({ rootsRevision }: { rootsRevision: number }) {
     }
   }, [go]);
 
-  useEffect(() => { void loadRefs(); }, [loadRefs, rootsRevision]);
+  useEffect(() => { if (active) void loadRefs(); }, [active, loadRefs, rootsRevision]);
 
   /** 动过东西之后两栏都重新问一次：作废是后台的事，这里的清单只是它的一份副本。 */
   const reloadBoth = useCallback(async () => {

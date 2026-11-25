@@ -1,11 +1,12 @@
 import { Button, Dropdown, Listy, Select, Space, Tag, Typography } from 'antd';
 import { ArrowDownOutlined, CloudUploadOutlined, DiffOutlined, FolderOpenOutlined, SwapOutlined, SyncOutlined } from '@ant-design/icons';
 import type { ReactNode } from 'react';
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef } from 'react';
 
 import { HIT_OFF, LockHint } from './LockHint';
 import type { Mode, PairGroup, Slot } from '../pairs';
 import { defaultChoice, groupJobs, intentKey, intentOptions, slotJob } from '../pairs';
+import { isRecord, useStoredJson } from '../prefs';
 import type { JobView, TaskState } from '../types';
 import { canInventory, KIND_LABEL, runningHint } from '../types';
 
@@ -151,26 +152,39 @@ interface Props extends JobActions {
 }
 export interface PairFocus { key: string }
 
-/** 「站在哪一对位置 + 那一格是什么」的**唯一一份状态**。
- *
- *  它原来住在 `JobListView` 自己身上，于是三枚下拉只能跟着格一起挤在左列里 —— 那一列只有
- *  340px，三枚框加三行标签一行也放不下，实测被折成**三行**，"选哪一对位置"读起来像一张
- *  竖排的表。判据「同一属性的下拉只该有一个」是对的，但它没有说这三枚必须挤在一列里。
- *  现在它抬成一处，选择条横跨整窗、格与右列并排 —— 两边读的是同一份状态，判定仍只有一处。 */
+type OperationChoice = { mode: Mode; slot: Slot };
+type PairPreference = { pairKey: string | null; operations: Record<string, OperationChoice> };
+
+function decodePairPreference(value: unknown): PairPreference {
+  const entries: [string, OperationChoice][] = [];
+  if (isRecord(value) && isRecord(value.operations)) {
+    for (const [key, operation] of Object.entries(value.operations)) {
+      if (!isRecord(operation)) continue;
+      const { mode, slot } = operation;
+      if ((mode === 'add' || mode === 'mirror') && (slot === 'a' || slot === 'b')) {
+        entries.push([key, { mode, slot }]);
+      }
+    }
+  }
+  const pairKey = isRecord(value) && typeof value.pairKey === 'string' ? value.pairKey : null;
+  return { pairKey, operations: Object.fromEntries(entries) };
+}
+
+/** 配对选择和结果栏共用当前操作。 */
 export function usePairChoice(jobs: JobView[], focusPair: PairFocus | null, onSelect: (id: string) => void) {
   const { pairs, gates } = groupJobs(jobs);
-  /** 站在哪一对位置上。没选过就站在第一对 —— 这一面**永远有一格被选中**：
-   *  列表撤掉之后只剩当前那一格，"没选"会让右列没有主人（那句「先选一个任务」不该在这一面可达）。 */
-  const [pairKey, setPairKey] = useState<string | null>(null);
+  const [preference, setPreference] = useStoredJson('deck.pair', decodePairPreference);
+  const { pairKey, operations } = preference;
   const shown = pairs.find((g) => g.key === pairKey) ?? pairs[0];
-  /** 每一对站在哪一格（模式 + 方向）。**只活在本次会话里**：记住一个"会删东西"的选择，
-   *  等于让某天的第一次点击落在最重的那一档上，所以重开面板一定回到「只补，不删」。 */
-  const [choice, setChoice] = useState<Record<string, { mode: Mode; slot: Slot }>>({});
+  const setPairKey = (key: string) => setPreference((current) => ({ ...current, pairKey: key }));
+  const remember = (key: string, mode: Mode, slot: Slot) => setPreference((current) => ({
+    pairKey: key, operations: { ...current.operations, [key]: { mode, slot } },
+  }));
 
   /** 这一对现在说的是**哪条任务**：读选择，缺的那一格退回默认（配置在两次轮询之间被改过
    *  就会缺）。四格里哪一格有任务由后台带出来的 `pairKey`/`pairSlot` 决定，这里不重算。 */
   const pick = (g: PairGroup) => {
-    const wanted = choice[g.key] ?? defaultChoice(g);
+    const wanted = operations[g.key] ?? defaultChoice(g);
     const job = slotJob(g, wanted.mode, wanted.slot);
     if (job !== null) return { mode: wanted.mode, slot: wanted.slot, job };
     const dflt = defaultChoice(g);
@@ -184,15 +198,14 @@ export function usePairChoice(jobs: JobView[], focusPair: PairFocus | null, onSe
     if (shown === undefined) return;
     const job = slotJob(shown, mode, slot);
     if (job === null) return;
-    setChoice((c) => ({ ...c, [shown.key]: { mode, slot } }));
+    remember(shown.key, mode, slot);
     onSelect(job.id);
   };
 
   const selectJob = (job: JobView) => {
     if (job.kind !== 'gate') {
       const mode = job.kind === 'sync' ? 'mirror' : 'add';
-      setPairKey(job.pairKey);
-      setChoice((current) => ({ ...current, [job.pairKey]: { mode, slot: job.pairSlot } }));
+      remember(job.pairKey, mode, job.pairSlot);
     }
     onSelect(job.id);
   };

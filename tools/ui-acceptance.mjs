@@ -2894,9 +2894,9 @@ const STEPS = [
       await clickIfEnabled('上一级', 1); await sleep(2400);
     } },
   { id: 'remember-what-was-open', what: '写下"上次开在哪一面、右列哪一段"（重开那一格的前置；这一格不碰后台）', run: async () => {
-      // 先站到对子那一面把右列翻到「日志」（那一段住在对子那一栏里，开在设置时它是隐藏的），
-      // 再把这一面切到设置 —— 两件事各留一个"非默认"的值，重开之后才分得清是回来了还是碰巧。
+      // 在文件任务页切换操作和结果页签，再打开设置。
       await click('文件任务', 'any'); await sleep(1200);
+      await openCardSelect(PAIR_C, '从云端复制到本地');
       await clickRailTab('日志');
       await click('设置', 'any'); await sleep(1600);
       const face = String(await ev('(() => { const it=[...document.querySelectorAll(".ant-segmented-item")]'
@@ -2906,7 +2906,7 @@ const STEPS = [
       log('REMEMBER-SET 写下的是 面="' + face + '"');
     } },
   { id: 'restart-keeps-face-and-tab', needsReopen: true,
-    what: '重开之后回到上次那一面与右列那一段，而模式那一格照旧从最轻的一档开始', run: async () => {
+    what: '重开后恢复工作区、结果页签和上次操作', run: async () => {
       // 顶栏那一条也有 Segmented（自动/浅色/深色），所以"哪一面"要按**这一面自己的三档**认，
       // 不能拿屏上第一个选中项 —— 那一拿就拿到主题（这一格第一遍就是这么红的）。
       const face = String(await ev('(() => { const it=[...document.querySelectorAll(".ant-segmented-item")]'
@@ -2935,7 +2935,7 @@ const STEPS = [
       log('REMEMBER 面="' + face + '" 段="' + tab + '" 模式="' + mode + '"');
       if (!face.includes('设置')) throw new Error('重开没回到上次那一面（开在="' + face + '"）');
       if (tab !== '日志') throw new Error('重开没回到右列上次那一段（停在="' + tab + '"）');
-      if (!mode.includes('复制（保留目标多余文件）')) throw new Error('模式那格跨重开记住了（那条安全规则被顺手扩到偏好层）：' + mode);
+      if (!mode.includes('从云端复制到本地')) throw new Error('没有恢复上次所选的操作和方向：' + mode);
       await shot('restart-keeps-face-and-tab.png');
     } },
 ];

@@ -405,9 +405,9 @@ fn browsing_defaults_to_local_and_gives_it_the_whole_width() {
     let t = strip_comments(&raw);
 
     // 默认站到第一个本地目录，且**不**自动站云端那一栏（替人挑"要比谁"比多一次点击更贵）
-    assert!(t.contains("roots.find((root) => root.isLocal)"),
+    assert!(t.contains("side === 'local' ? available[0]?.id ?? null : null"),
         "打开这一面没有默认站到本地：{t}");
-    assert!(t.contains("if (!roots.some((root) => root.isLocal && root.id === local.fs))"),
+    assert!(t.contains("available.some((root) => root.id === wanted.fs)"),
         "默认那一步应保留依然可选的本地位置：{t}");
 
     // **本地为主、云端是可切换的比对**（2026-10-11 再改一版）：单边占满并收起动作族，
@@ -675,15 +675,12 @@ fn a_card_is_one_position_pair_and_its_selectors_list_only_what_exists() {
         "「删」在方向那一句里出现的次数不是 2（镜像那两格各一次）：那一格又在替不删东西的模式说话：{dir}");
 }
 
-/// 模式与方向的选择**不跨重开面板记住**：记住一个"会删东西"的选择，等于让某天的第一次点击
-/// 落在最重的那一档上。这里钉的是持久化的三条通路都没被用。
 #[test]
-fn the_mode_choice_never_outlives_the_session() {
+fn pair_selection_persists_positions_and_each_pairs_operation() {
     let list = strip_comments(&read("src/components/JobListView.tsx"));
-    for w in ["localStorage", "sessionStorage", "document.cookie", "invoke("] {
-        assert!(!list.contains(w), "卡上的选择走了持久层或自己发命令（{w}）：模式必须每次从「只补，不删」开始");
-    }
-    assert!(list.contains("useState"), "选择没有存在组件状态里：那它靠什么记住这一张卡当前是哪一格？");
+    assert!(list.contains("useStoredJson('deck.pair', decodePairPreference)"));
+    assert!(list.contains("operations[g.key]"), "应分开记住各配对的选择");
+    assert!(list.contains("remember(shown.key, mode, slot)"), "更改操作时应记录模式和方向");
 }
 
 /// 当前那一格脚下的按钮按**模式**摆：「只补，不删」那格两颗（模拟复制 + 开始），
@@ -730,7 +727,7 @@ fn the_cell_buttons_follow_the_mode_and_nothing_deletes_from_the_face() {
     // 换选择必须**同时**把右列指过去：右列讲的要是当前这一格那条任务（同族那条）。
     let choose = &list[list.find("const choose = ").expect("找不到换模式/换方向那处理器")..];
     let body = &choose[..choose.find("};").unwrap_or(choose.len())];
-    assert!(body.contains("setChoice") && body.contains("onSelect("),
+    assert!(body.contains("remember(shown.key, mode, slot)") && body.contains("onSelect("),
         "换那一格只记了选择、没把右列指过去：{body}");
     // 名字与它的框必须捆成一格（那一行放不下三格时只能整格换，实拍量过：
     // 「方向」留在上一行、它的框掉到下一行就是名字与值分家）。三枚下拉各一颗。
@@ -1023,10 +1020,7 @@ fn a_cell_is_always_selected_and_the_rail_follows_it() {
     assert!(t.contains("onSelect(picked.job.id)"), "选中态没跟着这一格走：右列会讲上一家的事：{t}");
     // 那一格不存在了（配置在两次轮询之间被改过）要退回默认档，不许静默空着。
     assert!(t.contains("defaultChoice(g)"), "缺档时没有退回默认那一格：{t}");
-    // 仍然不许把选择记进持久层（记住一个会删东西的选择 = 第一次点击落在最重那一档）。
-    for w in ["localStorage", "sessionStorage", "document.cookie"] {
-        assert!(!t.contains(w), "选择走了持久层（{w}）：模式必须每次从「只补，不删」开始");
-    }
+
 }
 
 /// 试跑的进度面不许写「已传」。

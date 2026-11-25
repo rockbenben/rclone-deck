@@ -1,18 +1,5 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 
-/**
- * 「你上次在看什么」——面板开在哪一面、右列停在哪一段。这两件重开该回来。
- *
- * 这两件之外，**只有更新那一档**也走这一层（`src/updates.ts` 用下面这两个读写函数存它）：
- * 它同样要跨重开记住，否则"开了"每次开面板都被退回关着，那一档就等于没有。
- * 模式与方向那两格**不在这里记**：记住一个"会删东西"的选择，等于让某天的
- * 第一次点击落在最重的那一档上（那条规则由 `frontend_pairs.rs` 的
- * `the_mode_choice_never_outlives_the_session` 钉着）。这里的键名单里出现 mode / slot，
- * 本文件的证人就红 —— 那是把安全规则顺手扩到偏好层来。
- *
- * 口径抄 `theme.ts` 那一套（存不下就只生效这一次，不因为存储不可用而拒掉界面）：
- * 两处用同一句"读不到就当没存过"，加新偏好时也照这一份抄，而不是各写一套 try/catch。
- */
 export const KEY_FACE = 'deck.view';
 export const KEY_TAB = 'deck.tab';
 
@@ -41,4 +28,21 @@ export function useStored<T extends string>(
 ): [T, (next: T) => void] {
   const [value, setValue] = useState<T>(() => readStored(key, allowed, fallback));
   return [value, (next: T) => { writeStored(key, next); setValue(next); }];
+}
+
+/** 结构化偏好通过调用方校验。读取或写入失败时，仍可在当前会话继续选择。 */
+export function useStoredJson<T>(key: string, decode: (value: unknown) => T) {
+  const [value, setValue] = useState(() => {
+    try {
+      return decode(JSON.parse(localStorage.getItem(key) ?? 'null'));
+    } catch {
+      return decode(null);
+    }
+  });
+  useEffect(() => { writeStored(key, JSON.stringify(value)); }, [key, value]);
+  return [value, setValue] as const;
+}
+
+export function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }

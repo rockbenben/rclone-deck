@@ -152,9 +152,7 @@ export function availableSlots(g: PairGroup, mode: Mode): Slot[] {
   return (['a', 'b'] as Slot[]).filter((s) => slotJob(g, mode, s) !== null);
 }
 
-/** 卡打开时站在哪一格：**默认「只补，不删」**，那一档没有才退到「让两边对齐（会删）」。
- *  不持久化这件事由调用方保证（会话内的 useState，重开面板回到默认）——
- *  记住一个"会删东西"的选择，等于让某天的第一次点击落在最重的那一档上。 */
+/** 没有有效的上次选择时优先选复制，缺少复制才选单向同步。 */
 export function defaultChoice(g: PairGroup): { mode: Mode; slot: Slot } {
   const modes = availableModes(g);
   for (const mode of (['add', 'mirror'] as Mode[])) {
@@ -201,7 +199,7 @@ export function modeLabel(mode: Mode): string {
  *  它跟着**这一格**走而不是跟着模式走 —— 一枚框里两种危险程度并排，颜色就是唯一的区分。
  *
  *  顺序：先不删的两档、后会删的两档，且每组内按槽位排 —— 列表**从上往下越来越重**，
- *  与 `defaultChoice` 的默认档（不删那档）一致，于是最上面那一项就是重开面板会站的那一格。
+ *  与 `defaultChoice` 的默认档（不删那档）一致。
  */
 export interface Intent {
   mode: Mode;

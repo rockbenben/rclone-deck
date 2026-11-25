@@ -10,6 +10,7 @@ const startup = process.argv.find((arg) => arg.startsWith('--startup='))?.slice(
 const fixture = process.argv.find((arg) => arg.startsWith('--fixture='))?.slice(10) ?? startup;
 const pollOnly = process.argv.includes('--poll-only');
 const pairsOnly = process.argv.includes('--pairs-only');
+const preferencesOnly = process.argv.includes('--preferences-only');
 assert(fixture, 'Run with --fixture=<disposable home> or --startup=<invalid disposable home>');
 let page;
 for (let i = 0; i < 60 && !page; i++) {
@@ -98,6 +99,7 @@ function fixtureIpc() {
     calls: [], notifications: [], state: { state: 'idle' }, next: 'done', withheld: [], jobs: 'copy',
     draft: false, holdRemote: false, holdJobs: false, heldJobs: [], pendingJobs: 0, peakJobs: 0,
   };
+  const preferenceCase = new URL(location.href).searchParams.has('verify-preferences');
   const emptyNote = { short: '', detail: '' };
   const done = (dry) => ({
     state: 'done', jobid: 11, dry_run: dry, previewed: null,
@@ -152,7 +154,12 @@ function fixtureIpc() {
         return reply({ ok: true, alive: true, port: 1, pid: 1, rcloneVersion: 'fixture', executeId: '',
           startupError: null, locks: {}, logDir: '', configPath: '', activeCount: 0, sizeOnly: false });
       case 'get_jobs': {
-        const response = reply([job(mock.jobs), ...(mock.draft ? [job('copy', true)] : [])]);
+        const jobs = [job(mock.jobs), ...(mock.draft ? [job('copy', true)] : [])];
+        if (preferenceCase) jobs.push(
+          { ...job('sync'), src: remote.id, dst: local.id, srcIsLocal: false, dstIsLocal: true, pairSlot: 'b' },
+          { ...job('copy'), id: 'second', pairKey: 'second', src: 'D:/second', dst: 'stage-f:second' },
+        );
+        const response = reply(jobs);
         if (!mock.holdJobs) return response;
         mock.peakJobs = Math.max(mock.peakJobs, ++mock.pendingJobs);
         return new Promise((resolve) => mock.heldJobs.push(() => {
@@ -280,6 +287,51 @@ const checks = [
     await delay(250);
     assert.equal(await evaluate("stageF.calls.filter(c => c === 'settings_current').length"), 2);
   }],
+  ['recent selections survive reload', async () => {
+    const add = '复制（保留目标多余文件） —— 从本地复制到云端';
+    const mirror = '单向同步（删除目标多余文件） —— 以云端为主（删本地多余的）';
+    const firstPair = 'stage-f ↔ stage-f:';
+    const secondPair = 'second ↔ stage-f:second';
+    const selectors = '.pair-bar .ant-select';
+    const options = '.ant-select-dropdown:not(.ant-select-dropdown-hidden) .ant-select-item-option';
+    const select = async (from, to) => {
+      await click(from, selectors);
+      await until(`(() => {
+        const item = [...document.querySelectorAll(${JSON.stringify(options)})].find(
+          (option) => option.getClientRects().length && option.innerText.trim() === ${JSON.stringify(to)});
+        if (!item) return false;
+        item.click();
+        return true;
+      })()`, 'The dropdown did not offer ' + to);
+    };
+    const currentPreference = "JSON.parse(localStorage.getItem('deck.pair'))";
+    await select(add, mirror);
+    await until(`${currentPreference}?.operations.pair?.mode === 'mirror'`, 'The sync choice was not saved');
+    await select(firstPair, secondPair);
+    await until(`${currentPreference}?.pairKey === 'second'`, 'The second pair was not saved');
+
+    await click('浏览文件');
+    await click('进入', 'tr[data-row-key="fast"] button');
+    await until(shows('latest.txt'), 'The initial local directory did not open');
+    await click('和云端比一比');
+    await until("stageF.calls.filter(c => c === 'browser_list').length === 3", 'Remote comparison did not open');
+    await click('文件任务');
+    await click('日志');
+
+    const previous = await evaluate('performance.timeOrigin');
+    await send('Page.reload');
+    await until(`performance.timeOrigin !== ${previous} && ${shows(secondPair)}`, 'Last pair was not restored');
+    assert.equal(await evaluate(`${currentPreference}?.pairKey`), 'second');
+    assert.equal(await evaluate("stageF.calls.includes('browser_list')"), false, 'The hidden browser listed files on startup');
+    assert.equal(await evaluate("stageF.calls.some(c => /^(preview_mirror|confirm_mirror|run_mirror)$/.test(c))"), false);
+    await select(secondPair, firstPair);
+    await until(shows(mirror), 'The first pair did not restore its sync direction');
+    assert.equal(await evaluate("document.querySelector('.ant-layout-content .ant-segmented-item-selected').textContent.trim()"), '日志');
+    await click('浏览文件');
+    await until(`[...document.querySelectorAll('.ant-breadcrumb')].filter(e => e.textContent.includes('fast')).length === 2`,
+      'Local and remote directories were not restored');
+    assert.equal(await evaluate("stageF.calls.filter(c => c === 'browser_list').length"), 2);
+  }],
   ['difference report reuse', async () => {
     const requests = "stageF.calls.filter(c => c === 'run_inventory').length";
     await click('看差异', '.pairs-cell button');
@@ -366,12 +418,14 @@ try {
     });
     let failed = 0;
     const selectedChecks = pairsOnly ? checks.filter(([name]) => name === 'difference report reuse') :
+      preferencesOnly ? checks.filter(([name]) => name === 'recent selections survive reload') :
       pollOnly ? [pollCheck] : [...checks, pollCheck];
     for (const [index, [name, check]] of selectedChecks.entries()) {
       await evaluate('localStorage.clear()');
       const previousDocument = await evaluate('performance.timeOrigin');
       const address = new URL(page.url);
       address.searchParams.set('stage-f', index);
+      if (name === 'recent selections survive reload') address.searchParams.set('verify-preferences', '1');
       await send('Page.navigate', { url: address.href });
       await until(`performance.timeOrigin !== ${previousDocument} && typeof stageF === 'object'
         && !!document.querySelector('.ant-layout')`, 'Fixture did not boot into ' + name);

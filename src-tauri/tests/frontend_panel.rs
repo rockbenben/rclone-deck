@@ -141,19 +141,11 @@ fn running_the_check_lands_on_the_face_that_holds_its_report() {
         "翻面那句出现了不止一处：一条动作两处实现：{t}");
 }
 
-/// 面板开在哪一面、右列停在哪一段 —— 这两件是"你上次在看什么"，重开该回来
-/// （操作员那句「我常用设置怎么没保存」里的那一条）。
-/// 记的**只有这两件**：模式与方向那两格仍然不许跨重开 —— 那条安全规则由
-/// `frontend_pairs.rs::the_mode_choice_never_outlives_the_session` 钉着，这里钉的是
-/// "别把它顺手扩到这一层来"，所以键的名单里出现 mode/slot 就是红。
 #[test]
-fn the_face_and_the_rail_tab_survive_a_restart_and_only_those_two() {
+fn the_face_and_the_rail_tab_survive_a_restart() {
     let prefs = strip_comments(&read("src/prefs.ts"));
     assert!(prefs.contains("deck.view") && prefs.contains("deck.tab"),
         "面与段没走持久层：{prefs}");
-    for banned in ["deck.mode", "deck.slot", "deck.pair"] {
-        assert!(!prefs.contains(banned), "{banned} 进来了：那一格跨重开记住 = 第一次点击可能落在最重那一档");
-    }
     let panel = strip_comments(&read("src/Panel.tsx"));
     let tight = panel.split_whitespace().collect::<Vec<_>>().join("");
     assert_eq!(count_in(&tight, "useStored("), 2,

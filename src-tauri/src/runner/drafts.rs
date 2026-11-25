@@ -9,7 +9,7 @@
 //! - 临时格与配置格**抢同一把锁**（锁按 `Scope`，见 `Runner::acquire`），一次写互相作废凭证；
 //! - 位置判据必须是**同一段代码**（`Job::check_positions()`），否则面板能跑一条配置侧会拒的任务；
 //! - 编号**不回收**（`Runner::draft_seq`），否则旧凭证落在新卡的同名格上"作数"（R34 那一族 ABA）。
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::config::jobs::{Job, JobKind};
 use crate::pair::{mirror_sides_ok, pair_key_of, pair_slot_of, same_position};
@@ -29,16 +29,78 @@ const CELLS: [(JobKind, &'static str); 4] = [
     (JobKind::Copy, "a"), (JobKind::Copy, "b"), (JobKind::Sync, "a"), (JobKind::Sync, "b"),
 ];
 
+type Cell = (JobKind, &'static str);
+
+fn cell_of(job: &Job) -> (&'static str, &'static str) {
+    (job.kind.toml_word(), pair_slot_of(&job.src, &job.dst))
+}
+
+fn missing_cells<'a>(
+    first: &str,
+    second: &str,
+    taken: &'a BTreeSet<(&'static str, &'static str)>,
+) -> impl Iterator<Item = &'static Cell> + 'a {
+    let mirror_ok = mirror_sides_ok(first, second);
+    CELLS.iter()
+        .filter(move |(kind, _)| *kind != JobKind::Sync || mirror_ok)
+        .filter(move |(kind, slot)| !taken.contains(&(kind.toml_word(), *slot)))
+}
+
+fn build_cell(id: String, name: &str, (kind, slot): &Cell, first: &str, second: &str) -> Job {
+    let (src, dst) = if pair_slot_of(first, second) == *slot {
+        (first, second)
+    } else {
+        (second, first)
+    };
+    Job {
+        id,
+        name: name.to_string(),
+        kind: kind.clone(),
+        src: src.to_string(),
+        dst: dst.to_string(),
+        open_dir: None,
+        manifest: None,
+    }
+}
+
+/// 已保存的任务为配对提供两处位置，缺少的操作在运行时补齐。
+pub(crate) fn complete_saved_pairs(mut jobs: Vec<Job>) -> Vec<Job> {
+    let mut pairs = BTreeMap::new();
+    let mut ids: BTreeSet<String> = jobs.iter().map(|job| job.id.clone()).collect();
+    for job in &jobs {
+        if job.kind != JobKind::Gate && !same_position(&job.src, &job.dst) {
+            let (_, taken) = pairs.entry(pair_key_of(&job.src, &job.dst))
+                .or_insert_with(|| (job, BTreeSet::new()));
+            taken.insert(cell_of(job));
+        }
+    }
+    let mut generated = Vec::new();
+    for (anchor, taken) in pairs.into_values() {
+        for cell @ (kind, slot) in missing_cells(&anchor.src, &anchor.dst, &taken) {
+            let base = format!("pair-{}-{}-{slot}", anchor.id, kind.toml_word());
+            let mut id = base.clone();
+            let mut suffix = 2;
+            while !ids.insert(id.clone()) {
+                id = format!("{base}-{suffix}");
+                suffix += 1;
+            }
+            let name = format!("{}（位置配对）", kind.word());
+            let job = build_cell(id, &name, cell, &anchor.src, &anchor.dst);
+            if job.check_positions().is_ok() {
+                generated.push(job);
+            }
+        }
+    }
+    jobs.extend(generated);
+    jobs
+}
+
 // ---- 拒绝话术：给操作员看的句子，不是内部名词（spec §5）。
 // 抽成函数与对齐那四条同一个理由：长在流程中间的句子测试构造不到那个位置，
 // 扫不到就等于这几句从没被"不许漏内部名词"那条规矩管过。
 
 pub fn draft_same_position_refusal() -> String {
     "这两处是同一个位置：自己对自己对齐没有「多余」可删，也没有要补的东西。".to_string()
-}
-
-pub fn draft_all_taken_refusal() -> String {
-    "这一对位置每一格都已经有任务了：卡就在上面，换一格用就行，不用再立一张。".to_string()
 }
 
 /// 那句里的写法示例用反引号包着：标点的判据不许拿半角冒号进中文句子，而 `名称:路径` 里的
@@ -68,9 +130,7 @@ impl Runner {
     /// 立一张临时卡：把两处位置摊成这张卡上**缺的那几格**（R94），交回那张卡的 `pair_key`
     /// （界面拿它把右列指过去，与 `JobView.pairKey` 同一把尺子算出来的那一个）。
     ///
-    /// 一格都不缺 ⇒ 拒；两处归一之后是同一棵树 ⇒ 拒；某一侧连形状都认不出 ⇒ 拒。
-    /// 「让两边对齐」那一档只在恰好一侧是云端时才建（`mirror_sides_ok`），两侧都本地时这张卡
-    /// 照样立起来，只是模式框里只有一格 —— 那不是拒绝，界面上看得见（spec §5 最后那一行）。
+    /// 已有配对直接返回同一个键；新配对只生成当前面板支持的操作。
     pub fn pair_draft(&self, src: &str, dst: &str) -> Result<String, RunError> {
         // 空的那一侧连"哪一棵树"都说不出，所以排在归一比较之前：`Scope` 会把 "" 归成一个真实的键，
         // 于是"自己对自己"那一句会先响，把操作员支去检查路径写法。
@@ -84,33 +144,17 @@ impl Runner {
             return Err(RunError::Invariant(draft_same_position_refusal()));
         }
         let key = pair_key_of(src, dst);
-        // a/b 由 `pair_slot_of` 判：恰好一侧是本地时本地那侧是 a，两侧同型时键小的那侧是 a。
-        // 这里不自判第二遍，是因为界面上那张卡的 a/b（`src/pairs.ts` 读 `JobView.pairSlot`）
-        // 与锁用的是同一个函数。
-        let src_is_a = pair_slot_of(src, dst) == "a";
-        let (a, b) = if src_is_a { (src, dst) } else { (dst, src) };
-        let mirror_ok = mirror_sides_ok(src, dst);
-
-        // 已经占住的格子不建（R94）。反面是影子：两张任务写同一格时界面上先到先得，
-        // 看不见的那条才是真会跑的那条 —— 那一族在本仓有点名的历史。
-        // 占没占按 (那一档的词, 它的 src 站的槽) 认，与界面摆那四格同一对值（`src/pairs.ts`）。
+        // 同一次加锁覆盖查重、分配编号与发布，重复提交只会选中同一配对。
+        let mut seq = self.draft_seq.lock().unwrap();
         let taken: BTreeSet<(&str, &str)> = self.jobs().iter()
             .filter(|j| j.kind != JobKind::Gate && pair_key_of(&j.src, &j.dst) == key)
-            .map(|j| (j.kind.toml_word(), pair_slot_of(&j.src, &j.dst)))
+            .map(cell_of)
             .collect();
-        let legal: Vec<&(JobKind, &'static str)> = CELLS.iter()
-            // `sync` 那一档要恰好一侧是云端；`copy` 两向恒合法（两侧都本地、两侧都云端都跑得动）。
-            .filter(|(kind, _)| *kind != JobKind::Sync || mirror_ok)
-            .filter(|(kind, slot)| !taken.contains(&(kind.toml_word(), *slot)))
-            .collect();
+        let legal: Vec<_> = missing_cells(src, dst, &taken).collect();
         if legal.is_empty() {
-            return Err(RunError::Invariant(draft_all_taken_refusal()));
+            return Ok(key);
         }
 
-        // 编号（R99）：与配置里的比一次，撞了就进位；游标**只增不减**（`draft_seq` 头上那段是为什么）。
-        // 顺序有意：编号先分配完、才做下面的位置检查，所以检查失败时游标已经进过位。
-        // 宁可跳号，不许撞号 —— 跳号没人看得见，撞号是两张卡共用一份状态与一份凭证。
-        let mut seq = self.draft_seq.lock().unwrap();
         let ids: Vec<String> = loop {
             let no = *seq;
             let candidate: Vec<String> = legal.iter()
@@ -121,16 +165,7 @@ impl Runner {
         };
 
         let built: Vec<Job> = legal.iter().zip(ids.iter())
-            .map(|((kind, slot), id)| Job {
-                id: id.clone(),
-                name: DRAFT_NAME.to_string(),
-                kind: kind.clone(),
-                src: if *slot == "a" { a.to_string() } else { b.to_string() },
-                dst: if *slot == "a" { b.to_string() } else { a.to_string() },
-                // `open_dir` 与 `manifest` 故意留空：那是"这一条在配置里怎么写的"那一类信息，
-                // 而临时卡没有那一份文件。对账要 manifest，所以临时卡压根没有对账那一档（spec §6）。
-                open_dir: None, manifest: None,
-            })
+            .map(|(cell, id)| build_cell(id.clone(), DRAFT_NAME, cell, src, dst))
             .collect();
         // 位置本身的判据走配置侧那一段代码（非空之后还有：云端那一侧不许混反斜杠、不许有点段、
         // 以及 `sync` 那一档要恰好一侧是云端 —— 这一条在这里由 `mirror_ok` 决定建不建，不靠它报错）。
@@ -189,5 +224,38 @@ impl Runner {
     fn id_taken(&self, id: &str) -> bool {
         self.jobs.iter().any(|j| j.id == id)
             || self.drafts.lock().unwrap().iter().any(|j| j.id == id)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_saved_local_remote_pair_exposes_all_four_operations() {
+        let first = "C:/photos";
+        let second = "remote:album";
+        let saved = build_cell("upload".into(), "上传", &CELLS[0], first, second);
+        let explicit_sync = build_cell("custom-sync".into(), "下载同步", &CELLS[3], second, first);
+        let jobs = complete_saved_pairs(vec![saved, explicit_sync]);
+
+        assert_eq!(jobs.len(), 4);
+        assert_eq!(jobs.iter().map(cell_of).collect::<BTreeSet<_>>(),
+            BTreeSet::from([("copy", "a"), ("copy", "b"), ("sync", "a"), ("sync", "b")]));
+        assert_eq!(jobs[0].id, "upload");
+        assert_eq!(jobs[1].id, "custom-sync");
+        assert_eq!(jobs[1].name, "下载同步");
+        assert!(jobs.iter().all(|job| pair_key_of(&job.src, &job.dst) == pair_key_of(first, second)));
+    }
+
+    #[test]
+    fn pairs_of_the_same_type_offer_both_copy_directions() {
+        for (first, second) in [("C:/photo-a", "C:/photo-b"), ("remote:a", "remote:b")] {
+            let saved = build_cell("copy".into(), "复制", &CELLS[0], first, second);
+            let jobs = complete_saved_pairs(vec![saved]);
+            assert_eq!(jobs.len(), 2);
+            assert_eq!(jobs[1].kind, JobKind::Copy);
+            assert_eq!((jobs[1].src.as_str(), jobs[1].dst.as_str()), (second, first));
+        }
     }
 }

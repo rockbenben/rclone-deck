@@ -28,8 +28,8 @@ use crate::runner::Runner;
 ///    能进设置面那一格，由人填。后台起不来时顶栏那句已经把去处说了。
 ///  * **`log_dir` 落在 `%LOCALAPPDATA%\rclone-deck\logs`** —— 与 `AppConfig` 算 pid
 ///    路径时用的那个根是同一处，新用户不必改就能建出来（D 盘不是人人都有）。
-///  * **一条 `copy` 示范、零条会删的**。删除那一档（`sync`）不随出厂发 ——
-///    它必须由人自己配出来、配对了、看清了才按。会删的东西不该由别人替他放进列表。
+///  * **一条 `copy` 示范、零条会删的**。运行页会为已配好的位置生成可选操作，
+///    涉及删除时必须预览并确认。
 ///    需要多对位置 / 多条对账 / 会删那几档的证人改读 `tests/fixtures/full-jobs.toml`。
 macro_rules! default_jobs {
     ($binary:literal, $source:literal) => {
@@ -51,7 +51,7 @@ exclude = ["Thumbs.db", "*.DS_Store"]
 log_dir = ""
 
 # 一条示范：只把缺的补上去，不删任何东西。
-# 想要「让两边一样」（会删掉多余的），在界面上配出来 —— 那一档不会随出厂发。
+# 更新这两个位置后，从运行页选操作和方向。单向同步会先预览并要求确认。
 [[job]]
 id = "demo"
 name = "示范：只补，不删"
@@ -129,6 +129,7 @@ pub async fn bootstrap() -> Result<Arc<Runner>, AppError> {
     // `shared_defaults` 从这份 `Defaults` 导出 spec，并把**同一个** `Defaults` 交回给 Runner。
     let (spec, defaults, jobs) = shared_defaults(&app, file.defaults, file.jobs);
     let handle = Arc::new(RcdSupervisor::start_owned(spec, home).await?);
+    let jobs = crate::runner::drafts::complete_saved_pairs(jobs);
     Ok(Arc::new(Runner::new(handle, app, defaults, jobs)))
 }
 

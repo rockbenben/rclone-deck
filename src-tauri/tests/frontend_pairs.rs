@@ -35,7 +35,7 @@ fn the_right_rail_segments_instead_of_replacing() {
 /// 它是这一格**唯一只读**的动作，也是动手之前该先按的那一颗（README 第 4 步「第一次跑建议就停在这儿」）。
 /// 收在「更多」里的那一次，格上那句「差异还没算过：点「看差异」算一次」指着一颗**看不见**的按钮，
 /// 而同时看得见的那颗是「开始传输」—— 把只读的那条藏起来、把会动数据的那条摆出来，顺序是反的。
-/// 收纳口还留着（打开所在目录 / 删掉这张临时卡），它仍然是" seldom 用但常驻"的那一格的去处。
+/// 收纳口还留着（打开所在目录 / 移除临时操作），它仍然是" seldom 用但常驻"的那一格的去处。
 ///
 /// 这一版还修了证人自己一个洞：原来判的是 `hits.any(|i| i >= rest_at && i <= menu_at)`，
 /// 那是个**位置区间**，不是"登记在哪个数组里" —— 把一颗动作从 `rest` 挪到 `face`
@@ -749,7 +749,7 @@ fn the_cell_buttons_follow_the_mode_and_nothing_deletes_from_the_face() {
         "Field 没有把标签与控件放进同一个盒子（名字与值会分家）：{field}");
 }
 
-/// 「新建临时任务」那颗按钮：跑的那一面就能立一张卡，不必先去「设置」写一条再重开面板。
+/// 「添加位置配对」那颗按钮：跑的那一面就能立一张卡，不必先去「设置」写一条再重开面板。
 ///
 /// 判据落在**它站在哪一行**上，不只是"这个字在文件里出现过"：它如果掉到每一格里，
 /// 一列位置就成了 N 颗同名按钮（操作员要的是"少几条目"，不是"多一屏按钮"），
@@ -762,22 +762,22 @@ fn the_pairs_face_has_one_button_to_pick_a_new_pair() {
     let t = strip_comments(&read("src/components/JobListView.tsx"));
     let tight = t.split_whitespace().collect::<Vec<_>>().join("");
     let clip = tight.chars().take(200).collect::<String>();
-    assert!(tight.contains("新建临时任务"), "跑的那一面没有立卡的那一颗：{clip}");
+    assert!(tight.contains("添加位置配对"), "跑的那一面没有立卡的那一颗：{clip}");
     let pos_at = tight.find("aria-label=\"位置\"")
         .unwrap_or_else(|| panic!("找不到位置那一枚下拉：{clip}"));
     let cell_at = tight.find("renderCell(shown)")
         .unwrap_or_else(|| panic!("找不到当前那一格那一段：{clip}"));
     let row = &tight[pos_at..cell_at];
     let row_head = row.chars().take(200).collect::<String>();
-    assert!(row.contains("新建临时任务"), "那颗不在选择条那一行里：{row_head}");
-    assert_eq!(tight.matches("新建临时任务").count(), 1, "这一颗在界面上不止一处：{clip}");
+    assert!(row.contains("添加位置配对"), "那颗不在选择条那一行里：{row_head}");
+    assert_eq!(tight.matches("添加位置配对").count(), 1, "这一颗在界面上不止一处：{clip}");
     // 它自己不立卡：立卡那一次调用与它带回来的那句拒绝都住在**这一层**里（`PairDraftLayer`），
     // 外面那一层只管开与关 —— 两处发起点就有两处话术。
     assert!(tight.contains("onNewPair()"), "那颗没接到外面：{clip}");
     assert!(!tight.contains("pairDraft"), "这一面自己去立卡了：那是第二处发起点");
 }
 
-/// 「新建临时任务」那一层：两行位置、候选来自后台、拒绝写在层里。
+/// 「添加位置配对」那一层：两行位置、候选来自后台、拒绝写在层里。
 ///
 /// 三条各钉一件事：
 /// - 候选必须由后台交（`browser_remotes` 那一份，与浏览器那面同一来源）。前端列常量
@@ -799,7 +799,7 @@ fn the_draft_layer_takes_two_positions_and_shows_the_refusal_itself() {
     }
     // 可及名由行标签带进那两个框（读屏里不许剩"编辑框 1/2"这种无名控件）。
     assert!(tight.contains("aria-label={label}"), "框没有可及名：{clip}");
-    assert!(tight.contains("就这么定"), "确认那颗用的不是已有词表里那一颗：{clip}");
+    assert!(tight.contains("确认配对"), "确认那颗用的不是已有词表里那一颗：{clip}");
     assert!(tight.contains("取消"), "缺一颗退出的：{clip}");
     assert!(tight.contains("api.pairDraft("), "那颗按下去没人去立卡：{clip}");
     // 拒绝要在层里说，而且说的**是这一次立卡的拒绝**（上面那枚"候选没取到"的错误不算：
@@ -852,7 +852,7 @@ fn the_panel_holds_the_layer_but_the_card_still_owns_its_cell() {
 /// 真的按它摆）：
 /// - 「重开面板就没了」那一句（R96）不许只记在我们心里；
 /// - 「存成常用」只在**当前这一格**是临时的那一条上（配置格本来就常用着）；
-/// - 「删掉这张临时卡」收的是这一张卡上那几格临时的，所以整张卡有临时格才摆得出来（R98 那句
+/// - 「移除临时操作」收的是这一张卡上那几格临时的，所以整张卡有临时格才摆得出来（R98 那句
 ///   "正在跑就拒"由后台说，界面不设备用文案）。
 #[test]
 fn a_draft_card_says_its_temporary_and_offers_the_two_exits_only_there() {
@@ -861,16 +861,14 @@ fn a_draft_card_says_its_temporary_and_offers_the_two_exits_only_there() {
     let clip = tight.chars().take(240).collect::<String>();
     assert!(tight.contains("重开面板就没了"), "那句没说：那张卡读起来就像已经存好了：{clip}");
     assert!(tight.contains("存成常用"), "少那颗把这一格送去已有表单的：{clip}");
-    assert!(tight.contains("删掉这张临时卡"), "少那颗删卡的：{clip}");
+    assert!(tight.contains("移除临时操作"), "少那颗删卡的：{clip}");
     // 两处各有各的判据：一颗看**当前那一格**，一颗看**这一张卡上有没有**临时格。
     assert!(tight.contains("job.isDraft"), "「存成常用」没读当前那一格那枚标志：{clip}");
-    assert!(tight.contains("foldable"), "「删掉这张临时卡」没读整张卡那枚标志：{clip}");
-    // 两处各有各的判据：那一句挂在这张卡**有没有**临时格上，那一颗挂在**当前这一格**是不是临时的上。
-    // 钉形状而不是只钉"读没读那两枚标志"：把句子改成常驻，配置卡就被说成没存进配置（操作员会
-    // 去点「存成常用」存一条已经存过的），那是这句话唯一另一种错法。
-    assert!(tight.contains("g.hasDraft&&("), "那句挂在别的东西上或干脆常驻：配置卡也被说成临时的：{clip}");
+    assert!(tight.contains("foldable"), "「移除临时操作」没读整张卡那枚标志：{clip}");
+    assert!(tight.contains("job.isDraft&&("), "只有当前操作是临时的才应显示提示：{clip}");
+    assert!(!tight.contains("g.hasDraft&&("), "配对含有临时操作时，不应给已保存的操作显示临时提示");
     assert!(tight.contains("job.isDraft?["), "那颗没挂在当前这一格上：{clip}");
-    // 「删掉这张临时卡」交回的是那把键（后台算的那一份），不是任务 id：一张卡上那几格一起收。
+    // 「移除临时操作」交回的是那把键（后台算的那一份），不是任务 id：一张卡上那几格一起收。
     assert!(tight.contains("onFoldPair(job.pairKey)"), "收的是哪一张卡说不清：{clip}");
     // 卡面上不许长出第二条写得进配置的路：那颗只把那一格交出去（R97）。
     for banned in ["settingsApply", "settingsPlan", "settings_apply", "settings_plan"] {
@@ -1005,7 +1003,7 @@ fn the_position_selector_labels_each_pair_by_a_short_unique_name() {
     assert!(view.contains("job.src") && view.contains("job.dst"),
         "短名换掉了标题，但完整那一对位置没在这一格里写出来：{view}");
     // 被占着那一档：**两枚框照选照点**。仓里那条判据是"要人听得见后台那句为什么，
-    // 而不是点不动又没人说话"（那颗「删掉这张临时卡」同一条），灰的只该是**那颗动作**。
+    // 而不是点不动又没人说话"（那颗「移除临时操作」同一条），灰的只该是**那颗动作**。
     // 锚点跟着 2026-10-08 那一轮换过：`selectorRow` 那个函数没有了，那几枚框现在直接写在
     // `JobListView` 里（它就是那条选择条本身），下一段是 `PairCell`。
     let row = &view[view.find("export function JobListView").expect("找不到那一条选择条")..];
@@ -1048,7 +1046,7 @@ fn a_trial_run_never_says_the_files_were_already_sent() {
         "试跑进行中没有读后台带的 dry_run（只改终态那一帧等于整段都在说「已传」）：{detail}");
 }
 
-/// 一对位置都没有时，「新建临时任务」那颗仍然要在。
+/// 一对位置都没有时，「添加位置配对」那颗仍然要在。
 ///
 /// 旧写法整条选择条 `return null`，于是删掉最后一对位置之后，这一面只剩右列一句
 /// 「先选一个任务」，而立新卡的唯一入口跟着那条不存在的卡一起消失。选择条必须留下，
@@ -1060,5 +1058,5 @@ fn the_pairs_face_keeps_the_way_in_when_no_pair_exists() {
         "一对位置都没有时又把整条选择条撤掉了（入口跟着消失）：{t}");
     assert!(t.contains("还没有位置"), "空的一位下拉没说自己为什么空：{t}");
     assert!(t.contains("先挑一对位置"), "空的「要做什么」没给出下一步：{t}");
-    assert_eq!(count_in(&t, "新建临时任务"), 1, "那颗入口不止一处/不见了：{t}");
+    assert_eq!(count_in(&t, "添加位置配对"), 1, "那颗入口不止一处/不见了：{t}");
 }

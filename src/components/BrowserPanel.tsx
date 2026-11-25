@@ -502,7 +502,7 @@ export function BrowserPanel({ rootsRevision }: { rootsRevision: number }) {
         } />
       )}
       {noLocal && (
-        <Alert showIcon type="info" title="还没有本地位置" description="先到「文件任务」点「新建临时任务」指一个本地目录，或到「设置」里「任务 → 新加一条」；之后这里才能翻本地文件。" />
+        <Alert showIcon type="info" title="还没有本地位置" description="先到「文件任务」点「添加位置配对」指一个本地目录，或到「设置」里「任务 → 新加一条」；之后这里才能翻本地文件。" />
       )}
       {/* **单边占满整宽，进比对才并排**（2026-10-11）。
            这一面开着多数时候不是为了比，是为了翻本地那堆图。半宽的网格每行只放得下

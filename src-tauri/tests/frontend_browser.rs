@@ -470,13 +470,13 @@ fn an_empty_name_says_so_in_the_slot_that_already_exists() {
 
 /// 一个本地位置都没有时，浏览器面要告诉用户去哪儿建，而不是只摆一张空下拉。
 ///
-/// 零任务/只剩远端的家不是异常：用户可以把任务删光。配好位置那一面已经有「新建临时任务」，
+/// 零任务/只剩远端的家不是异常：用户可以把任务删光。配好位置那一面已经有「添加位置配对」，
 /// 但浏览器这一面同样要能自己把路指过去（它正是 README 说"看本地文件"的入口）。
 #[test]
 fn the_browser_says_where_to_get_a_local_position_when_it_has_none() {
     let t = strip_comments(&read("src/components/BrowserPanel.tsx"));
     assert!(t.contains("还没有本地位置"), "本地候选为空时页面没有一个字说这件事：{t}");
-    assert!(t.contains("新建临时任务") && t.contains("新加一条"),
+    assert!(t.contains("添加位置配对") && t.contains("新加一条"),
         "空态没有把两个建位置的入口指出来：{t}");
     assert!(t.contains("refs.some((r) => r.isLocal)"), "空态没有按本地候选是否存在来判：{t}");
 }

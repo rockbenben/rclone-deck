@@ -9,6 +9,7 @@ import { cdpEndpoint } from './cdp-endpoint.mjs';
 const startup = process.argv.find((arg) => arg.startsWith('--startup='))?.slice(10);
 const fixture = process.argv.find((arg) => arg.startsWith('--fixture='))?.slice(10) ?? startup;
 const pollOnly = process.argv.includes('--poll-only');
+const pairsOnly = process.argv.includes('--pairs-only');
 assert(fixture, 'Run with --fixture=<disposable home> or --startup=<invalid disposable home>');
 let page;
 for (let i = 0; i < 60 && !page; i++) {
@@ -169,6 +170,9 @@ function fixtureIpc() {
           mock.state.deleted_files = ['extra.txt'];
         }
         return reply(mock.state);
+      case 'run_inventory':
+        return reply({ emptyBasis: false, orphans: [], pendingUpload: [], localCount: 1, remoteCount: 1,
+          dstIsLocal: false, measuredAt: 'stage-f-time', listFile: '', diverged: [] });
       case 'confirm_mirror': return reply('stage-f-token');
       case 'browser_remotes':
         return reply([local, remote, ...(mock.draft ? [draft, {
@@ -276,14 +280,25 @@ const checks = [
     await delay(250);
     assert.equal(await evaluate("stageF.calls.filter(c => c === 'settings_current').length"), 2);
   }],
+  ['difference report reuse', async () => {
+    const requests = "stageF.calls.filter(c => c === 'run_inventory').length";
+    await click('看差异', '.pairs-cell button');
+    await until(shows('上次比较于 stage-f-time'), 'The first report did not render');
+    assert.equal(await evaluate(requests), 1);
+    await click('看差异', '.pairs-cell button');
+    await delay(250);
+    assert.equal(await evaluate(requests), 1, 'Reopening the report requested another comparison');
+    await click('重新比较');
+    await until(requests + ' === 2', 'Explicit refresh did not request a new comparison');
+  }],
   ['draft roots', async () => {
     await click('文件任务');
-    await click('新建临时任务');
+    await click('添加位置配对');
     await until(`document.querySelector('input[aria-label="这一侧"]')?.getClientRects().length`, 'Draft dialog did not open');
     await delay(250);
     await fill('这一侧', 'D:/stage-f-draft');
     await fill('那一侧', 'stage-f:draft');
-    await click('就这么定', '.ant-modal button');
+    await click('确认配对', '.ant-modal button');
     await until(shows('临时测试任务'), 'Draft did not open');
     await click('浏览文件');
     await click('本地夹具', '.ant-select');
@@ -291,9 +306,9 @@ const checks = [
     await click('新增草稿目录', '.ant-select-item-option');
     await click('文件任务');
     await click('更多', '.pairs-cell button');
-    await until(shows('删掉这张临时卡'), 'The draft menu did not open');
+    await until(shows('移除临时操作'), 'The draft menu did not open');
     await delay(350);
-    await click('删掉这张临时卡', '.ant-dropdown-menu-title-content');
+    await click('移除临时操作', '.ant-dropdown-menu-title-content');
     await until('!stageF.draft', 'The draft was not dropped');
     await click('浏览文件');
     await until(shows('本地夹具'), 'Removed root did not fall back to a valid local root');
@@ -325,6 +340,14 @@ try {
     console.log('PASS startup failure displays the actual configuration path');
   } else {
     await until("!!document.querySelector('.ant-layout')", 'Fixture panel did not load before setup');
+    if (pairsOnly) {
+      await click('复制（保留目标多余文件） —— 从本地复制到云端', '.pair-bar .ant-select');
+      await until("document.querySelectorAll('.ant-select-dropdown:not(.ant-select-dropdown-hidden) .ant-select-item-option').length === 4",
+        'A saved local/remote pair did not offer all four operations');
+      await send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 });
+      await send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 });
+      console.log('PASS one saved job exposes four operations');
+    }
     if (process.argv.includes('--native-copy')) {
       await click('开始复制', '.pairs-cell button');
       await until(shows('复制完成'), 'Real rclone transfer did not report success');
@@ -342,7 +365,9 @@ try {
       source: `(${fixtureIpc.toString()})();`,
     });
     let failed = 0;
-    for (const [index, [name, check]] of (pollOnly ? [pollCheck] : [...checks, pollCheck]).entries()) {
+    const selectedChecks = pairsOnly ? checks.filter(([name]) => name === 'difference report reuse') :
+      pollOnly ? [pollCheck] : [...checks, pollCheck];
+    for (const [index, [name, check]] of selectedChecks.entries()) {
       await evaluate('localStorage.clear()');
       const previousDocument = await evaluate('performance.timeOrigin');
       const address = new URL(page.url);

@@ -141,23 +141,23 @@ interface Props extends JobActions {
   selectedId: string | null;
   busy: boolean;
   onSelect: (id: string) => void;
-  /** 「新建临时任务」那颗：立卡那一趟与它带回来的拒绝都住在层里，这里只负责把它喊开。 */
+  /** 「添加位置配对」那颗：立卡那一趟与它带回来的拒绝都住在层里，这里只负责把它喊开。 */
   onNewPair: () => void;
   /** 把当前这一格送去设置面那张**已有的**「新加一条」表单（R97）。
    *  这一层自己不写得进任何文件：第二条写入通路就是第二条会各自漂的确认流程。 */
   onSaveDraft: (job: JobView) => void;
   /** 收起这一对位置上那几格临时的（R98）。交回的是那把键不是任务 id：一张卡一起收。 */
   onFoldPair: (pairKey: string) => void;
-  /** 刚立起来的那一对的 `pairKey`：指一次就完（`askedFor` 记着已经指过的键）。 */
-  focusPair: string | null;
 }
+export interface PairFocus { key: string }
+
 /** 「站在哪一对位置 + 那一格是什么」的**唯一一份状态**。
  *
  *  它原来住在 `JobListView` 自己身上，于是三枚下拉只能跟着格一起挤在左列里 —— 那一列只有
  *  340px，三枚框加三行标签一行也放不下，实测被折成**三行**，"选哪一对位置"读起来像一张
  *  竖排的表。判据「同一属性的下拉只该有一个」是对的，但它没有说这三枚必须挤在一列里。
  *  现在它抬成一处，选择条横跨整窗、格与右列并排 —— 两边读的是同一份状态，判定仍只有一处。 */
-export function usePairChoice(jobs: JobView[], focusPair: string | null, onSelect: (id: string) => void) {
+export function usePairChoice(jobs: JobView[], focusPair: PairFocus | null, onSelect: (id: string) => void) {
   const { pairs, gates } = groupJobs(jobs);
   /** 站在哪一对位置上。没选过就站在第一对 —— 这一面**永远有一格被选中**：
    *  列表撤掉之后只剩当前那一格，"没选"会让右列没有主人（那句「先选一个任务」不该在这一面可达）。 */
@@ -197,15 +197,13 @@ export function usePairChoice(jobs: JobView[], focusPair: string | null, onSelec
     onSelect(job.id);
   };
 
-  /** 外面那一句「刚立起来一张卡」（`focusPair`）翻成"站到那一对上"。
-   *  `askedFor` 记的是已经接过的键：轮询每秒重渲染一次，不记就会把操作员随后换的位置抢回去。 */
-  const askedFor = useRef<string | null>(null);
+  // 每次添加都能跳到对应的配对。列表尚未刷新时，等后台交回这一对。
+  const askedFor = useRef<PairFocus | null>(null);
   useEffect(() => {
-    const key = focusPair;
-    if (key === null || askedFor.current === key) return;
-    if (!pairs.some((g) => g.key === key)) return;   // 那一批还没到（下一拍轮询会送来）
-    askedFor.current = key;
-    setPairKey(key);
+    if (focusPair === null || askedFor.current === focusPair) return;
+    if (!pairs.some((g) => g.key === focusPair.key)) return;
+    askedFor.current = focusPair;
+    setPairKey(focusPair.key);
   });
 
   /** **这一格真的换了**，才把右列指过去。"换了"只由 `pick()` 说了算：外面那一层不许自己
@@ -255,7 +253,7 @@ function Field({ label, tone, children }: { label: string; tone?: string; childr
  */
 export function JobListView(props: Props & { choice: Choice }) {
   const { shown, pick, choose, setPairKey, pairs } = props.choice;
-  // 没有任何一对位置时**也要把这条选择条摆出来**：那颗「新建临时任务」就在这一行里。
+  // 没有任何一对位置时**也要把这条选择条摆出来**：那颗「添加位置配对」就在这一行里。
   // 旧写法整段 `return null`，于是删掉最后一对位置之后，这一面只剩右列一句「先选一个任务」——
   // 立新卡的那颗按钮跟着那条不存在的卡一起消失了。
   const picked = shown === undefined ? null : pick(shown);
@@ -272,8 +270,7 @@ export function JobListView(props: Props & { choice: Choice }) {
           options={pairs.map((p) => ({
             value: p.key,
             // 短名由 `pairs.ts` 那一处统一算（撞名会自己往上加层）；这里只读。
-            // 临时那几格要在名字里说出来：位置挑错了要能看出来这一家不是配置里的。
-            label: `${p.aLabel} ↔ ${p.bLabel}${p.hasDraft ? '（临时）' : ''}`,
+            label: `${p.aLabel} ↔ ${p.bLabel}`,
           }))} />
       </Field>
       {/* 「要做什么」那两个字那一格的颜色说的就是**当前这一格**会不会删东西
@@ -291,7 +288,7 @@ export function JobListView(props: Props & { choice: Choice }) {
       </Field>
       {/* 这一颗是**那一面的一条全局动作**，不是每一格里的一颗：它自己不立卡（`onNewPair()`），
           因为立卡那趟带回来的那句拒绝要在层里说——两处发起点就会有两处话术。 */}
-      <Button className="pair-bar-act" icon={ICON.swap} onClick={() => props.onNewPair()}>新建临时任务</Button>
+      <Button className="pair-bar-act" icon={ICON.swap} onClick={() => props.onNewPair()}>添加位置配对</Button>
     </div>
   );
 }
@@ -309,7 +306,7 @@ export function PairCell(props: Props & { choice: Choice }) {
   const stateOf = (job: JobView) => states[job.id];
 
   /** 当前那一格脚下的一排：主操作摊在面上，只读的那两颗收进「更多」。
-   *  `foldable` = 这一对上有临时格：那一来「删掉这张临时卡」要摆得出来（收的是那几格临时的，
+   *  `foldable` = 这一对上有临时格：那一来「移除临时操作」要摆得出来（收的是那几格临时的，
    *  交回的是那把键 —— 一起收，不是逐格收）。它不因为"这一对正被什么占着"而灭：
    *  正在跑的时候是**后台**拒的，那句"等它跑完再收"要人听得见，而不是点不动又没人说话。 */
   const cellButtons = (job: JobView, primary: CardAction[], foldable = false) => {
@@ -320,14 +317,14 @@ export function PairCell(props: Props & { choice: Choice }) {
     // 「差异还没算过：点「看差异」算一次」指着一颗看不见的按钮，而同时看得见的那一颗
     // 是会删东西的 —— 把只读的那条藏起来、把危险的那条摆出来，顺序是反的。
     const rest: CardAction[] = [
-      // 「收起来」→「删掉这张临时卡」（2026-10-09）。后台 `drop_draft` 是把那几格**从内存里
+      // 「收起来」→「移除临时操作」（2026-10-09）。后台 `drop_draft` 是把那几格**从内存里
       // 移除**（`runner/drafts.rs`），不是收进哪儿去；卡上自己也写着「重开面板就没了」。
       // 「收起」暗示"回头还翻得出来"，而它其实没了 —— 一个说反了的名字比没有更坏。
       //
       // 为什么不叫光秃秃的「删除」：这个仓里「删除」= 删**用户的数据**，删东西要走逐条清单
       // + 一次确认。一颗没点明对象的「删除」在菜单里会让人以为要删文件。**点明对象**，
       // 两个顾虑就都没了：动词是你要的那个，被删的到底是什么一目了然。
-      ...(foldable ? [act('fold', '删掉这张临时卡', () => props.onFoldPair(job.pairKey), busy)] : []),
+      ...(foldable ? [act('fold', '移除临时操作', () => props.onFoldPair(job.pairKey), busy)] : []),
       // R58：只读盘点。src 是本地目录、dst 是 remote 的任务都能问一句
       // "云端有哪些本地没有的对象"；这一项只是打开只读视图，不触发任何删除。
       // 这颗的名字跟着**段名**走（右列那一段就叫「差异」，`DESIGN.md` 钉着四段名）：
@@ -445,12 +442,9 @@ export function PairCell(props: Props & { choice: Choice }) {
         {canInventory(job) && (
           <div className="consequence">{summaryLine(job, mode, dstIsLocal)}</div>
         )}
-        {/* R96：这一对上那几格不写得进那两份文件，界面上必须把这句话说出来，而不是只记在我们心里。
-            措辞按"这一对上**有**没存过的格子"说而不是"整家是临时的"：一对位置可以是配置格与
-            临时格混着的（配置只占了两格，临时卡补另外两格），后一种说法在这种位置上就是假的。 */}
-        {g.hasDraft && (
+        {job.isDraft && (
           <Typography.Text type="secondary" className="fs-caption">
-            这张卡上有没写进配置的格子：重开面板就没了
+            当前操作未保存，重开面板就没了。
           </Typography.Text>
         )}
         {cellButtons(job, primary, g.hasDraft)}

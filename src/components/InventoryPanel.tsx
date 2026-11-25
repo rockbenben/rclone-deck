@@ -46,14 +46,12 @@ export function InventoryPanel({
     <Space orientation="vertical" size="middle" style={{ width: '100%' }}>
       <Space>
         <LockHint title={lockHint}>
-          {/* 与卡上那颗同一个词：同一个动作在屏上有两个名字（「看差异」与「列一遍」），
-              学一次词就只能认一处。 */}
           <Button loading={loading} disabled={off} style={off ? HIT_OFF : undefined}
-            onClick={onRefresh}>看差异</Button>
+            onClick={onRefresh}>{report ? '重新比较' : '看差异'}</Button>
         </LockHint>
         {report && (
           <Typography.Text type="secondary">
-            本地 {report.localCount} 个，云端 {report.remoteCount} 个 · {report.measuredAt} 算的
+            上次比较于 {report.measuredAt} · 本地 {report.localCount} 个，云端 {report.remoteCount} 个
           </Typography.Text>
         )}
       </Space>

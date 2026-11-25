@@ -110,12 +110,12 @@ fn card_count(r: &Runner) -> usize {
 
 /// 六句拒绝话术的**唯一**出处（与对齐那几条同一个理由：长在流程中间的句子里，
 /// 测试构造不到那个位置，扫不到就等于这几句从没被"不许漏内部名词"那条规矩管过）。
-/// 这里先把它们点名读一遍，钉的是"这几句说得出人话"。**这一条不钉调用点** —— 那六个函数被
+/// 这里先把它们点名读一遍，钉的是"这几句说得出人话"。**这一条不钉调用点** —— 这几个函数被
 /// `pair_draft` / `drop_draft` 用着，是靠那几条端到端用例（拿到那句拒绝才会红）间接钉住的。
 #[test]
 fn the_draft_refusals_never_leak_internal_names() {
     use rclone_deck_lib::runner::drafts::{
-        draft_absent_refusal, draft_all_taken_refusal, draft_running_refusal,
+        draft_absent_refusal, draft_running_refusal,
         draft_same_position_refusal, draft_unconfirmed_refusal, draft_unknown_endpoint_refusal,
     };
     // 内部名词名单与 `tests/commands_surface.rs` 那份同族，但**少一项** `run_job`：这一面发不出
@@ -123,7 +123,6 @@ fn the_draft_refusals_never_leak_internal_names() {
     const BANNED: &[&str] = &["Sync", "Copy", "Gate", "JobKind", "run_copy", "run_mirror", "preview_mirror"];
     let said = [
         draft_same_position_refusal(),
-        draft_all_taken_refusal(),
         draft_unknown_endpoint_refusal(),
         draft_running_refusal(),
         draft_unconfirmed_refusal(),
@@ -139,7 +138,6 @@ fn the_draft_refusals_never_leak_internal_names() {
         assert!(s.contains("卡") || s.contains("位置") || s.contains("这一侧"),
             "那句没指着界面上看得见的东西：{s}");
     }
-    assert!(draft_all_taken_refusal().contains("每一格都已经有任务"));
     assert!(draft_same_position_refusal().contains("同一个位置"));
     assert!(draft_running_refusal().contains("正有事在跑"));
 }
@@ -190,16 +188,16 @@ async fn a_draft_fills_only_the_missing_cells() {
     ], "临时格只该补空缺的那三格");
 }
 
-/// 四格都被占住时不建任何一条，并且那句话要说得出"不用再立一张"。
+/// 再次添加同一对时返回已有配对，交换输入顺序也不会重复创建。
 #[tokio::test]
-async fn a_pair_with_every_cell_taken_is_refused_and_says_so() {
+async fn a_pair_with_every_cell_taken_is_reused() {
     let (_fx, r, _g, local, cloud) = pair("pair", KEEP, &[], |l, c| vec![
         job_at("c1", JobKind::Copy, l, c), job_at("c2", JobKind::Copy, c, l),
         job_at("s1", JobKind::Sync, l, c), job_at("s2", JobKind::Sync, c, l),
     ]).await;
-    let err = r.pair_draft(&local, &cloud).unwrap_err().to_string();
-    assert!(err.contains("每一格都已经有任务"), "那句要说的是这一对已经齐了：{err}");
-    assert_eq!(ids_of(&r), ["c1", "c2", "s1", "s2"], "被拒的那一次还是建出了格");
+    let key = r.pair_draft(&local, &cloud).unwrap();
+    assert_eq!(key, r.pair_draft(&cloud, &local).unwrap());
+    assert_eq!(ids_of(&r), ["c1", "c2", "s1", "s2"]);
 }
 
 /// 两处**规范化之后**是同一棵树 ⇒ 拒。写法不同也照样拒：比的从来不是字符串。

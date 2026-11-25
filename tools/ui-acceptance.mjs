@@ -25,7 +25,7 @@ const PROC = { home: HOME, remote: HOME === 'A' ? 'fxa' : 'fxb',
 // 的那一遍在 B 家报「找不到那张卡」，读起来像界面坏了，其实是尺子把另一家的名字抄进了判据。
 const PAIR_C = PROC.remote + ':c';
 const PAIR_B = PROC.remote + ':b';
-// 「新建临时任务」那张临时卡用的**一对没配过的位置**：本地那一侧是夹具里一直在的 `local/`
+// 「添加位置配对」那张临时卡用的**一对没配过的位置**：本地那一侧是夹具里一直在的 `local/`
 // （它是 fx-gate 的源，所以它出现在候选里），云端那一侧 `:d` 是这一遍才有的层。
 // 名字跟着家走（A 家 fxa:d、B 家 fxb:d）：写死 fxa 的那把尺子在 B 家报"找不到那张卡"，
 // 读起来像界面坏了。
@@ -101,7 +101,7 @@ async function railHead() {
 /** 当前那一格与右列**对得上吗**：`{ same, job, paths, rail }`。
  *  `job` 是按右列那一行在文件里认出来的那一条；`same` 是"格上那两条路径正是它的那两条，
  *  而且先后也一样"。名字对不上文件（临时格那几条只活在内存里）时 `job` 是 undefined，
- *  那种场合用 `draftCardShape` 读它的 `pos`（位置框里那句「（临时）」），别拿这条判失败。 */
+ *  那种场合用 `draftCardShape` 读配对标题。 */
 async function cellJob(rowKey) {
   if (rowKey !== undefined) await showPair(rowKey);
   const s = JSON.parse(String(await ev('(() => { const r=document.querySelector(".pairs-cell");'
@@ -727,7 +727,7 @@ async function closeDropdown(tag, inModal) {
   }
 }
 
-/** 「新建临时任务」那一层里的第 `nth` 个位置选择框（层里两行各一个，文档顺序：这一侧、那一侧）。
+/** 「添加位置配对」那一层里的第 `nth` 个位置选择框（层里两行各一个，文档顺序：这一侧、那一侧）。
  *  读的是**看得见的那一层模态框**里的框（antd 关掉的模态框 DOM 还挂着，宽度 0 ——
  *  与 `setInput` 同一条口径，撞上同一族事故两次了）。 */
 async function openLayerSelect(nth, want) {
@@ -2241,13 +2241,13 @@ const STEPS = [
     } },
   // 那一层以前只说"拿走"，没说这一趟同时会把缺的那批补上去 —— 读起来像"这一档只能删东西"，
   // 于是没人按红色的那颗。两句都要在层里看得见（前提那句按方向分叉，这一档是"本地是全集"）。
-  // ==== 「新建临时任务」那九步（R93-R99 的真窗口证据）====
+  // ==== 「添加位置配对」那九步（R93-R99 的真窗口证据）====
   // 前八步在正常那一段里跑完；最后那一步 `needsReopen`，与设置面那一条重开格同一跑法
   //（单独一遍 --reopen=1）。为什么留一张卡不折掉：折掉的卡"重开之后不在"证明不了 R96 ——
-  // 那已经是「删掉这张临时卡」做过的事，重开那一步就白跑了。
-  { id: 'draft-layer-opens', what: '「新建临时任务」那一层：两行各有位置框与路径框，候选来自后台', run: async () => {
+  // 那已经是「移除临时操作」做过的事，重开那一步就白跑了。
+  { id: 'draft-layer-opens', what: '「添加位置配对」那一层：两行各有位置框与路径框，候选来自后台', run: async () => {
       await click('文件任务', 'any'); await sleep(1000);
-      await click('新建临时任务', 'any'); await sleep(800);
+      await click('添加位置配对', 'any'); await sleep(800);
       const shape = JSON.parse(String(await ev('(() => { const vis=[...document.querySelectorAll(".ant-modal")]'
         + '.filter((m)=>m.getBoundingClientRect().width); const m=vis[vis.length-1];'
         + 'if (!m) return JSON.stringify({err:"那一层没开"});'
@@ -2261,7 +2261,7 @@ const STEPS = [
       if (!(shape.labels || []).includes('这一侧') || !(shape.labels || []).includes('那一侧')) {
         throw new Error('两行没说自己是谁（读屏里就剩两个无名框）：' + JSON.stringify(shape.labels));
       }
-      if (!body.includes('就这么定')) throw new Error('那颗确认不在层里：' + body.slice(0, 120));
+      if (!body.includes('确认配对')) throw new Error('那颗确认不在层里：' + body.slice(0, 120));
       // 候选必须是**问后台要的**那一份：出现这套家的远端与任务里在用的那个本地目录，
       // 才说明这一层没有自己的名单（写死一份的话，操作员加一朵云就少一个候选）。
       const opts = await openLayerSelect(0, null);
@@ -2277,10 +2277,10 @@ const STEPS = [
       // 数"有几对"要点开位置那枚下拉，所以**开层之前**数一次、**关掉之后**再数一次：
       // 层还开着的时候顶部那枚点不动（挡住它的是 `ant-modal-wrap`，等 11 秒也站不定）。
       const before = await pairCount();
-      await click('新建临时任务', 'any'); await sleep(800);
+      await click('添加位置配对', 'any'); await sleep(800);
       await setDraftField('这一侧', DRAFT_LOCAL);
       await setDraftField('那一侧', DRAFT_LOCAL);
-      await click('就这么定', 'any'); await sleep(900);
+      await click('确认配对', 'any'); await sleep(900);
       const alerts = await refusalLine();
       if (!alerts.includes('同一个位置')) throw new Error('那句拒绝没在层里说（只飘 toast 等于没有拒绝）：' + alerts.slice(0, 240));
       const still = String(await visibleModalText(400));
@@ -2290,8 +2290,8 @@ const STEPS = [
       log('DRAFT-REFUSE-SAME 层里的句子=' + alerts.slice(0, 240) + ' 卡数=' + before + '→' + String(after));
       if (after !== before) throw new Error('被拒的那一次还是多出一张卡：' + before + '→' + after);
     } },
-  { id: 'draft-card-created', what: '挑两处、就这么定：卡立起来，那一格带着临时标志（位置框里那句 + 那句"重开就没了"）', run: async () => {
-      await click('新建临时任务', 'any'); await sleep(800);
+  { id: 'draft-card-created', what: '挑两处、确认配对：卡立起来，当前操作带着临时说明，位置框只列路径', run: async () => {
+      await click('添加位置配对', 'any'); await sleep(800);
       // 这一侧从候选里**挑**（挑中之后的框里必须是后台那个 id 原样，不许被拼过），那一侧直接改写。
       // 挑的是远端根那一行：它的 id 以冒号结尾（`fxa:`），正是"顺手补一个斜杠 / 把冒号吃掉"最容易
       // 写坏的那种。本地目录名不适合当判据——设置面那几步会删掉对账那一条、把对齐的源换掉。
@@ -2310,11 +2310,11 @@ const STEPS = [
       // 这一侧改回那个本地目录（挑远端只是量"原样进框"那一件事）。
       await setDraftField('这一侧', DRAFT_LOCAL);
       await setDraftField('那一侧', DRAFT_PAIR);
-      await click('就这么定', 'any'); await sleep(1400);
+      await click('确认配对', 'any'); await sleep(1400);
       const s = await draftCardShape(DRAFT_PAIR);
       log('DRAFT-CARD ' + JSON.stringify(s).slice(0, 420));
       if (s.err) throw new Error(String(s.err));
-      if (!s.pos.includes('（临时）')) throw new Error('位置那一枚框里没说这一对上有临时的格子：' + s.pos);
+      if (s.pos.includes('（临时）')) throw new Error('位置配对标题混入了操作状态：' + s.pos);
       if (!s.txt.includes('重开面板就没了')) throw new Error('那句"重开面板就没了"不在卡上（R96 不许只记在我们心里）：' + s.txt.slice(0, 200));
       // 这一对没配过任何条目 ⇒ 四格全建 ⇒ 「要做什么」那一枚里有四项
       // （两档 × 两个方向）。合并之后这一格比原来**更好量**：原来要点开两枚框各数两项，
@@ -2336,7 +2336,7 @@ const STEPS = [
       }
       if (!s.btns.includes('存成常用')) throw new Error('临时卡上没有那颗「存成常用」：' + s.btns);
       // `btns` 里那颗收纳口写作「更 多」：antd 在两个汉字之间插一个空格（同一族判据在 `finder` 里也是先压空格）。
-      if (!s.btns.replace(/\s+/g, '').includes('更多')) throw new Error('那颗「删掉这张临时卡」没进收纳口（卡面上多一颗主操作）：' + s.btns);
+      if (!s.btns.replace(/\s+/g, '').includes('更多')) throw new Error('那颗「移除临时操作」没进收纳口（卡面上多一颗主操作）：' + s.btns);
     } },
   { id: 'draft-transfer-runs', what: '临时格真跑一次传输：文件落在盘上，右列跟着讲这张卡', run: async () => {
       await waitIdle();
@@ -2408,7 +2408,7 @@ const STEPS = [
       // 那张表单的退出那颗叫「不要了」（`JobFields` 自己的词表），不是模态框那两颗里的「取消」。
       await click('不要了', 'any'); await sleep(700);
     } },
-  { id: 'draft-fold-away', what: '「删掉这张临时卡」在那张卡的收纳口里：收掉之后卡没了，写过的东西留在盘上', run: async () => {
+  { id: 'draft-fold-away', what: '「移除临时操作」在那张卡的收纳口里：收掉之后卡没了，写过的东西留在盘上', run: async () => {
       await click('文件任务', 'any'); await sleep(1400);
       const before = await draftCardShape(DRAFT_PAIR);
       if (before.err) throw new Error('那张卡不在（前一步没立住？）：' + String(before.err));
@@ -2419,12 +2419,12 @@ const STEPS = [
         + 'const b=[...r.querySelectorAll("button")].find((x)=>(x.textContent||"").replace(/\\s+/g,"").includes("更多"));'
         + 'const flat=(x)=>(x.textContent||"").replace(/\\s+/g,"");' + 'if (!b) return "没有收纳口那颗：" + [...r.querySelectorAll("button")].map(flat).join("|"); b.click(); return "点了收纳口"; })()'));
       log('DRAFT-FOLD ' + menu);
-      if (menu !== '点了收纳口') throw new Error('那颗「删掉这张临时卡」够不着：' + menu);
+      if (menu !== '点了收纳口') throw new Error('那颗「移除临时操作」够不着：' + menu);
       await sleep(600);
-      await click('删掉这张临时卡', 'any'); await sleep(1400);
+      await click('移除临时操作', 'any'); await sleep(1400);
       const gone = await draftCardShape(DRAFT_PAIR);
       const files = fs.existsSync(DRAFT_DIR) ? fs.readdirSync(DRAFT_DIR) : [];
-      log('DRAFT-FOLD 删掉这张临时卡之后=' + JSON.stringify(gone).slice(0, 200) + ' 盘上还剩 ' + files.length + ' 个');
+      log('DRAFT-FOLD 移除临时操作之后=' + JSON.stringify(gone).slice(0, 200) + ' 盘上还剩 ' + files.length + ' 个');
       if (!gone.err) throw new Error('收了而那张卡还在：' + String(gone.txt).slice(0, 160));
       if (files.length < 3) throw new Error('收一张卡把已经写出去的东西一起回滚了：' + JSON.stringify(files));
       // 配置里那几条一张不少（收卡只动这一趟临时立的那几格）。
@@ -2436,13 +2436,12 @@ const STEPS = [
       const idle = await waitIdle();
       log('WAIT-IDLE 存成常用之前等到没有任务在跑=' + idle.ms + ' 毫秒');
       // 立一张 `local ↔ fxa:e` 的临时卡（`:d` 那张已经被上一格收掉了）。
-      await click('新建临时任务', 'any'); await sleep(900);
+      await click('添加位置配对', 'any'); await sleep(900);
       await setDraftField('这一侧', DRAFT_LOCAL);
       await setDraftField('那一侧', SAVE_PAIR);
-      await click('就这么定', 'any'); await sleep(1400);
+      await click('确认配对', 'any'); await sleep(1400);
       const card = await draftCardShape(SAVE_PAIR);
       if (card.err) throw new Error('那张卡没立起来，这一格没得走：' + String(card.err));
-      if (!card.pos.includes('（临时）')) throw new Error('位置那一枚框里没说这一对有临时的格子：' + card.pos);
       if (!card.txt.includes('重开面板就没了')) throw new Error('那句"重开面板就没了"不在卡上：' + card.txt.slice(0, 160));
       // 存下去：切到设置面，把那两个空着的一格补上，走「保存这条 → 看差异 → 我知道，保存」。
       await click('存成常用', 'any', 0, SAVE_PAIR);
@@ -2538,24 +2537,24 @@ const STEPS = [
       const still = await draftCardShape(SAVE_PAIR);
       log('DRAFT-SAVE2 没重开那一张=' + JSON.stringify(still).slice(0, 240));
       if (still.err) throw new Error('存完这一趟就把那张卡换掉了（面板不热重载那条是反的）：' + String(still.err));
-      if (!still.pos.includes('（临时）')) throw new Error('卡上的临时标志没了：要么热进来了，要么那张卡已经不是这一张：' + still.pos);
+      if (!still.txt.includes('重开面板就没了')) throw new Error('当前操作缺少临时说明：' + still.txt);
       await shot('draft-saved-into-config.png');
     } },
   { id: 'draft-card-standby-for-restart', what: '再立同一对（这张留给重开那一遍量"它不在了"）', run: async () => {
-      // 自己先站到文件任务那一面。这一格原来开头就直接点「新建临时任务」，
+      // 自己先站到文件任务那一面。这一格原来开头就直接点「添加位置配对」，
       // 而那颗在**选择条**上 —— 上一格（`draft-saved-into-config`）做完停在设置那一面，
-      // 于是它报「找不到：新建临时任务 候选=0」。读着像"那颗按钮不见了"，实际是
+      // 于是它报「找不到：添加位置配对 候选=0」。读着像"那颗按钮不见了"，实际是
       // **站在别的面上** —— 与 `settings-open-conf-folder` 那条开头那句
       // 「靠上一步恰好站在哪儿就不叫验收」是同一条纪律。
       await click('文件任务', 'any'); await sleep(1200);
-      await click('新建临时任务', 'any'); await sleep(900);
+      await click('添加位置配对', 'any'); await sleep(900);
       await setDraftField('这一侧', DRAFT_LOCAL);
       await setDraftField('那一侧', DRAFT_PAIR);
-      await click('就这么定', 'any'); await sleep(1400);
+      await click('确认配对', 'any'); await sleep(1400);
       const s = await draftCardShape(DRAFT_PAIR);
       log('DRAFT-STANDBY ' + JSON.stringify(s).slice(0, 240));
       if (s.err) throw new Error('重开前那张卡没立住（那一步就没得量）：' + String(s.err));
-      if (!s.pos.includes('（临时）')) throw new Error('这张 standby 卡没带临时标志：' + s.pos);
+      if (!s.txt.includes('重开面板就没了')) throw new Error('当前操作缺少临时说明：' + s.txt);
       await shot('draft-card-standby.png');
     } },
   { id: 'draft-gone-after-restart', needsReopen: true,
@@ -2593,12 +2592,11 @@ const STEPS = [
         throw new Error('那条名字动的位置与格上那两条对不上：格="' + back.paths
           + '" 文件里那条="' + back.job.src + ' → ' + back.job.dst + '"');
       }
-      // 临时的两处标志都不该在：位置那一枚框里那句「（临时）」，与格上那句"重开就没了"。
+      // 位置框只列路径，已保存的操作也没有临时提示。
       if (s.pos.includes('（临时）')) throw new Error('位置那一枚框还写着临时：' + s.pos);
       if (s.txt.includes('重开面板就没了')) throw new Error('那句"重开就没了"还在（后台还当它是临时格）：' + s.txt.slice(0, 160));
       if (String(s.btns).includes('存成常用')) throw new Error('那张卡还在提供「存成常用」——它已经是配置里的一条了：' + s.btns);
-      // 存进去的是**一格**（那一对其余三格没写进文件），所以卡上摆出来的是那一档的颗：
-      // 「模拟复制」那颗在 = 这一条走的是不删的那一档，且它现在是一条真任务，不是内存里的样子。
+      // 重开后默认选择复制，其余操作仍在「要做什么」里。
       if (!String(s.btns).includes('模拟复制')) throw new Error('卡上没有那颗试跑（回来的不像一条能跑的任务）：' + s.btns);
       await shot('draft-saved-card-back-after-restart.png');
     } },  { id: 'mirror-layer-both-halves', what: '镜像那一层把两半说全：哪一侧是全集 + 这一趟也会把缺的那批补上去', run: async () => {

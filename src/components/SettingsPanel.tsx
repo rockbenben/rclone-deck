@@ -418,7 +418,8 @@ export function SettingsPanel(props: {
             decides="决定每一次跑都带上的那几项参数" ifBlank="空着就是不加任何参数"
             detail={<Typography.Text type="secondary" className="fs-caption">
               这些参数是后台启动时读的，要生效得重开面板。能填的只有「只改怎么跑、不改哪些东西进去」那一族；
-              写错一项会在点保存时被拦下，并把那句为什么念给你听。
+              支持递归列表的远端可用 --fast-list 减少列举请求。降低 --transfers 和 --checkers 可以减轻并发压力。
+              要减少扫描范围，可将配对限定在实际使用的子目录。
               这一族里只点名放行了一枚改比法的例外：--size-only，它让每一趟都只比大小，
               内容改了但大小没变的那些不会重传；开着它的时候，屏幕最上面那条会一直写着同一句。
             </Typography.Text>} />
@@ -481,6 +482,11 @@ export function SettingsPanel(props: {
                     // 临时卡，重开面板它才换成一张配对卡。不说这一句，人就以为按下保存那张卡就变了。
                     <Alert type="info" showIcon
                       title="这条是从刚才那张临时卡带过来的：存完之后跑的那一面还是那张临时卡，重开面板它才作为一张配对卡出现。" />
+                  )}
+                  {job.jobKind !== 'gate' && (
+                    <Typography.Text type="secondary" className="fs-caption">
+                      保存后重开面板，这两个位置会自动提供支持的复制和同步方向。
+                    </Typography.Text>
                   )}
                   <JobFields job={job} patch={patchJob} busy={busy}
                     onSave={askJob} onCancel={() => { setJob(null); setFromDraft(false); }} />

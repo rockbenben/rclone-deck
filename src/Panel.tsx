@@ -8,7 +8,7 @@ import { errNote, noteKey, plainNote } from './errors';
 import { formatFileChanges } from './format';
 import { BrowserPanel } from './components/BrowserPanel';
 import { JobContextPanel, TABS } from './components/JobContextPanel';
-import { JobListView, PairCell, usePairChoice } from './components/JobListView';
+import { JobListView, PairCell, usePairChoice, type PairFocus } from './components/JobListView';
 import { MirrorConfirm } from './components/MirrorConfirm';
 import { PairDraftLayer } from './components/PairDraftLayer';
 import { KEY_FACE, KEY_TAB, useStored } from './prefs';
@@ -81,11 +81,11 @@ export function Panel() {
   const [previewSpent, setPreviewSpent] = useState<Record<string, boolean>>({});
   const [previewFor, setPreviewFor] = useState<string | null>(null);
   const [previewError, setPreviewError] = useState<ShortNote | null>(null);
-  // 「新建临时任务」那一层开不开，以及刚立起来的那张卡要指到哪（`pairKey`，后台算的那把尺子）。
+  // 「添加位置配对」那一层开不开，以及刚立起来的那张卡要指到哪（`pairKey`，后台算的那把尺子）。
   // 归这里管是因为右列读的是 `selectedId`：新卡立在看不见的那一列里、右列还讲上一张卡的事，
   // 操作员就会对着两张卡按下一颗按钮。挑哪一格仍然由卡面那层自己说（见 `JobListView` 的 `pick`）。
   const [draftOpen, setDraftOpen] = useState(false);
-  const [focusPair, setFocusPair] = useState<string | null>(null);
+  const [focusPair, setFocusPair] = useState<PairFocus | null>(null);
   const [rootsRevision, setRootsRevision] = useState(0);
   // 「存成常用」带进设置面那张**已有的**「新加一条」表单的那一格（R97）。
   // 这里一份文件都不写：写得进那条路只有设置面那三条（读现状 / 要差异 / 带凭证落盘），
@@ -269,16 +269,15 @@ export function Panel() {
   // 前提话术按方向分叉靠它）。现从 `jobs` 里找而不是存一份 `JobView`：每轮刷新都换成新对象。
   const previewJob = previewFor ? jobs.find((j) => j.id === previewFor) ?? null : null;
 
-  // 点「看差异」：选中该任务、把右列翻到「差异」、列一遍。
-  // 只读，没有随执行作废的清单要记（那一份归对齐确认层管，见下面 `preview`）。
-  const openInventory = useCallback((id: string) => {
+  const openInventory = useCallback((id: string, refreshReport = false) => {
     setSelectedId(id);
     setRailTab('diff');
+    if (!refreshReport && inventory[id]) return;
     void act('盘点', async () => {
       const report = await api.runInventory(id);
       setInventory((p) => ({ ...p, [id]: report }));
     });
-  }, [act]);
+  }, [act, inventory]);
 
   // 预览这一步只列不删。它自己捕获错误并落进确认层——拒绝（空 src、占比守卫、
   // 清单变了、这一对目录正被别的任务占着）要是只飘一条 toast 就被人在弹窗里看不见，
@@ -326,7 +325,7 @@ export function Panel() {
     setView('settings');
   }, []);
 
-  /** 「删掉这张临时卡」：把这一张卡上那几格临时的收掉。正在跑的时候后台会拒，并把为什么说出来；
+  /** 「移除临时操作」：把这一张卡上那几格临时的收掉。正在跑的时候后台会拒，并把为什么说出来；
    *  界面不设备用文案，也不因为"大概正忙着"就提前把那颗按钮灭掉。 */
   const foldPair = useCallback((pairKey: string) => {
     void act('收起这张卡', async () => {
@@ -364,7 +363,6 @@ export function Panel() {
             busy={busy}
             onSelect={(id) => setSelectedId(id)}
             onNewPair={() => setDraftOpen(true)}
-            focusPair={focusPair}
             onSaveDraft={saveDraft}
             onFoldPair={foldPair}
             onTrialRun={(id) => runTransfer(id, true)}
@@ -387,7 +385,6 @@ export function Panel() {
                   setRailTab(choice.gates.some((job) => job.id === id) ? 'check' : 'progress');
                 }}
                 onNewPair={() => setDraftOpen(true)}
-                focusPair={focusPair}
                 onSaveDraft={saveDraft}
                 onFoldPair={foldPair}
                 onTrialRun={(id) => runTransfer(id, true)}
@@ -408,7 +405,7 @@ export function Panel() {
                 busy={busy}
                 tab={railTab}
                 onTab={setRailTab}
-                onRunInventory={() => { if (selected) openInventory(selected.id); }}
+                onRunInventory={() => { if (selected) openInventory(selected.id, true); }}
                 onRunGate={() => { if (selected) runGate(selected.id); }}
               />
             </Layout.Content>
@@ -467,13 +464,13 @@ export function Panel() {
           }).then((r) => { if (r.ok && isDone(r.value)) notifyDone(id, '同步', r.value); })}
         />
       )}
-      {/* 「新建临时任务」那一层。立卡那一次调用与它带回来的那句拒绝都住在层里（同一屏上看得见，
+      {/* 「添加位置配对」那一层。立卡那一次调用与它带回来的那句拒绝都住在层里（同一屏上看得见，
           人才知道要改哪一格）——这里只接两件事：关掉它，并把右列指到刚立起来的那张卡。
           立刻刷新一次，不等那一秒的轮询：spec §3 要的是"同一拍里卡就出现"。 */}
       <PairDraftLayer open={draftOpen} onClose={() => setDraftOpen(false)}
         onCreated={(pairKey) => {
           setDraftOpen(false);
-          setFocusPair(pairKey);
+          setFocusPair({ key: pairKey });
           setRootsRevision((revision) => revision + 1);
           void refresh();
         }} />

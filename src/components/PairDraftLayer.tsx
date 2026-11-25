@@ -15,7 +15,7 @@ interface Row { pick: string | null; value: string }
 const EMPTY: Row = { pick: null, value: '' };
 
 /**
- * 「新建临时任务」那一层（spec §3，裁定 R93/R94）：两处位置交出去，立一张只活在这一趟的卡。
+ * 「添加位置配对」那一层（spec §3，裁定 R93/R94）：两处位置交出去，立一张只活在这一趟的卡。
  *
  * 它不解释"哪一侧是全集"——那是卡上那两格的事，这里只管把两处位置交出去。
  * 它也**不自己判**那两个位置合不合规矩（同一处、认不出、那一格已经占着）：判据在后台，
@@ -76,19 +76,19 @@ export function PairDraftLayer(props: {
           ]}
           onChange={(id) => set({ pick: id, value: id })} />
         <Input size="small" value={value.value} aria-label={label} className="fs-code"
-          placeholder="要动的那一处，可直接改写" style={{ flex: 1 }}
+          placeholder="输入完整路径，或修改选中的起点" style={{ flex: 1 }}
           onChange={(e) => set({ pick: value.pick, value: e.target.value })} />
       </Space>
     </Space>
   );
 
   return (
-    <Modal open={props.open} width={560} title="新建临时任务" onCancel={props.onClose}
-      onOk={() => void submit()} okText="就这么定" cancelText="取消"
+    <Modal open={props.open} width={560} title="添加位置配对" onCancel={props.onClose}
+      onOk={() => void submit()} okText="确认配对" cancelText="取消"
       okButtonProps={{ loading: busy }}>
       <Space orientation="vertical" size={8} style={{ width: '100%' }}>
         <Typography.Text type="secondary" className="fs-note">
-          两处位置各写一个：先挑一个起点，再在框里改成要动的那一处。
+          选两个位置即可。配对后，在「要做什么」选择操作和方向。单向同步需要一端是本地、另一端是远端。
         </Typography.Text>
         {row('这一侧', left, setLeft)}
         {row('那一侧', right, setRight)}
@@ -98,12 +98,8 @@ export function PairDraftLayer(props: {
         {error && (
           <Alert type="error" showIcon title="没改成" description={<NoteLine note={error} />} />
         )}
-        {/* 这句必须在这里说：这一张卡不写得进那两份文件，而"关掉就没了"是它与设计语言里
-            那几张配好的卡唯一的区别（R96/R97：格上那句「这张卡上有没写进配置的格子」）。 */}
         <Typography.Text type="secondary" className="fs-note">
-          这张卡只活在这一趟面板里：关掉就没了，也没有写进那两份文件。
-          要常用它，立起来之后按卡上那颗「存成常用（写进配置）」—— 它会把这张卡带进
-          设置里的「新加一条」，在那里确认一次才真的写进配置。
+          新配对仅在本次打开期间可用。要保留它，请在配对页点「存成常用（写进配置）」。
         </Typography.Text>
       </Space>
     </Modal>

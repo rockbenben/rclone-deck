@@ -46,6 +46,19 @@ fn set_taskbar_icon(app: &tauri::App) {
 }
 
 pub fn run() {
+    let context = tauri::generate_context!();
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::UI::Shell::SetCurrentProcessExplicitAppUserModelID;
+        // Match the shell ID in installer-hooks.nsh. Explorer cached the old
+        // icon under the bundle ID, which still owns the install and app data.
+        let shell_id = format!("{}.Desktop", context.config().identifier);
+        let app_id: Vec<u16> = shell_id.encode_utf16().chain([0]).collect();
+        let result = unsafe { SetCurrentProcessExplicitAppUserModelID(app_id.as_ptr()) };
+        if result < 0 {
+            eprintln!("Could not set Windows application ID: {result:#x}");
+        }
+    }
     tauri::Builder::default()
         .setup(|app| {
             #[cfg(windows)]
@@ -144,6 +157,6 @@ pub fn run() {
             commands::settings_plan,
             commands::settings_apply,
         ])
-        .run(tauri::generate_context!())
+        .run(context)
         .expect("error while running tauri application");
 }

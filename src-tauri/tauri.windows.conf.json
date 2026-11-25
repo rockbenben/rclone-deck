@@ -1,11 +1,15 @@
 {
   "bundle": {
     "targets": ["nsis"],
+    "resources": {
+      "icons/icon.ico": "rclone-deck-taskbar.ico"
+    },
     "windows": {
       "nsis": {
         "installMode": "currentUser",
         "installerIcon": "icons/icon.ico",
         "uninstallerIcon": "icons/icon.ico",
+        "installerHooks": "installer-hooks.nsh",
         "languages": ["English"],
         "displayLanguageSelector": false
       }

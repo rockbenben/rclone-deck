@@ -319,7 +319,7 @@ const pollCheck = ['one refresh in flight', async () => {
 try {
   if (startup) {
     await until(shows('后台没能启动'), 'Startup failure is not visible');
-    const actual = await evaluate(`[...document.querySelectorAll('.bar [title]')]
+    const actual = await evaluate(`[...document.querySelectorAll('.deck-notice [title]')]
       .map(node => node.title).find(title => title.endsWith('jobs.toml'))`);
     assert.equal(path.normalize(actual ?? ''), path.join(startup, 'jobs.toml'));
     console.log('PASS startup failure displays the actual configuration path');

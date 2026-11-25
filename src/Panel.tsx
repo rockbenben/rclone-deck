@@ -1,5 +1,5 @@
 import { App as AntdApp, Button, Layout, Segmented } from 'antd';
-import { CloudSyncOutlined, FolderOpenOutlined, SettingOutlined, SwapOutlined } from '@ant-design/icons';
+import { FolderOpenOutlined, SettingOutlined, SwapOutlined } from '@ant-design/icons';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 
@@ -345,20 +345,14 @@ export function Panel() {
 
   return (
     <Layout className="deck-shell">
-      <header className="deck-header">
-        <div className="deck-brand">
-          <span className="deck-mark" aria-hidden="true"><CloudSyncOutlined /></span>
-          <span>rclone-deck</span>
-        </div>
+      <RcdStatusBar status={status} pollError={pollError}>
         <nav aria-label="工作区">
           <Segmented className="deck-nav" value={view} onChange={(v) => setView(v as View)} options={FACES} />
         </nav>
-      </header>
-      <div className="deck-status"><RcdStatusBar status={status} pollError={pollError} /></div>
-      <main className="deck-workspace">
+      </RcdStatusBar>
+      <main className="deck-workspace" aria-label={FACES.find((face) => face.value === view)?.label}>
         {/* 切换时保留浏览位置。新建或收起草稿后更新可选位置。 */}
         <div style={{ display: view === 'pairs' ? undefined : 'none' }} className="pairs-layout">
-          <h1 className="workspace-title">文件任务</h1>
           {/* 「选哪一对位置」横跨整窗，下面才是当前那一格与它的上下文。
               以前这两件事挤在同一个 340px 的左列里，三枚框加三行标签一行也放不下，被折成三行 ——
               一眼看过去像一张竖排的表，而它问的其实是"我在哪"。 */}
@@ -428,7 +422,6 @@ export function Panel() {
             「打开这个目录」接的是卡上「打开所在目录」同一条通路：失败了由 `act` 念出
             「打开目录失败 + 后台那句为什么」，而不是让这一面顶着一句不相干的「没改成」。 */}
         <div style={{ display: view === 'settings' ? 'block' : 'none' }}>
-          <h1 className="workspace-title settings-title">设置</h1>
           <SettingsPanel active={view === 'settings'}
             prefill={prefill}
             onOpenFolder={() => void act('打开目录', () => api.openConfigFolder())} />

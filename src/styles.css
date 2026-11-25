@@ -68,23 +68,42 @@ body { background: var(--canvas); color: var(--ink); font-family: "Segoe UI", "M
   position: sticky;
   top: 0;
   z-index: 10;
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 12px 32px;
-  padding: 13px var(--workspace-gutter);
   background: var(--surface);
   border-bottom: 1px solid var(--hairline);
 }
-.deck-brand {
+.deck-toolbar,
+.deck-notice {
+  box-sizing: border-box;
+  width: 100%;
+  max-width: 1536px;
+  margin-inline: auto;
+  padding-inline: var(--workspace-gutter);
+}
+.deck-toolbar {
   display: flex;
   align-items: center;
-  gap: 10px;
-  font-size: 17px;
-  font-weight: 650;
-  color: var(--ink);
+  flex-wrap: wrap;
+  gap: 8px 20px;
+  padding-block: 8px;
 }
-.deck-mark, .route-node {
+.deck-tools, .deck-health, .deck-log.ant-typography, .deck-log-path.ant-typography {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+}
+.deck-tools {
+  flex: 1 1 420px;
+  justify-content: flex-end;
+  gap: 8px 12px;
+}
+.deck-health { flex: 0 0 auto; gap: 8px; white-space: nowrap; }
+.deck-log.ant-typography { gap: 6px; white-space: nowrap; }
+.deck-log-path .log-ellipsis { min-width: 0; }
+.deck-log-path .ant-typography-copy { position: relative; flex: none; }
+.deck-log-path .ant-typography-copy::after { content: ''; position: absolute; inset: -5px -4px; }
+.deck-theme { flex: none; }
+.deck-notice { padding-block: 10px 0; overflow-wrap: anywhere; }
+.route-node {
   display: grid;
   place-items: center;
   width: 36px;
@@ -97,21 +116,12 @@ body { background: var(--canvas); color: var(--ink); font-family: "Segoe UI", "M
 .deck-nav.ant-segmented { padding: 3px; }
 .deck-nav .ant-segmented-item-label { padding-inline: 13px; }
 .deck-nav .ant-segmented-item-selected { color: var(--link); }
-.deck-status .surface.bar {
-  padding: 7px var(--workspace-gutter);
-  border: 0;
-  border-bottom: 1px solid var(--hairline);
-  border-radius: 0;
-  background: var(--surface-muted);
-  box-shadow: none;
-}
-.deck-status .ant-alert { flex: 1 1 400px; min-width: 0; overflow-wrap: anywhere; }
 .deck-workspace {
   box-sizing: border-box;
   width: 100%;
   max-width: 1536px;
   margin-inline: auto;
-  padding: 24px var(--workspace-gutter) 32px;
+  padding: 16px var(--workspace-gutter) 32px;
 }
 .workspace-heading {
   display: flex;
@@ -127,7 +137,6 @@ body { background: var(--canvas); color: var(--ink); font-family: "Segoe UI", "M
   font-weight: 650;
   color: var(--ink);
 }
-.settings-title { margin-bottom: 14px; }
 .settings-nav { display: flex; flex-wrap: wrap; gap: 12px; }
 .settings-nav a {
   padding: 5px 11px;
@@ -249,7 +258,8 @@ body { background: var(--canvas); color: var(--ink); font-family: "Segoe UI", "M
 
 @media (max-width: 760px) {
   .pairs-layout .pairs-split { grid-template-columns: minmax(0, 1fr); }
-  .deck-status .bar-right { flex-wrap: wrap; margin-left: 0; }
+  .deck-tools { justify-content: flex-start; flex-wrap: wrap; }
+  .settings-section { scroll-margin-top: 120px; }
 }
 
 /* 等宽族只写一次：数字、路径与日志尾巴共用。 */
@@ -283,11 +293,6 @@ code.ant-typography, .ant-typography code { font-size: 12px; line-height: 18px; 
 /* 顶栏那一条。它要有"栏"的样子：界面自己的状态（chrome）与内容分层，
    不然那一串字漂在画布上，读起来像内容的第一行。 */
 .bar { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; padding: 7px 12px; }
-/* 右边那一组放"可改的东西"（主题切换口 + 日志目录），左边只说后台现在的状态。 */
-.bar-right { margin-left: auto; min-width: 0; display: flex; align-items: center; gap: 10px; }
-/* 那枚复制图标只有 15px 高（一行字的高度），指尖点不准。补一圈命中区，视觉一点不动。 */
-.bar-right .ant-typography-copy { position: relative; }
-.bar-right .ant-typography-copy::after { content: ''; position: absolute; inset: -5px -4px; }
 
 /* 浏览器位置栏保留路径末段的目录名。 */
 .path-line { display: flex; align-items: baseline; min-width: 0; }

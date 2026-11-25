@@ -100,6 +100,7 @@ function fixtureIpc() {
   const emptyNote = { short: '', detail: '' };
   const done = (dry) => ({
     state: 'done', jobid: 11, dry_run: dry, previewed: null,
+    copied_files: ['changed.txt'], deleted_files: [],
     stats: {
       transfers: 1, totalTransfers: 1, checks: 0, totalChecks: 0, bytes: 1, totalBytes: 1, speed: 1,
       eta: null, errors: 0, deletes: 0, deletedDirs: 0, retryError: false, fatalError: false, elapsedTime: 1,
@@ -132,7 +133,7 @@ function fixtureIpc() {
     return { state: 'failed', jobid: 11, error };
   };
   new MutationObserver(() => {
-    for (const notice of document.querySelectorAll('.ant-notification-notice-success')) {
+    for (const notice of document.querySelectorAll('.ant-notification-notice-success, .ant-notification-notice-info')) {
       if (!notice.hasAttribute('data-stage-f-seen')) {
         notice.setAttribute('data-stage-f-seen', '');
         mock.notifications.push(notice.textContent);
@@ -163,6 +164,10 @@ function fixtureIpc() {
       case 'run_job':
       case 'run_mirror':
         mock.state = terminal(payload.dryRun ?? false);
+        if (cmd === 'run_mirror' && mock.state.state === 'done') {
+          mock.state.stats.deletes = 1;
+          mock.state.deleted_files = ['extra.txt'];
+        }
         return reply(mock.state);
       case 'confirm_mirror': return reply('stage-f-token');
       case 'browser_remotes':
@@ -194,42 +199,49 @@ function fixtureIpc() {
 const checks = [
   ['task buttons', async () => {
     await until(shows('后台就绪'), 'Panel did not load');
-    await click('开始', '.pairs-cell button');
-    await until("stageF.notifications.some(n => n.includes('传输做完了'))", 'Done did not report success');
+    await click('开始复制', '.pairs-cell button');
+    await until("stageF.notifications.some(n => n.includes('复制完成'))", 'Done did not report success');
+    await until(shows('已复制 1 个文件（1 B） · 已删除 0 个文件'), 'Copy counts are missing');
+    await click('查看文件明细');
+    await until(shows('changed.txt'), 'The copied path is missing from the result');
     await evaluate("stageF.next = 'failed'");
-    await click('开始', '.pairs-cell button');
+    await click('开始复制', '.pairs-cell button');
     await until(shows('验收任务失败原因'), 'Failed state is not visible');
     await evaluate("stageF.next = 'unknown'");
-    await click('看看会动什么', '.pairs-cell button');
+    await click('模拟复制', '.pairs-cell button');
     await until(shows('验收回执未知'), 'Unknown state is not visible');
     await delay(200);
     assert.equal(await evaluate('stageF.notifications.length'), 1, 'Failed or Unknown falsely reported success');
     await evaluate("stageF.next = 'done'");
-    await click('看看会动什么', '.pairs-cell button');
-    await until("stageF.notifications.some(n => n.includes('试跑做完了'))", 'Done trial did not report success');
+    await click('模拟复制', '.pairs-cell button');
+    await until("stageF.notifications.some(n => n.includes('模拟完成，文件未改动'))", 'Done trial did not report success');
+    await until(shows('预计复制 1 个文件（1 B） · 预计删除 0 个文件'), 'Dry run counts are missing');
   }],
   ['partial mirror', async () => {
     await evaluate("stageF.jobs = 'sync'; stageF.next = 'partial'; stageF.state = {state:'idle'}");
-    await click('让两边对齐', '.pairs-cell button');
-    await until(shows('确认这一趟对齐'), 'Mirror confirmation did not open');
+    await click('确认单向同步', '.pairs-cell button');
+    await until(shows('确认单向同步'), 'Mirror confirmation did not open');
     await delay(250);
-    await click('照对齐跑（这一趟先核对一遍）', '.ant-modal button');
+    await click('核对后开始同步', '.ant-modal button');
     await until("stageF.calls.includes('run_mirror')", 'The mirror confirmation did not reach IPC');
     await until(shows('已删除 2 个文件，删除失败。'), 'Partial completion count is not visible');
-    assert.equal(await evaluate("stageF.notifications.some(n => n.includes('对齐做完了'))"), false);
-    assert.equal(await evaluate(`[...document.querySelectorAll('.ant-modal button')].some(
-      b => b.disabled && b.innerText.includes('已经交出去了'))`), true, 'The spent confirmation is still actionable');
+    assert.equal(await evaluate("stageF.notifications.some(n => n.includes('同步完成'))"), false);
+    await until(`[...document.querySelectorAll('.ant-modal button')].some(
+      b => b.disabled && b.innerText.includes('重新生成删除清单'))`, 'The spent confirmation is still actionable');
     await click('为什么？', '.ant-modal button, .ant-modal a');
     await until(shows('第三项 third.txt 失败。'), 'The failed item is missing from the detail');
     await click('取消', '.ant-modal button');
   }],
   ['completed mirror', async () => {
     await evaluate("stageF.jobs = 'sync'");
-    await click('让两边对齐', '.pairs-cell button');
-    await until(shows('确认这一趟对齐'), 'Mirror confirmation did not open');
+    await click('确认单向同步', '.pairs-cell button');
+    await until(shows('确认单向同步'), 'Mirror confirmation did not open');
     await delay(250);
-    await click('照对齐跑（这一趟先核对一遍）', '.ant-modal button');
-    await until("stageF.notifications.some(n => n.includes('对齐做完了'))", 'Done mirror did not report success');
+    await click('核对后开始同步', '.ant-modal button');
+    await until("stageF.notifications.some(n => n.includes('同步完成'))", 'Done mirror did not report success');
+    await until(shows('已删除 1 个文件'), 'Mirror deletion count is missing');
+    await click('查看文件明细');
+    await until(shows('extra.txt'), 'The deleted path is missing from the result');
   }],
   ['late navigation and a closed comparison', async () => {
     await click('浏览文件');
@@ -259,24 +271,25 @@ const checks = [
     assert.equal(await evaluate("stageF.calls.filter(c => c === 'settings_current').length"), 1);
     await click('再读一次');
     await until("stageF.calls.filter(c => c === 'settings_current').length >= 2", 'Manual retry did not read settings');
-    await click('配好的位置');
+    await click('文件任务');
     await click('设置');
     await delay(250);
     assert.equal(await evaluate("stageF.calls.filter(c => c === 'settings_current').length"), 2);
   }],
   ['draft roots', async () => {
-    await click('配好的位置');
-    await click('换一对位置');
+    await click('文件任务');
+    await click('新建临时任务');
     await until(`document.querySelector('input[aria-label="这一侧"]')?.getClientRects().length`, 'Draft dialog did not open');
+    await delay(250);
     await fill('这一侧', 'D:/stage-f-draft');
     await fill('那一侧', 'stage-f:draft');
-    await click('就这么定');
+    await click('就这么定', '.ant-modal button');
     await until(shows('临时测试任务'), 'Draft did not open');
     await click('浏览文件');
     await click('本地夹具', '.ant-select');
     await until(shows('新增草稿目录'), 'The new local root is missing from the selector');
     await click('新增草稿目录', '.ant-select-item-option');
-    await click('配好的位置');
+    await click('文件任务');
     await click('更多', '.pairs-cell button');
     await until(shows('删掉这张临时卡'), 'The draft menu did not open');
     await delay(350);
@@ -292,13 +305,13 @@ const pollCheck = ['one refresh in flight', async () => {
   await until(shows('验收任务 copy'), 'Fixture did not publish the initial task');
   await evaluate('stageF.holdJobs = true');
   await until('stageF.pendingJobs > 0', 'No polling request was held');
-  await click('开始', '.pairs-cell button');
+  await click('开始复制', '.pairs-cell button');
   await until("stageF.calls.includes('run_job')", 'The explicit refresh action did not run');
   await delay(2400);
   const peak = await evaluate('stageF.peakJobs');
   await evaluate('stageF.holdJobs = false; stageF.heldJobs.splice(0).forEach(release => release())');
   assert.equal(peak, 1, 'More than one refresh reached IPC while a round was held');
-  await until(shows('传输做完了'), 'The explicit refresh did not complete after the held round');
+  await until(shows('复制完成'), 'The explicit refresh did not complete after the held round');
   const calls = await evaluate("stageF.calls.filter(cmd => cmd === 'get_jobs').length");
   await until(`stageF.calls.filter(cmd => cmd === 'get_jobs').length > ${calls}`, 'Polling did not resume');
 }];
@@ -313,10 +326,15 @@ try {
   } else {
     await until("!!document.querySelector('.ant-layout')", 'Fixture panel did not load before setup');
     if (process.argv.includes('--native-copy')) {
-      await click('开始', '.pairs-cell button');
-      await until(shows('传输做完了'), 'Real rclone transfer did not report success');
+      await click('开始复制', '.pairs-cell button');
+      await until(shows('复制完成'), 'Real rclone transfer did not report success');
       assert.equal(await readFile(path.join(fixture, 'remote', 'native-copy.txt'), 'utf8'), 'native-stage-f-copy');
-      console.log('PASS native transfer button and real rclone write');
+      await until(shows('已复制 1 个文件'), 'Real rclone transfer count is missing');
+      await click('查看文件明细');
+      await until(shows('native-copy.txt'), 'Real rclone transfer path is missing');
+      await click('开始复制', '.pairs-cell button');
+      await until(shows('本次没有复制或删除文件'), 'An unchanged run did not report zero changes');
+      console.log('PASS native transfer counts, file paths, and unchanged run');
     }
     await send('Runtime.enable');
     await send('Page.enable');

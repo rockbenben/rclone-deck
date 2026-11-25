@@ -13,18 +13,7 @@ import { canInventory, KIND_LABEL, runningHint } from '../types';
 // 站在哪一格才有。值取自 CSS 变量，与 `theme.ts` 色板同名同值（组件里不写字面色值这条判据不动）。
 const MODE_VAR: Record<Mode, string> = { add: 'var(--ink-2)', mirror: 'var(--kind-warm)' };
 
-/** 「只补，不删」那一档下面的一句，**挂在「看看会动什么」那颗的悬停上，不常驻在卡上**。
- *  它要说的话一个字没少（并排两颗时最容易按错的就是这两颗），但它说的是"这两颗的区别"，
- *  不是"这一格的状态" —— 常驻那一行等于让一句解释每一趟都占掉两行，而那两行本该给读数。
- *  所以它跟着那颗按钮走：鼠标在上面时说得清，平时不占地方。
- *  「会删除」那一档没有这一句：那一格只剩一颗，没有并排就没有可错的地方。
- *
- *  改名（2026-10-09）：`先试跑` → `看看会动什么`，`开始传输` → `开始`。
- *  「试跑」听着像**真的要跑一次**，而这颗只列不动；「传输」是术语，而卡上已经说了
- *  这一趟动的是哪一侧。这两个是全仓少数**不与后台词表焊在一起**的动作名（后台从不按
- *  这两个名字发话），所以只动字面就够。**没顺手改的**是「看差异」—— 它是只读盘点的
- *  入口，后台 `runner/mod.rs:823` 的日志按「看差异」那一份取基准，改它要连后台一起动。 */
-const ADD_MODE_NOTE = '「看看会动什么」只告诉你会动哪些，不真传；要把东西放上去，按「开始」。';
+const ADD_MODE_NOTE = '模拟会列出预计新增或覆盖的文件，不会改动文件。';
 
 /** 这一格**这一次会怎么样** —— 不是这一格"有几个东西"的统计，是"按下去会发生什么"的后果。
  *
@@ -152,7 +141,7 @@ interface Props extends JobActions {
   selectedId: string | null;
   busy: boolean;
   onSelect: (id: string) => void;
-  /** 「换一对位置」那颗：立卡那一趟与它带回来的拒绝都住在层里，这里只负责把它喊开。 */
+  /** 「新建临时任务」那颗：立卡那一趟与它带回来的拒绝都住在层里，这里只负责把它喊开。 */
   onNewPair: () => void;
   /** 把当前这一格送去设置面那张**已有的**「新加一条」表单（R97）。
    *  这一层自己不写得进任何文件：第二条写入通路就是第二条会各自漂的确认流程。 */
@@ -199,6 +188,15 @@ export function usePairChoice(jobs: JobView[], focusPair: string | null, onSelec
     onSelect(job.id);
   };
 
+  const selectJob = (job: JobView) => {
+    if (job.kind !== 'gate') {
+      const mode = job.kind === 'sync' ? 'mirror' : 'add';
+      setPairKey(job.pairKey);
+      setChoice((current) => ({ ...current, [job.pairKey]: { mode, slot: job.pairSlot } }));
+    }
+    onSelect(job.id);
+  };
+
   /** 外面那一句「刚立起来一张卡」（`focusPair`）翻成"站到那一对上"。
    *  `askedFor` 记的是已经接过的键：轮询每秒重渲染一次，不记就会把操作员随后换的位置抢回去。 */
   const askedFor = useRef<string | null>(null);
@@ -222,7 +220,7 @@ export function usePairChoice(jobs: JobView[], focusPair: string | null, onSelec
     onSelect(picked.job.id);
   });
 
-  return { pairs, gates, shown, pick, choose, pairKey, setPairKey };
+  return { pairs, gates, shown, pick, choose, pairKey, setPairKey, selectJob };
 }
 
 type Choice = ReturnType<typeof usePairChoice>;
@@ -257,7 +255,7 @@ function Field({ label, tone, children }: { label: string; tone?: string; childr
  */
 export function JobListView(props: Props & { choice: Choice }) {
   const { shown, pick, choose, setPairKey, pairs } = props.choice;
-  // 没有任何一对位置时**也要把这条选择条摆出来**：那颗「换一对位置」就在这一行里。
+  // 没有任何一对位置时**也要把这条选择条摆出来**：那颗「新建临时任务」就在这一行里。
   // 旧写法整段 `return null`，于是删掉最后一对位置之后，这一面只剩右列一句「先选一个任务」——
   // 立新卡的那颗按钮跟着那条不存在的卡一起消失了。
   const picked = shown === undefined ? null : pick(shown);
@@ -293,7 +291,7 @@ export function JobListView(props: Props & { choice: Choice }) {
       </Field>
       {/* 这一颗是**那一面的一条全局动作**，不是每一格里的一颗：它自己不立卡（`onNewPair()`），
           因为立卡那趟带回来的那句拒绝要在层里说——两处发起点就会有两处话术。 */}
-      <Button className="pair-bar-act" icon={ICON.swap} onClick={() => props.onNewPair()}>换一对位置</Button>
+      <Button className="pair-bar-act" icon={ICON.swap} onClick={() => props.onNewPair()}>新建临时任务</Button>
     </div>
   );
 }
@@ -398,16 +396,16 @@ export function PairCell(props: Props & { choice: Choice }) {
     // 一个按下去什么都不删的红色按钮，练的是"红色可以随便点"。
     // 真正批准删除的那颗红色在确认层的页脚（`MirrorConfirm`），
     // 而点下去之后后台还要重列一遍逐条比对，不一致就不动。
-    act('preview', '让两边对齐', () => props.onPreviewMirror(id), off, false, undefined, ICON.mirror),
+    act('preview', '确认单向同步', () => props.onPreviewMirror(id), off, false, undefined, ICON.mirror),
   ];
   const addPrimary = (id: string, off: boolean, mode: Mode): CardAction[] => [
     // 那句解释挂在**这颗自己**的悬停上（`ADD_MODE_NOTE`），不占卡上那两行常驻文字：
     // 它说的是这两颗的区别，不是这一格的状态，而对齐那一档没有可错的地方所以不带它。
-    act('trial', '看看会动什么', () => props.onTrialRun(id), off, false, mode === 'add' ? ADD_MODE_NOTE : undefined),
-    act('start', '开始', () => props.onStart(id), off, true, undefined, ICON.up),
+    act('trial', '模拟复制', () => props.onTrialRun(id), off, false, mode === 'add' ? ADD_MODE_NOTE : undefined),
+    act('start', '开始复制', () => props.onStart(id), off, true, undefined, ICON.up),
   ];
   const gatePrimary = (id: string, off: boolean): CardAction[] => [
-    act('gate', '开始对账', () => props.onGate(id), off),
+    act('gate', '检查目标缺少的文件名', () => props.onGate(id), off),
   ];
 
   /** 当前那一格：它说的是哪条任务、完整那一对位置、这一格自己的读数与动作。
@@ -434,7 +432,7 @@ export function PairCell(props: Props & { choice: Choice }) {
         <div className="workspace-heading">
           <h2 className="pane-title">传输路径</h2>
           {selectedId !== job.id && (
-            <Button size="small" type="link" onClick={() => onSelect(job.id)}>查看进度</Button>
+            <Button size="small" type="link" onClick={() => onSelect(job.id)}>查看运行结果</Button>
           )}
         </div>
         {/* 这一格只交**完整那两条路径**。名字不在这里说（它在右列开头那一行），

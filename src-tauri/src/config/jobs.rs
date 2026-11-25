@@ -19,9 +19,9 @@ impl JobKind {
     /// **配置文件与界面上那条任务的身份词**：`copy` / `sync` / `gate`。
     /// 它是 `jobs.toml` 里写的那个值，也是 `JobView.kind` 交给界面的那一个，也是临时格编号里
     /// 的那一段（`adhoc-1-sync-a`，裁定 R99）—— 三个读者一份定义。
-    /// 与 [`JobKind::word`] 的区别：那一句是**给操作员看的人话**（「复制」「让两边对齐（会删）」），
+    /// 与 [`JobKind::word`] 的区别：那一句是**给操作员看的人话**（「复制」「单向同步（删除目标多余文件）」），
     /// 这一句是数据。两者不许混用：把 `sync` 印到界面上是内部名词上屏（R56），
-    /// 把「让两边对齐（会删）」拼进编号是造出一个没人认得的 id。
+    /// 把「单向同步（删除目标多余文件）」拼进编号是造出一个没人认得的 id。
     pub fn toml_word(&self) -> &'static str {
         match self {
             JobKind::Copy => "copy",
@@ -37,7 +37,7 @@ impl JobKind {
     pub fn word(&self) -> &'static str {
         match self {
             JobKind::Copy => "复制",
-            JobKind::Sync => "让两边对齐（会删）",
+            JobKind::Sync => "单向同步（删除目标多余文件）",
             // 2026-10-09：`检查` → `对账`，与前端 `KIND_LABEL.gate` 同步。
             // 这一族本来就到处说「对账」（测试夹具那份清单里的任务名 `ideahub 封面对账`、报错
             // 「闸门无从对账」、设置面「对账的那几条」），只有这个词表与右列那一段

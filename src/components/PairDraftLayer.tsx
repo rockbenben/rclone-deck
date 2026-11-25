@@ -15,7 +15,7 @@ interface Row { pick: string | null; value: string }
 const EMPTY: Row = { pick: null, value: '' };
 
 /**
- * 「换一对位置」那一层（spec §3，裁定 R93/R94）：两处位置交出去，立一张只活在这一趟的卡。
+ * 「新建临时任务」那一层（spec §3，裁定 R93/R94）：两处位置交出去，立一张只活在这一趟的卡。
  *
  * 它不解释"哪一侧是全集"——那是卡上那两格的事，这里只管把两处位置交出去。
  * 它也**不自己判**那两个位置合不合规矩（同一处、认不出、那一格已经占着）：判据在后台，
@@ -83,7 +83,7 @@ export function PairDraftLayer(props: {
   );
 
   return (
-    <Modal open={props.open} width={560} title="换一对位置" onCancel={props.onClose}
+    <Modal open={props.open} width={560} title="新建临时任务" onCancel={props.onClose}
       onOk={() => void submit()} okText="就这么定" cancelText="取消"
       okButtonProps={{ loading: busy }}>
       <Space orientation="vertical" size={8} style={{ width: '100%' }}>

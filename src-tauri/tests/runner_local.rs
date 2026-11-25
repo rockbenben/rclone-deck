@@ -1573,17 +1573,20 @@ async fn a_real_write_retires_the_pre_run_summary_but_a_trial_does_not() {
     assert!(r.last_summary("p").is_some(), "跑过盘点就该有摘要");
 
     let dry = r.run_copy("p", true).await.unwrap();
-    assert!(matches!(dry, TaskState::Done { dry_run: true, .. }), "试跑终态不对：{dry:?}");
+    assert!(matches!(&dry, TaskState::Done { dry_run: true, copied_files, .. } if copied_files == &["new.webp"]),
+        "模拟复制应列出预计复制的文件：{dry:?}");
     assert!(r.last_summary("p").is_some(), "试跑一个字节都没写，跑前摘要仍然成立");
 
     let real = r.run_copy("p", false).await.unwrap();
-    assert!(matches!(real, TaskState::Done { dry_run: false, .. }), "真跑终态不对：{real:?}");
+    assert!(matches!(&real, TaskState::Done { dry_run: false, copied_files, .. } if copied_files == &["new.webp"]),
+        "实际复制应列出已复制的文件：{real:?}");
     assert!(r.last_summary("p").is_none(), "真写过之后卡面还挂着跑前的会传/会删，就是假现状");
 
     // 空跑（没有任何文件要写）不碰摘要：它没有让任何一份盘点失真。
     r.run_inventory("p").await.unwrap();
     let again = r.run_copy("p", false).await.unwrap();
-    assert!(matches!(again, TaskState::Done { .. }), "{again:?}");
+    assert!(matches!(&again, TaskState::Done { copied_files, deleted_files, .. }
+        if copied_files.is_empty() && deleted_files.is_empty()), "{again:?}");
     assert!(r.last_summary("p").is_some(), "零传输的空跑不该把摘要也拿走");
     r.shutdown_rcd().await.unwrap();
 }

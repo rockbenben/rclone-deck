@@ -558,7 +558,7 @@ async fn a_change_between_preview_and_execute_refuses_the_run_instead_of_guessin
     seed(&fx.dst(), &["late.webp"]);   // 人读清单那几十秒里，对端多了一个
     let err = runner.run_mirror("m", &p.token).await.unwrap_err().to_string();
     assert!(err.contains("清单变了"), "{err}");
-    assert!(err.contains("重新预览"), "{err}");
+    assert!(err.contains("生成删除清单"), "{err}");
     assert_eq!(files_in(&fx.dst()).len(), 7, "拒绝执行就一个都不该少：{:?}", files_in(&fx.dst()));
     // token 已经被吃掉：同一个 token 再试只能撞见"这份确认不作数"。
     let again = runner.run_mirror("m", &p.token).await.unwrap_err().to_string();
@@ -630,7 +630,7 @@ async fn an_unchanged_pair_still_runs_when_there_is_nothing_to_delete() {
 async fn an_unknown_or_reused_token_never_reaches_the_daemon() {
     let (fx, runner, _g) = mirror("", &["a.webp"], &["a.webp", "stale.webp"]).await;
     let err = runner.run_mirror("m", "prev-00000000000000000000000000000000").await.unwrap_err().to_string();
-    assert!(err.contains("重新预览"), "{err}");
+    assert!(err.contains("生成删除清单"), "{err}");
     assert!(!err.contains("token"), "内部名词不许上界面：{err}");
     assert_eq!(files_in(&fx.dst()).len(), 2, "没授权就什么都没动：{:?}", files_in(&fx.dst()));
 }
@@ -724,7 +724,7 @@ async fn mirror_pair_with_a_copy_row(sub: &str)
 #[tokio::test]
 async fn a_copy_on_the_same_pair_between_preview_and_confirm_voids_the_confirmation() {
     // `invalidate_previews` 的端到端证人：只验"新 token 覆盖旧 token"那一条看不到这里。
-    // 场景是真的：人点了「让两边对齐」，然后先去跑了一次上传（或反向那一个），回来直接确认。
+    // 场景是真的：人点了「确认单向同步」，然后先去跑了一次上传（或反向那一个），回来直接确认。
     // 那次 copy 会改变对端，旧清单上承诺的删除范围已经不成立了。
     let (_fx, runner, _g) = mirror_pair_with_a_copy_row("").await;
     let p = runner.preview_mirror("m").await.unwrap();
@@ -845,7 +845,7 @@ async fn a_neighbouring_write_voids_the_outer_preview_while_a_neighbouring_read_
         vec!["other/n1.webp", "s1.webp", "s2.webp", "s3.webp", "s4.webp"],
         "孤儿没了、a 源端那一层跟着传上去：{:?}", files_in(&fx.dst().join("img")));
 
-    // ── 第二半：**写**作废。上面那一跑把 a 的两侧对齐了，重新预览 a 拿到的是空 doomed；
+    // ── 第二半：**写**作废。上面那一跑把 a 的两侧对齐了，生成删除清单 a 拿到的是空 doomed；
     // 然后让 b 往它自己那棵树（`img/2026`）里真写一个东西，再拿 a 那份确认去跑。
     let pa2 = runner.preview_mirror("a").await.unwrap();
     assert!(pa2.doomed.is_empty(), "第二半验的是作废，不是逐条比对：{:?}", pa2.doomed);
@@ -875,7 +875,7 @@ async fn a_neighbouring_write_voids_the_outer_preview_while_a_neighbouring_read_
 
 // ============================================================ 不预览直接批
 //
-// 批准的对象从「这一份名单」换成「这一趟」：按下「让两边对齐」不该先付一趟 LIST 才按得动红色那颗。
+// 批准的对象从「这一份名单」换成「这一趟」：按下「确认单向同步」不该先付一趟 LIST 才按得动红色那颗。
 // 这里换掉的不是安全判据，是**参照物**——逐条比对要有"人看过的那一份"才比得出来；没人看过就没有
 // 参照物，此时守这一趟的是那两道拒绝，它们照旧排在动手之前。
 // 所以这一组只问三件事：不预览跑得通、两道拒绝照旧咬、凭证照旧一次一用。
@@ -888,7 +888,8 @@ async fn a_confirmation_without_a_preview_deletes_what_the_run_itself_lists() {
     let (fx, runner, _g) = mirror("", SHARED, &dst_side(SHARED, ORPHANS)).await;
     let token = runner.confirm_mirror("m").await.expect("确认这一步不该去列清单");
     let st = runner.run_mirror("m", &token).await.unwrap();
-    let TaskState::Done { stats, previewed, .. } = st else { panic!("该跑完：{st:?}") };
+    let TaskState::Done { stats, previewed, deleted_files, .. } = st else { panic!("该跑完：{st:?}") };
+    assert_eq!(deleted_files.iter().map(String::as_str).collect::<Vec<_>>(), ORPHANS);
     assert_eq!(stats.deletes, 2, "删的必须是动手那一刻列出来的那批孤儿：{stats:?}");
     // 没有预览也有一条"数要作为数据走出去"的口径：终态报的那个就是这一跑列出来的数。
     assert_eq!(previewed, Some(2), "界面不许自己再数一遍：{previewed:?}");

@@ -12,9 +12,9 @@ export type Tab = 'progress' | 'diff' | 'check' | 'log';
 /** 右列那四段（导出是给 `Panel.tsx` 的持久层校验用的：**名单只有一份**，
  *  这里摆的段与那里认的值不能各抄一份 —— 抄两份的下一档就是"存了但开不出来"）。 */
 export const TABS: { label: string; value: Tab }[] = [
-  { label: '进度', value: 'progress' },
+  { label: '运行结果', value: 'progress' },
   { label: '差异', value: 'diff' },
-  { label: '对账', value: 'check' },
+  { label: '文件对账', value: 'check' },
   { label: '日志', value: 'log' },
 ];
 
@@ -77,7 +77,7 @@ export function JobContextPanel({
       ) : (
         <div className="task-context-body">
           <div style={{ display: tab === 'progress' ? 'block' : 'none' }}>
-            <JobDetailPanel kind={job.kind} state={state} />
+            <JobDetailPanel job={job} state={state} />
           </div>
           <div style={{ display: tab === 'diff' ? 'block' : 'none' }}>
             <InventoryPanel report={inventory} loading={busy} off={locked} lockHint={lockedHint}

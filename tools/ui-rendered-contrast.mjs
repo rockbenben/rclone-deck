@@ -327,7 +327,7 @@ async function main() {
   const fillTable = async () => {
     // 对子那一面先站到「对账」那一段：那颗主按钮（`GatePanel.tsx` 的 `type="primary"`）住在这一段里，
     // 默认站的「进度」上没有它 —— 上一版"量到了"的那格主按钮，其实是别的屏上被藏着的那一枚。
-    if (VIEW === '配好的位置') {
+    if (VIEW === '文件任务') {
       // 危险程度那枚暖色住在「要做什么」那一格的标签上（顶部那一行第 2 枚）：默认站在
       // 「只补，不删」时它是中性色，量到的就不是那一档。
       if (MODE) await pickOption(1, MODE);

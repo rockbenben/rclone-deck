@@ -23,7 +23,7 @@ const LIST_BUDGET = 20;
  * 两条批准的路：
  *  · 默认这一条**不带名单** —— 凭证出自 `confirm_mirror`，动手那一刻列出来的就是准，
  *    守这一趟的是"占比过半"与"这一侧空着"那两道拒绝；
- *  · 点过「重新预览」再批的那一条带着名单，凭证出自 `preview_mirror`，后台拿到锁之后
+ *  · 点过「生成删除清单」再批的那一条带着名单，凭证出自 `preview_mirror`，后台拿到锁之后
  *    会重列一次并**逐条比对**，对不上就不动手。
  *  上面那句"这里显示的清单可能已经过期"只适用于第二条，而它必须写在界面上 ——
  *  它是"你看到的就是被删的"那个担保的全部内容，也是它唯一的来源。
@@ -60,11 +60,11 @@ export function MirrorConfirm(props: {
 
   return (
     <Modal open width={720}
-      title={preview ? `会删掉 ${preview.doomedCount} 个（目标端共 ${preview.dstCount} 个）` : '确认这一趟对齐'}
+      title={preview ? `会删掉 ${preview.doomedCount} 个（目标端共 ${preview.dstCount} 个）` : '确认单向同步'}
       onCancel={props.onCancel}
       footer={[
         <Button key="again" onClick={() => props.onPreview(job.id)} loading={loading}>
-          重新预览
+          生成删除清单
         </Button>,
         <Button key="cancel" onClick={props.onCancel}>取消</Button>,
         <Button key="go" danger type="primary"
@@ -76,11 +76,11 @@ export function MirrorConfirm(props: {
               · 名单是空的 —— 照它跑一次，它同样要先过动手前那两道拒绝。
               两种授权消费后都需要新的预览才能重试。
               两趟等待（列清单 / 按下去之后后台重列比对）都在这颗上说话：以前列举途中它写着
-              「还没清单，先重新预览」，等于人家正在算的时候叫他再去按一颗。 */}
+              「还没清单，先生成删除清单」，等于人家正在算的时候叫他再去按一颗。 */}
           {loading ? '正在核对清单…'
-            : spent ? '这一份已经交出去了，要看新的名单就再预览一次'
-            : !preview ? '照对齐跑（这一趟先核对一遍）'
-            : preview.doomedCount === 0 ? '这一份没有要删的，照它跑一次'
+            : spent ? '清单已经交出去了，请重新生成删除清单'
+            : !preview ? '核对后开始同步'
+            : preview.doomedCount === 0 ? '开始同步（删除 0 个文件）'
             // 那个数读后台交出来的 `doomedCount`，不读数组长度：确认层显示上是按页截的，
             // 而"删这 N 个"说的是后台动手时要核对的那一整份（数行数归界面就是第二份口径）。
             : `删这 ${preview.doomedCount} 个`
@@ -114,7 +114,7 @@ export function MirrorConfirm(props: {
             // 同一族的另一层（`LayerConfirm`）早就只说"照实报，它不是放行或挡住的依据"。
             ? `这次要删的占比 ${preview.doomedRatio}。达到一半就会被挡下，后台会说原因。`
             : '达到一半就会被挡下，后台会说原因。'} />
-        {error && <Alert type="error" showIcon title="对齐未完成" description={<NoteLine note={error} />} />}
+        {error && <Alert type="error" showIcon title="同步未完成" description={<NoteLine note={error} />} />}
         {!preview && (
           // 这一档必须自己把"你批的是什么"说完：没有名单不等于没有担保 ——
           // 动手前那两道拒绝（占比过半 / 这一侧空着）照旧在，而想看逐条名字有一条现成的路。
@@ -132,7 +132,7 @@ export function MirrorConfirm(props: {
                   ? `上次核对：会传 ${job.lastSummary.willUpload} 个 · 会删
                     ${job.lastSummary.dstIsLocal ? job.lastSummary.pendingUpload : job.lastSummary.orphans} 个`
                     + ` · ${job.lastSummary.measuredAt} 算的`
-                  : '要先看逐条名字，点「重新预览」。'}
+                  : '要先看逐条名字，点「生成删除清单」。'}
               </Typography.Text>
               {job.lastSummary !== null && job.lastSummary.replaces > 0 && (
                 <Typography.Text type="secondary">

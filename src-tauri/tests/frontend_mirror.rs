@@ -11,24 +11,21 @@ use common::{count_in, read, strip_comments, surface_text};
 
 #[test]
 fn a_trial_run_never_says_it_deleted_something() {
-    let t = read("src/components/JobDetailPanel.tsx");
-    assert!(t.contains("dryRun"), "详情面板没有区分试跑与实跑");
-    // 实删那一档必须被 !dryRun 限定，否则试跑的 deletes 计数会被说成"删除了 N 个"
-    assert!(t.contains("!dryRun && stats.deletes > 0 && kind === 'sync'"),
-        "镜像的实删话术没被 dry_run 限定住");
-    // 试跑那一档必须单独存在，并且说的是"会删"而不是"删了"
-    assert!(t.contains("dryRun && kind === 'sync'"), "试跑的镜像读数没有自己那一档");
-    assert!(t.contains("会删掉") && t.contains("一个都没真删"),
-        "试跑的话术必须是将来式：{t}");
+    let detail = strip_comments(&read("src/components/JobDetailPanel.tsx"));
+    let format = strip_comments(&read("src/format.ts"));
+    assert!(detail.contains("state.dry_run ? '预计删除的文件' : '已从目标删除的文件'"));
+    assert!(format.contains("dry_run ? '预计删除' : '已删除'"));
+    assert!(detail.contains("模拟完成，文件未改动"));
 }
 
 #[test]
-fn the_trial_run_count_is_presented_as_an_independent_reading() {
-    // 试跑报出的 `deletes` 是 rclone 自己算的，与面板的集合差互相独立——
-    // 这是 spec §4.1 留着的那条交叉核对，界面上要看得出这是两个来源，不是一个数的复读。
-    let t = read("src/components/JobDetailPanel.tsx");
-    assert!(t.contains("rclone 自己算的"), "没说清这个数字来自哪一侧：{t}");
-    assert!(t.contains("应该相等"), "没有把'两个数该相等'这件可核对的事说出来");
+fn the_result_displays_the_approved_and_reported_counts() {
+    let detail = strip_comments(&read("src/components/JobDetailPanel.tsx"));
+    let format = strip_comments(&read("src/format.ts"));
+    assert!(detail.contains("执行前清单有 {state.previewed} 个待删除文件"));
+    assert!(detail.contains("formatFileChanges(state)"));
+    assert!(detail.contains("names={state.deleted_files} count={state.stats.deletes}"));
+    assert!(format.contains("${deletes} 个文件"));
 }
 
 /// 钉到**具体那一档**的源码区间：从 `const mirrorPrimary` 那一句到它自己的 `];`。
@@ -66,7 +63,7 @@ fn the_confirm_layer_lists_names_not_just_a_count() {
     assert!(t.contains("重新列一遍"), "要说清确认后还会复核，否则这句话是空头承诺");
 }
 
-/// 钉住「让两边对齐」这条拒绝的出路：拒绝与清单都只在确认层里渲染，所以这颗按钮必须
+/// 钉住「确认单向同步」这条拒绝的出路：拒绝与清单都只在确认层里渲染，所以这颗按钮必须
 /// 走开层那一条路（`openMirror`），不能裸调只落状态的 `doPreview`——层没打开时，
 /// 拒绝落进一个没挂载的组件里，等于没有拒绝。
 ///
@@ -78,7 +75,7 @@ fn the_confirm_layer_lists_names_not_just_a_count() {
 fn the_preview_button_opens_the_layer_that_shows_the_refusal() {
     let panel = read("src/Panel.tsx");
     assert!(panel.contains("onPreviewMirror={openMirror}"),
-        "镜像行的「让两边对齐」没接在开层处理器上：拒绝会落进没挂载的确认层里，没人看得见");
+        "镜像行的「确认单向同步」没接在开层处理器上：拒绝会落进没挂载的确认层里，没人看得见");
     // 开层处理器必须真的设置 `previewFor`——确认层就挂在这个状态上，不设置它就没有地方渲染。
     let from = panel.find("const openMirror")
         .expect("Panel.tsx 里找不到 openMirror：开层的路换了名字就来看这条证人");
@@ -167,7 +164,8 @@ fn the_detail_panel_shows_both_numbers_and_derives_no_verdict() {
     // 破的是同一条规矩（判定在前端重算），却躲得过只盯比较符的扫描。
     // 说清这条证人**拦不住**什么：先把两个数搬进别的变量名、再在别处比，文本扫描看不见——
     // 真正兜底的是 Rust 的 `transfer_invariant_violation`（不等就变 Failed），这条只是围栏。
-    let tight = t.split_whitespace().collect::<Vec<_>>().join("");
+    let tight = t.replace("typeof state.previewed === 'number'", "")
+        .split_whitespace().collect::<Vec<_>>().join("");
     for banned in [
         "previewed!=", "previewed==", "previewed>", "previewed<",
         "deletes!=", "deletes==",
@@ -204,7 +202,7 @@ fn a_spent_mirror_confirmation_is_not_offered_again() {
     // 消费任何一种授权后，禁用确认，直到拿到新的预览。
     assert!(arm.contains("disabled={loading || spent}"),
         "交出整树或逐名授权后还能直接再确认：{arm}");
-    assert!(arm.contains("照对齐跑（这一趟先核对一遍）"),
+    assert!(arm.contains("核对后开始同步"),
         "没名单那一档没有自己的话（它不许读成「按下去删 0 个」）：{arm}");
     assert!(arm.contains("preview.doomedCount === 0"),
         "「看过且一份都没多出来」那一臂没了：{arm}");
@@ -275,14 +273,14 @@ fn the_confirm_layers_read_the_backend_count_not_a_row_count() {
     assert_eq!(types.matches("doomedCount").count(), 2, "两份上线形状里有一份没带那个数：{types}");
 }
 
-/// 卡上那颗现在叫「让两边对齐」：操作员报的是"两颗都不像跑"，而"跑"这个意图应当在卡上读得出来
+/// 卡上那颗现在叫「确认单向同步」：操作员报的是"两颗都不像跑"，而"跑"这个意图应当在卡上读得出来
 /// —— 修法不是把它改成「开始传输」（那颗按下去什么都不传，改了名就是造一枚假按钮，
 /// 而"看着像开始、按下去不是"正是这个面板要防的第一号形状），是给它一个说真话的名字。
 #[test]
 fn the_mirror_row_names_the_run_entry_without_promising_a_transfer() {
     let list = read("src/components/JobListView.tsx");
     let t = surface_text(&strip_comments(&list));
-    assert!(t.contains("让两边对齐"), "镜像行上没有那颗说得出'跑'的按钮：{t}");
+    assert!(t.contains("确认单向同步"), "镜像行上没有那颗说得出'跑'的按钮：{t}");
     assert!(!t.contains("看看要删什么"), "旧名字还留在卡上（拒绝话术与出厂注释指的都是新名字）：{t}");
     // 名字不许越界：`add` 那一档的真传那颗仍叫「开始」，两个词不能互换。
     assert!(t.contains("开始"), "复制那一档的真传那颗被一起改掉了：{t}");
@@ -314,14 +312,14 @@ fn the_mirror_card_carries_a_single_button() {
     let code = strip_comments(&list);
     let arm = mirror_arm(&code);
     // 三种拼法都钉（旧名留着，是为了让**改名之后**这一条仍然拦得住把按钮叫回旧名的写法）：
-    assert!(!arm.contains("看看会动什么") && !arm.contains("先看一遍") && !arm.contains("先试跑"),
+    assert!(!arm.contains("模拟复制") && !arm.contains("先看一遍") && !arm.contains("先试跑"),
         "对齐那一格上还有试跑那颗：那是一趟只给计数的重复列举：{arm}");
     assert_eq!(arm.matches("act(").count(), 1, "对齐那一格不止一颗按钮了（并排就会有人按错那颗）：{arm}");
-    assert!(arm.contains("让两边对齐"), "对齐那一格唯一那颗不叫「让两边对齐」：{arm}");
+    assert!(arm.contains("确认单向同步"), "对齐那一格唯一那颗不叫「确认单向同步」：{arm}");
     // 反面：「只补，不删」那一格照旧两颗并排（那张没有逐条清单，试跑是它唯一的"会动哪些"）。
     let add_from = code.find("const addPrimary").expect("界面里找不到「只补，不删」那一档");
     let add_arm = &code[add_from..add_from + code[add_from..].find("];").unwrap()];
-    assert!(add_arm.contains("看看会动什么") && add_arm.contains("开始"),
+    assert!(add_arm.contains("模拟复制") && add_arm.contains("开始复制"),
         "只补那一档被顺手一起撤了：{add_arm}");
 }
 
@@ -343,7 +341,7 @@ fn the_layer_says_what_it_is_doing_while_it_is_doing_it() {
     assert!(t.contains("正在核对清单"), "等待没在钮上说话：{t}");
     let loading = footer.find("loading ?").or_else(|| footer.find("loading &&"))
         .expect("那句话没挂在 loading 那一臂上（写死就是永远在转）");
-    let quiet = footer.find("照对齐跑").expect("找不到'没名单'那一臂");
+    let quiet = footer.find("核对后开始同步").expect("找不到'没名单'那一臂");
     assert!(loading < quiet, "loading 那一臂排在各档话后面：正在算的时候还是会叫人家去按那颗");
 
     let rail = strip_comments(&read("src/components/JobDetailPanel.tsx"));

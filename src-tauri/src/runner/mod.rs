@@ -60,7 +60,14 @@ pub enum TaskState {
     /// `dry_run` 在**进行中**就要带：试跑的进度读数也是"计划数"，界面从第一帧起
     /// 就不能把 `transfers` 说成「已传」。只在 `Done` 上带会让整段试跑都说反话。
     Running { phase: TaskPhase, jobid: Option<i64>, stats: Option<StatsView>, dry_run: bool },
-    Done { jobid: i64, stats: StatsView, dry_run: bool, previewed: Option<usize> },
+    Done {
+        jobid: i64,
+        stats: StatsView,
+        dry_run: bool,
+        previewed: Option<usize>,
+        copied_files: Vec<String>,
+        deleted_files: Vec<String>,
+    },
     /// 终态失败。**那一句是两段的**（`ShortNote`）：这一臂有两个生产者，而它们的性质不同——
     /// 一个是 rclone 的原话（`status.error`，带 `operation error S3` / `StatusCode` / JSON 尾巴），
     /// 另一个是我们自己的不变量句（带 `deletes=` 这类读数）。
@@ -170,7 +177,7 @@ pub fn transfer_invariant_violation(
 
 /// 「开始」这个入口对哪一类任务说得通。
 ///
-/// 复制可以直接跑。对齐的实删**不在这里**：它走自己那颗「让两边对齐」，那里有确认与动手前的
+/// 复制可以直接跑。对齐的实删**不在这里**：它走自己那颗「确认单向同步」，那里有确认与动手前的
 /// 重列，所以这个入口只受理复制。但**只读那一趟放行**（`dry_run`）：它一个东西都不改。
 /// 放行它不再是"给操作员一条交叉核对的路"——那条入口 2026-10-05 已从对齐那一格撤了
 /// （见 `DESIGN.md` 的 Components 那一条），对数仍然跑，只是跑在 `tests/mirror_runner.rs` 里。
@@ -180,7 +187,7 @@ pub fn transfer_invariant_violation(
 /// 与代码矛盾）。
 ///
 /// 话术只说**今天**成立的事（R56 第 2 条：那是给操作员看的句子，不是给开发者看的）：
-/// 指得出对齐真正的那个入口（卡上的「让两边对齐」）。
+/// 指得出对齐真正的那个入口（卡上的「确认单向同步」）。
 /// 那句尾的"还可以用「先试跑」"删了：对齐那一格只剩一颗按钮，`JobListView.tsx` 头上那段
 /// 文档写的是同一件事（"「会删除」那一档没有这一句：那一格只剩一颗"）—— 指着一个界面上
 /// 没有的入口，等于交出一份没人接得住的拒绝。
@@ -190,11 +197,11 @@ pub fn transport_kind_gate(kind: &JobKind, name: &str, dry_run: bool) -> Result<
         JobKind::Copy => Ok(()),
         JobKind::Sync if dry_run => Ok(()),
         JobKind::Sync => Err(format!(
-            "「{name}」是对齐任务：真删之前得先点「让两边对齐」拿到那份预览，把会被删掉的\
+            "「{name}」是对齐任务：真删之前得先点「确认单向同步」拿到那份预览，把会被删掉的\
              每一行看清、确认之后才会动手。这个入口只受理复制，对齐的实删不在这里跑。")),
         // 非传输类沿用命令层原来那句：人话词来自 `JobKind::word()`。
         JobKind::Gate => Err(format!(
-            "「{name}」是{}任务，这个入口只跑复制（对齐那一档要走它自己那颗「让两边对齐」）",
+            "「{name}」是{}任务，这个入口只跑复制（对齐那一档要走它自己那颗「确认单向同步」）",
             kind.word())),
     }
 }
@@ -309,13 +316,13 @@ pub fn mirror_wrong_kind_refusal(name: &str, word: &str) -> String {
 pub fn mirror_confirmation_voided_refusal(name: &str) -> String {
     format!(
         "「{name}」这份确认已经不作数了（用过一次，或者这两个位置上跑过别的任务）。\
-         请重新确认一次；要对着逐条名单再看一遍，点「重新预览」。")
+         请重新确认一次；要对着逐条名单再看一遍，点「生成删除清单」。")
 }
 
 pub fn mirror_list_changed_refusal(name: &str, confirmed: usize, now: usize) -> String {
     format!(
         "「{name}」这两个位置上的清单变了（确认 {confirmed} 个，现在 {now} 个）——对端在这期间被动过。\
-         放弃这次实删，请重新预览再确认一次。")
+         放弃这次实删，请生成删除清单再确认一次。")
 }
 
 pub fn mirror_side_refused_refusal(name: &str, empty_src: bool, too_much: bool) -> String {
@@ -326,7 +333,7 @@ pub fn mirror_side_refused_refusal(name: &str, empty_src: bool, too_much: bool) 
         "「{name}」复核时这一侧已经不对了（这一侧空={empty_src}，要删的占比超限={too_much}）。\
          动手前列一次这两个位置就看得见这种形状，这次不该跑。\
          占比那条线是一半（阈值 1/{den}，这是假设值、没量过）；先确认位置与排除规则，\
-         要对着逐条名单看就点「重新预览」。",
+         要对着逐条名单看就点「生成删除清单」。",
         den = prune::RATIO_DEN)
 }
 /// Hold the scopes from the start of submission until an explicit rejection
@@ -944,7 +951,7 @@ impl Runner {
         // 这一档就变成"看过差异反而永远跑不动"。判据读 `endpoint_dst` 是不是本地，与
         // `listed_doomed` 同一套（证人：`a_download_direction_confirmation_reuses_the_seen_inventory_list`）。
         // 人此刻在「差异」那一面已经逐条看过它们了，所以「看差异 → 让两边对齐 → 直接确认」
-        // 不必再点一次「重新预览」重新列一遍 —— 省掉的那一次列举正是这个出口存在的全部理由。
+        // 不必再点一次「生成删除清单」重新列一遍 —— 省掉的那一次列举正是这个出口存在的全部理由。
         // 登记的**键**也分方向（`endpoint_src` / `endpoint_dst`）：反方向那一条对齐取不到这一份。
         self.previews
             .remember_seen(
@@ -1128,9 +1135,9 @@ impl Runner {
     /// 「批准这一趟，没看名单」：登记一份**不带清单**的确认，交回一次性凭证。
     ///
     /// 为什么加这一条（操作员：「对齐操作为什么要列清单，用户点击后等结果就好」）：原来按下
-    /// 「让两边对齐」要先付一趟两侧全量 LIST 才按得动红色那颗，而那一趟**不是**安全担保——
+    /// 「确认单向同步」要先付一趟两侧全量 LIST 才按得动红色那颗，而那一趟**不是**安全担保——
     /// 动手前那次重列与那两道拒绝才是。这一条把"看名单"从过路费的形状变回它本来的样子：
-    /// 想看就点「重新预览」（那条路连逐条比对一起原样留着），不想看就直接批。
+    /// 想看就点「生成删除清单」（那条路连逐条比对一起原样留着），不想看就直接批。
     ///
     /// 这里**一次列举都不发**：不列东西就判不了比例，所以那两道拒绝一道都不许挪到这里，
     /// 它们照旧排在 `run_mirror` 动手之前。证人：
@@ -1144,7 +1151,7 @@ impl Runner {
         let src = Scope::of_endpoint(&job.endpoint_src());
         let dst = Scope::of_endpoint(&job.endpoint_dst());
         if self.previews.review_required(&src, &dst).await {
-            return Err(RunError::Invariant("上次清单已失效，请重新预览后再确认。".into()));
+            return Err(RunError::Invariant("上次清单已失效，请生成删除清单后再确认。".into()));
         }
         let log = self.open_log(job).await?;
         let doomed = self.previews.peek_seen(&src, &dst).await;
@@ -1243,7 +1250,7 @@ impl Runner {
         let mode = if named { "逐名" } else { "整树" };
         let approved = reviewed.unwrap_or(fresh);
         if let Some(name) = approved.iter().find(|name| !deletion::valid_delete_name(name)) {
-            return Err(RunError::Invariant(format!("无法安全解析删除清单中的相对路径 {name:?}，请重新预览。")));
+            return Err(RunError::Invariant(format!("无法安全解析删除清单中的相对路径 {name:?}，请生成删除清单。")));
         }
         log.kv(Level::Info, "对齐复核完成，先复制再按清单删除", &[
             ("授权", mode.into()),
@@ -1568,12 +1575,32 @@ impl Runner {
             if view.bytes > 0 || view.transfers > 0 {
                 self.invalidate_after_write(&touched, &mut invalidated).await;
             }
+            // rclone retains only recent records. Counts stay authoritative if names are missing.
+            let mut copied_files = BTreeSet::new();
+            let mut deleted_files = BTreeSet::new();
+            if view.transfers > 0 || view.deletes > 0 {
+                let records = tokio::time::timeout(
+                    Duration::from_secs(2), self.rcd.client.core_transferred(&group),
+                ).await.ok().and_then(Result::ok).unwrap_or_default();
+                for record in records {
+                    if record.error.is_some_and(|error| !error.is_empty()) {
+                        continue;
+                    }
+                    if !record.checked && record.what == "transferring" {
+                        copied_files.insert(record.name);
+                    } else if dry_run && record.what == "deleting" {
+                        deleted_files.insert(record.name);
+                    }
+                }
+            }
             let mut finished_guard = _confirmed_finished;
             if let Some(names) = approved_deletions.filter(|names| !names.is_empty()) {
                 let guard = finished_guard.take().expect("提交成功后的整组锁");
                 match self.delete_mirror_files(job, names, &touched, log, guard).await {
                     Ok((deleted, guard)) => {
                         view.deletes = deleted.files as u64;
+                        // A successful deletion pass has processed every name in this allowlist.
+                        deleted_files.extend(names.iter().cloned());
                         finished_guard = Some(guard);
                     }
                     Err(failure) => {
@@ -1588,7 +1615,11 @@ impl Runner {
                 }
             }
             let _finished_guard = finished_guard;
-            let state = TaskState::Done { jobid: ack.jobid, stats: view.clone(), dry_run, previewed };
+            let state = TaskState::Done {
+                jobid: ack.jobid, stats: view.clone(), dry_run, previewed,
+                copied_files: copied_files.into_iter().collect(),
+                deleted_files: deleted_files.into_iter().collect(),
+            };
             if summary_is_stale(&state) {
                 self.invalidate_after_write(&touched, &mut invalidated).await;
             }

@@ -153,30 +153,21 @@ fn the_gate_section_takes_its_name_from_the_shared_word_list() {
         "对账那一段的标题不再取那张词表（那就是第二份说法）：{t}");
 }
 
-/// 试跑答"要不要动"（计数），差异答"差在哪几个"（名字）——两者是**两份独立算路**，
-/// 不许混为一谈，也不许靠解析 rclone 日志来补（日志格式随版本漂，而那是新造一份判定口径）。
-/// 所以试跑那句下面要指路，而差异那一面的空态要说清它得单独算一次。
+/// 模拟复制直接显示 rclone 预计复制的文件。目录差异仍由用户单独读取。
 #[test]
-fn the_dry_run_points_at_the_diff_instead_of_pretending_to_answer_it() {
+fn the_trial_run_has_its_own_file_list() {
     let detail = strip_comments(&read("src/components/JobDetailPanel.tsx"));
-    assert!(detail.contains("翻上面「差异」那一段点「看差异」"),
-        "试跑那句没把路指出来（报的就是找不到差异）：{detail}");
-    // 「做完了 · …」是口径表第一档的词。以前这一档自己造了两个说法（「任务完成」与
-    // 「试跑完成，没有改动任何文件」），而设置面与浏览器那两处一直照表写 —— 同一个"成了"
-    // 在屏上三种词。指路那半句仍然要在（上面那条钉的就是它不许丢）。
-    assert!(detail.contains("这一趟没动任何文件"), "试跑那一档的标题丢了：{detail}");
-    assert!(!detail.contains("任务完成") && !detail.contains("试跑完成"),
-        "「做完了」之外又长出一个说法：{detail}");
-    // 不许出现"自动跑一次盘点"这种联动：那是每次试跑多打一次远端列举（钱与等待），
-    // 而且会把两份独立读数混成一份。判据落在"有没有在这里调用盘点"。
-    assert!(!detail.contains("runInventory"), "试跑那一面自己发起了盘点：{detail}");
+    assert!(detail.contains("预计复制的文件") && detail.contains("names={state.copied_files}"),
+        "模拟复制结果没有显示预计变化的文件：{detail}");
+    assert!(detail.contains("模拟完成，文件未改动"), "模拟结果没有说清文件未改动：{detail}");
+    assert!(!detail.contains("runInventory"), "模拟复制触发了额外的目录对比：{detail}");
     let inv = strip_comments(&read("src/components/InventoryPanel.tsx"));
     // 空态那句只指**这一面上真有**的那一颗。以前它拿「先试跑」作对比 —— 那颗后来
-    // 改名「看看会动什么」，而对齐那一格 2026-10-05 起只剩一颗，指过去就是对着空气找下一步。
+    // 改名「模拟复制」，而对齐那一格 2026-10-05 起只剩一颗，指过去就是对着空气找下一步。
     // 那颗自己的名字现在与卡上统一（都叫「看差异」），所以这一句指的也是它。
     assert!(inv.contains("「看差异」单独算一次"), "差异那一面的空态没把路指在自己这一面上：{inv}");
     assert!(!inv.contains("列一遍"), "同一个动作在屏上又有第二个名字：{inv}");
-    assert!(!inv.contains("看看会动什么") && !inv.contains("先看一遍") && !inv.contains("先试跑"),
+    assert!(!inv.contains("模拟复制") && !inv.contains("先看一遍") && !inv.contains("先试跑"),
         "空态那句又去指那颗可能不在卡上的按钮：{inv}");
     assert!(inv.contains("顺带"), "没点出'别的动作不会替它算'：{inv}");
 }
@@ -354,7 +345,7 @@ fn the_diff_face_explains_itself_in_one_line_and_no_sixth_type_step() {
     assert!(!t.contains("Typography.Title"), "这一面又给自己加了一个标题（段控件已经写着「差异」）：{t}");
     assert!(!t.contains("Alert type=\"info\""), "解释又变回一整块 Alert（明面只能一句，细节进展开）：{t}");
     // 明面那句短到能一眼读完，长的那半段进了展开。
-    assert!(t.contains("这里只给你看，要删请走对齐任务。"), "常驻那句的解释丢了：{t}");
+    assert!(t.contains("这里只给你看，要删请走单向同步任务。"), "常驻那句的解释丢了：{t}");
     // 列标题只写方向本身，不再"名字 + 括号把名字解释一遍"。
     assert!(t.contains("本地有、云端没有"), "两列的方向标签不见了：{t}");
     assert!(t.contains("云端有、本地没有"), "两列的方向标签不见了：{t}");
@@ -362,7 +353,7 @@ fn the_diff_face_explains_itself_in_one_line_and_no_sixth_type_step() {
     assert!(!t.contains("本地没有的云端对象（"), "列标题又复述了一遍方向：{t}");
 }
 
-/// 「看看会动什么」（原名「先试跑」）与真执行并排时最容易按错：一颗什么都不传，另一颗真传。所以**并排的那一格**要有一句
+/// 「模拟复制」（原名「先试跑」）与真执行并排时最容易按错：一颗什么都不传，另一颗真传。所以**并排的那一格**要有一句
 /// 当场说得清的"它不动数据"，而不是等人按完再解释。
 ///
 /// 操作员报"跑之前不该再让我预览一遍、不该问两次"。查完账，**「会删除」那一格的「先试跑」撤了**
@@ -378,10 +369,10 @@ fn the_trial_button_says_out_loud_that_it_transfers_nothing() {
     let t = surface_text(&strip_comments(&raw));
     // 断言消息只摘前面一小段：整份文件插进 panic 消息，读的人只会翻过去（同仓那条 4 MB 的教训）。
     let hint: String = t.chars().take(160).collect();
-    assert!(t.contains("看看会动什么"), "那颗本来就不在：{hint}");
-    assert!(t.contains("「看看会动什么」只告诉你会动哪些，不真传；要把东西放上去，按「开始」。"),
+    assert!(t.contains("模拟复制"), "那颗本来就不在：{hint}");
+    assert!(t.contains("模拟会列出预计新增或覆盖的文件，不会改动文件。"),
         "「只补，不删」那一格的注没整句写出来（并排时按错的就是它）：{hint}");
-    assert_eq!(t.matches("只告诉你会动哪些，不真传").count(), 1,
+    assert_eq!(t.matches("不会改动文件").count(), 1,
         "这句又出现了两处：镜像那一格卡上只剩一颗按钮，没有可错的地方，不该还跟着说一句");
     // 判据落在**结构**上：这一句由"这一格是什么模式" gate 住，不是每张卡无条件摆一份。
     let code = strip_comments(&raw);
@@ -396,11 +387,11 @@ fn the_trial_button_says_out_loud_that_it_transfers_nothing() {
     let trial_line = &code[trial_at..trial_at + code[trial_at..].find("),\n").unwrap_or(160)];
     assert!(trial_line.contains("mode === 'add' ? ADD_MODE_NOTE"),
         "那句注没有跟着试跑那颗走，或没有挂在'只补，不删'这一格上：{trial_line}");
-    assert!(trial_line.contains("'看看会动什么'"), "这一条说的不是试跑那颗：{trial_line}");
+    assert!(trial_line.contains("'模拟复制'"), "这一条说的不是试跑那颗：{trial_line}");
     // 「会删除」那一档的源码区间里没有这一句（挂错了地方就是让人以为按下去还会先看清清单）。
     let from = code.find("const mirrorPrimary").expect("找不到「会删除」那一档");
     let arm = &code[from..from + code[from..].find("];").unwrap()];
-    assert!(!arm.contains("只会告诉你会动哪些"), "镜像那一档自己带着这句：{arm}");
+    assert!(!arm.contains("ADD_MODE_NOTE"), "镜像那一档自己带着这句：{arm}");
 }
 
 /// 浏览面板：**默认看本地 + 对面空时满宽 + 本地图走网格**（2026-10-11）。
@@ -527,7 +518,7 @@ fn the_two_browser_columns_follow_one_another() {
 
 /// 「对账」那一段在复制/对齐任务上不许摆一颗必然被拒的按钮。
 ///
-/// 后台 `run_gate` 只认 `kind = gate`；旧界面在每条任务的右列都摆「开始对账」，
+/// 后台 `run_gate` 只认 `kind = gate`；旧界面在每条任务的右列都摆「检查目标缺少的文件名」，
 /// 按下去只会拿到「这是复制任务」的拒绝。对账任务在左列下面单独一行，右键不该再演一遍。
 #[test]
 fn the_check_segment_does_not_offer_a_dead_action_on_a_copy_job() {
@@ -535,7 +526,7 @@ fn the_check_segment_does_not_offer_a_dead_action_on_a_copy_job() {
     assert!(t.contains("jobKind !== 'gate'"), "对账段不认任务类型，复制任务上仍会摆那颗按钮：{t}");
     assert!(t.contains("不是对账任务"), "说清了没有可用的对账动作，但没告诉人去哪里找：{t}");
     // 对账任务那一支仍要有原来那颗按钮与它的锁（别为了修死按钮把真按钮一起删了）。
-    assert!(t.contains("开始对账") && t.contains("<LockHint") && t.contains("disabled={off}"),
+    assert!(t.contains("检查目标缺少的文件名") && t.contains("<LockHint") && t.contains("disabled={off}"),
         "真对账任务那一支的按钮/锁不见了：{t}");
 }
 
@@ -666,7 +657,7 @@ fn a_card_is_one_position_pair_and_its_selectors_list_only_what_exists() {
     let mlabel = &code[code.find("export function modeLabel").expect("找不到 modeLabel")..];
     // 2026-10-09 词表迁移：`只放上去（不删）` → `只补，不删`、`会删除（镜像）` → `让两边对齐（会删）`。
     // 这一条要判的是"**只有这一处取名**"，所以新名断言 + 旧名禁掉，两头都钉。
-    assert!(mlabel.contains("只补，不删") && mlabel.contains("让两边对齐"),
+    assert!(mlabel.contains("复制（保留目标多余文件）") && mlabel.contains("单向同步（删除目标多余文件）"),
         "两档模式的名字不是这一处给的：{mlabel}");
     assert!(!mlabel.contains("只放上去") && !mlabel.contains("会删除（镜像）"),
         "旧拼法又回来了：{mlabel}");
@@ -674,7 +665,7 @@ fn a_card_is_one_position_pair_and_its_selectors_list_only_what_exists() {
         "「让两边对齐」那一格的方向话不见了：{dir}");
     // 方向那一句必须**跟着模式走**：「只补，不删」那一格里它是"从哪边补到哪边"，
     // 不许沿用"删…多余的" —— 一格说法就是两种模式共用那句最重的话（操作员分不清哪个合适的来源之一）。
-    assert!(dir.contains("从") && dir.contains("补到"),
+    assert!(dir.contains("从") && dir.contains("复制到"),
         "「只补，不删」那一格的方向没有自己的说法：{dir}");
     // 反向钉：那两句**各自都要按模式分叉**（两侧同型那一支 + 本地/云端那一支 = 两处）。
     // 把任何一处的 add 那一支删掉，就是"两种模式共用一句最重的话"，这里数的是分叉点本身。
@@ -695,7 +686,7 @@ fn the_mode_choice_never_outlives_the_session() {
     assert!(list.contains("useState"), "选择没有存在组件状态里：那它靠什么记住这一张卡当前是哪一格？");
 }
 
-/// 当前那一格脚下的按钮按**模式**摆：「只补，不删」那格两颗（看看会动什么 + 开始），
+/// 当前那一格脚下的按钮按**模式**摆：「只补，不删」那格两颗（模拟复制 + 开始），
 /// 「让两边对齐」那格只有一颗（它自己就叫「让两边对齐」），而且界面上任何一格都不许出现 danger/实心删除。
 /// 两格的名字与方向那两句都不许在这一面现编：取 `pairs.ts` 的那两处
 /// （`a_card_is_one_position_pair_and_its_selectors_list_only_what_exists` 钉的是词只在那一处）。
@@ -713,7 +704,7 @@ fn the_cell_buttons_follow_the_mode_and_nothing_deletes_from_the_face() {
     let t = surface_text(&list);
     // 「开始」是 `t.contains("开始")` 就够的那一颗 —— 它是整份源码里出现得最多的两个字，
     // 所以这条判据钉的是**它在不在**，不是"出现几次"（那会是另一条判据，且必然是假红）。
-    assert!(t.contains("让两边对齐") && t.contains("开始"), "两格各自那颗入口都没了：{t}");
+    assert!(t.contains("确认单向同步") && t.contains("开始复制"), "两格各自那颗入口都没了：{t}");
     // 2026-10-09（模式+方向并成一枚「要做什么」之后）：这一格叫什么由 `pairs.ts` 的
     // `intentOptions` **一处**算出来，这一面只许调它。判据因此挪到那一处上去：
     // 原来查的是"这一面有没有用 modeLabel/directionLabel/availableSlots/slotJob"，
@@ -758,7 +749,7 @@ fn the_cell_buttons_follow_the_mode_and_nothing_deletes_from_the_face() {
         "Field 没有把标签与控件放进同一个盒子（名字与值会分家）：{field}");
 }
 
-/// 「换一对位置」那颗按钮：跑的那一面就能立一张卡，不必先去「设置」写一条再重开面板。
+/// 「新建临时任务」那颗按钮：跑的那一面就能立一张卡，不必先去「设置」写一条再重开面板。
 ///
 /// 判据落在**它站在哪一行**上，不只是"这个字在文件里出现过"：它如果掉到每一格里，
 /// 一列位置就成了 N 颗同名按钮（操作员要的是"少几条目"，不是"多一屏按钮"），
@@ -771,22 +762,22 @@ fn the_pairs_face_has_one_button_to_pick_a_new_pair() {
     let t = strip_comments(&read("src/components/JobListView.tsx"));
     let tight = t.split_whitespace().collect::<Vec<_>>().join("");
     let clip = tight.chars().take(200).collect::<String>();
-    assert!(tight.contains("换一对位置"), "跑的那一面没有立卡的那一颗：{clip}");
+    assert!(tight.contains("新建临时任务"), "跑的那一面没有立卡的那一颗：{clip}");
     let pos_at = tight.find("aria-label=\"位置\"")
         .unwrap_or_else(|| panic!("找不到位置那一枚下拉：{clip}"));
     let cell_at = tight.find("renderCell(shown)")
         .unwrap_or_else(|| panic!("找不到当前那一格那一段：{clip}"));
     let row = &tight[pos_at..cell_at];
     let row_head = row.chars().take(200).collect::<String>();
-    assert!(row.contains("换一对位置"), "那颗不在选择条那一行里：{row_head}");
-    assert_eq!(tight.matches("换一对位置").count(), 1, "这一颗在界面上不止一处：{clip}");
+    assert!(row.contains("新建临时任务"), "那颗不在选择条那一行里：{row_head}");
+    assert_eq!(tight.matches("新建临时任务").count(), 1, "这一颗在界面上不止一处：{clip}");
     // 它自己不立卡：立卡那一次调用与它带回来的那句拒绝都住在**这一层**里（`PairDraftLayer`），
     // 外面那一层只管开与关 —— 两处发起点就有两处话术。
     assert!(tight.contains("onNewPair()"), "那颗没接到外面：{clip}");
     assert!(!tight.contains("pairDraft"), "这一面自己去立卡了：那是第二处发起点");
 }
 
-/// 「换一对位置」那一层：两行位置、候选来自后台、拒绝写在层里。
+/// 「新建临时任务」那一层：两行位置、候选来自后台、拒绝写在层里。
 ///
 /// 三条各钉一件事：
 /// - 候选必须由后台交（`browser_remotes` 那一份，与浏览器那面同一来源）。前端列常量
@@ -1057,7 +1048,7 @@ fn a_trial_run_never_says_the_files_were_already_sent() {
         "试跑进行中没有读后台带的 dry_run（只改终态那一帧等于整段都在说「已传」）：{detail}");
 }
 
-/// 一对位置都没有时，「换一对位置」那颗仍然要在。
+/// 一对位置都没有时，「新建临时任务」那颗仍然要在。
 ///
 /// 旧写法整条选择条 `return null`，于是删掉最后一对位置之后，这一面只剩右列一句
 /// 「先选一个任务」，而立新卡的唯一入口跟着那条不存在的卡一起消失。选择条必须留下，
@@ -1069,5 +1060,5 @@ fn the_pairs_face_keeps_the_way_in_when_no_pair_exists() {
         "一对位置都没有时又把整条选择条撤掉了（入口跟着消失）：{t}");
     assert!(t.contains("还没有位置"), "空的一位下拉没说自己为什么空：{t}");
     assert!(t.contains("先挑一对位置"), "空的「要做什么」没给出下一步：{t}");
-    assert_eq!(count_in(&t, "换一对位置"), 1, "那颗入口不止一处/不见了：{t}");
+    assert_eq!(count_in(&t, "新建临时任务"), 1, "那颗入口不止一处/不见了：{t}");
 }

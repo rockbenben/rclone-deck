@@ -21,6 +21,14 @@ pub struct JobStatus {
     pub duration: f64,
 }
 
+#[derive(Debug, Deserialize)]
+pub(crate) struct CompletedTransfer {
+    pub name: String,
+    pub checked: bool,
+    pub what: String,
+    pub error: Option<String>,
+}
+
 impl JobStatus {
     pub(crate) fn matches_ack(&self, ack: &SubmitAck) -> bool {
         self.id == ack.jobid && (ack.execute_id.is_empty() || self.execute_id == ack.execute_id)

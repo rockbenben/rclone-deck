@@ -643,7 +643,7 @@ fn the_sync_note_names_the_entry_that_actually_exists() {
     }, &files).unwrap();
     let hits = p.notes.iter().filter(|n| n.contains("会删东西")).count();
     assert_eq!(hits, 1, "那句该正好一条：{:?}", p.notes);
-    assert!(p.notes.iter().any(|n| n.contains("会删东西") && n.contains("让两边对齐")),
+    assert!(p.notes.iter().any(|n| n.contains("会删东西") && n.contains("单向同步")),
         "那句没指到现在卡上那颗按钮：{:?}", p.notes);
     assert!(!p.notes.iter().any(|n| n.contains("会删东西") && n.contains("看看要删什么")),
         "那句还指着旧名字：{:?}", p.notes);
@@ -721,10 +721,10 @@ fn the_optional_open_dir_line_is_added_removed_and_left_alone_as_appropriate() {
 #[test]
 fn the_generated_name_passes_the_rule_it_would_refuse_a_human_for() {
     let n = suggested_job_name(r"D:\vault\img-r2", "r2:img");
-    // 2026-10-09：判据里那个「镜像」跟着词表一起搬到了「让两边对齐」（`镜像` → `对齐` 的
+    // 2026-10-09：判据里那个「镜像」跟着词表一起搬到了「单向同步」（`镜像` → `对齐` 的
     // 全项目迁移）。**真正要守住的是「删」那个字** —— `delete_word_in_name_reason` 只要求它，
     // 「对齐」那一半只是这一族在别处已经统一的说法。所以这里两半都钉：删是判据，对齐是口径。
-    assert!(n.contains("让两边对齐") && n.contains("删"), "{n}");
+    assert!(n.contains("单向同步") && n.contains("删"), "{n}");
     // 两侧都是本地时也给得出一个不含糊的名字：那种意图被装载侧那句拒，理由不是"名字为空"。
     let n = suggested_job_name(r"D:\a", r"D:\b");
     assert!(n.contains("删") && !n.is_empty(), "{n}");

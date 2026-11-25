@@ -25,7 +25,7 @@ const PROC = { home: HOME, remote: HOME === 'A' ? 'fxa' : 'fxb',
 // 的那一遍在 B 家报「找不到那张卡」，读起来像界面坏了，其实是尺子把另一家的名字抄进了判据。
 const PAIR_C = PROC.remote + ':c';
 const PAIR_B = PROC.remote + ':b';
-// 「换一对位置」那张临时卡用的**一对没配过的位置**：本地那一侧是夹具里一直在的 `local/`
+// 「新建临时任务」那张临时卡用的**一对没配过的位置**：本地那一侧是夹具里一直在的 `local/`
 // （它是 fx-gate 的源，所以它出现在候选里），云端那一侧 `:d` 是这一遍才有的层。
 // 名字跟着家走（A 家 fxa:d、B 家 fxb:d）：写死 fxa 的那把尺子在 B 家报"找不到那张卡"，
 // 读起来像界面坏了。
@@ -193,9 +193,9 @@ await send('Page.enable');
 async function waitReady(timeoutMs = 30000) {
   const t0 = Date.now();
   for (;;) {
-    const seen = await ev('(() => document.body && document.body.innerText.includes("配好的位置") ? 1 : 0)()');
+    const seen = await ev('(() => document.body && document.body.innerText.includes("文件任务") ? 1 : 0)()');
     if (seen === 1) return;
-    if (Date.now() - t0 > timeoutMs) throw new Error('等 30 秒界面还没挂上（没有"配好的位置"那个分段控件）');
+    if (Date.now() - t0 > timeoutMs) throw new Error('等 30 秒界面还没挂上（没有"文件任务"那个分段控件）');
     await sleep(500);
   }
 }
@@ -347,7 +347,7 @@ async function hover(text, side = 'any', nth = 0, inRow) {
  *  整遍跑到这一格时那颗还是灭的；单独跑这两格则一直是亮的。界面按设计拒绝"同一棵树上有事在跑再起一个"，
  *
  * 2026-10-10 加 `inRow`：**按那颗按钮所在的格去找，不要全屏找**。
- * 原因是「让两边对齐」这个词在屏上有两处：卡上那颗按钮，和选择条里「要做什么」那一枚
+ * 原因是「单向同步」这个词在屏上有两处：卡上那颗按钮，和选择条里「要做什么」那一枚
  * 下拉框的**显示值**（换到那一档之后框里就写着它）。而选择条在 DOM 里排在卡前面，
  * `locate` 取文档顺序第一个命中 —— 于是点下去落在下拉框上，层当然不开。
  * 实测读数（`mirror-layer-both-halves` 那一步自己打的）：
@@ -375,7 +375,7 @@ async function waitEnabled(text, timeoutMs = 300000, inRow) {
  *  「现在有事正在跑：图床批量上传（夹具）」—— 那**是**闸门按设计工作，红的是驱动没等。 */
 async function waitIdle(timeoutMs = 600000) {
   const t0 = Date.now();
-  await click('配好的位置', 'any'); await sleep(1200);
+  await click('文件任务', 'any'); await sleep(1200);
   for (;;) {
     const now = JSON.parse(String(await ev('(() => { const btns = [...document.querySelectorAll(".pairs-cell button, .ant-listy-item button")]'
       + '.filter((b) => b.getBoundingClientRect().width);'
@@ -558,7 +558,7 @@ async function showPair(needle) {
 /** 选择条上写着这个 `aria-label` 的那一枚下拉**显示着的那一句**（'位置' / '要做什么'）。
  *  方向那句话以前写在卡上那一格里；模式与方向并进「要做什么」之后，
  *  "这一格要做的是什么"整句只活在这一枚框里，量"换过去了没有"就得读这里 ——
- *  而它读到的正是一句**自己就完整**的话（`只补，不删 —— 从本地补到云端`），
+ *  而它读到的正是一句**自己就完整**的话（`复制（保留目标多余文件） —— 从本地复制到云端`），
  *  不再是两枚框各说一半、要人拼起来才读得懂的东西。 */
 async function selectValue(label) {
   // 这一段是**要在页面里跑的表达式**，所以模板里的 `+` 全是页面侧的拼接。
@@ -590,7 +590,7 @@ async function pairCount() {
  *  留着一个恒为 0 的形参会让调用方继续写着 `openCardSelect(x, 1, …)`，而那一发会去点
  *  `topSelectBox(2)` —— 选择条上根本没有第三枚，报「看得见的一共 2 枚」。
  *  与其留一位永远传 0 的空位，不如让签名直接说实话：调用方少写一个数，忘了就编译不过。
- *  `want` 传的是**档位的那一半**（`只补，不删` / `让两边对齐`），匹配走 `includes`，
+ *  `want` 传的是**档位的那一半**（`复制（保留目标多余文件）` / `单向同步`），匹配走 `includes`，
  *  所以不必把 `模式 —— 方向` 那一整句抄下来 —— 那一半会随方向变，抄死就钉在某一对上。 */
 async function openCardSelect(rowText, want) {
   await showPair(rowText);
@@ -600,7 +600,7 @@ async function openCardSelect(rowText, want) {
 /** 点右列那一段（`.ant-segmented-item`）。**不要用 `click(段名)`**。
  *
  *  2026-10-09 词表迁移撞出来的：那一段原名「检查」是个几乎不撞名的词，改成「对账」之后
- *  左列闸门卡上那颗「开始对账」按钮**也**含这两个字，而 `finder` 取的是文档顺序第一个命中
+ *  左列闸门卡上那颗「检查目标缺少的文件名」按钮**也**含这两个字，而 `finder` 取的是文档顺序第一个命中
  *  （左列在前）—— 于是「点右列那一段」会点成「起一次对账」，而那一格照样绿着：
  *  它量的翻页器数与对账报告没关系，读数看着正常，量的却是另一件事。
  *  这里按**组件**认（`.ant-segmented-item`，只有顶栏三面与右列四段是它）再按**全等**的文字挑，
@@ -727,7 +727,7 @@ async function closeDropdown(tag, inModal) {
   }
 }
 
-/** 「换一对位置」那一层里的第 `nth` 个位置选择框（层里两行各一个，文档顺序：这一侧、那一侧）。
+/** 「新建临时任务」那一层里的第 `nth` 个位置选择框（层里两行各一个，文档顺序：这一侧、那一侧）。
  *  读的是**看得见的那一层模态框**里的框（antd 关掉的模态框 DOM 还挂着，宽度 0 ——
  *  与 `setInput` 同一条口径，撞上同一族事故两次了）。 */
 async function openLayerSelect(nth, want) {
@@ -789,7 +789,7 @@ async function cardShape(rowKey) {
     + 'const t=f?f.querySelector(".fs-caption"):null;'
     + 'return JSON.stringify({ btns:[...r.querySelectorAll("button")].map((b)=>b.textContent.trim()).join("|"),'
     // 2026-10-08：那句注不再**常驻**在卡上，挂在试跑那颗的悬停上（改的是"什么时候说"，
-    // 没改"说什么"）。那颗 2026-10-09 改名叫「看看会动什么」，悬停的位置没动。
+    // 没改"说什么"）。那颗 2026-10-09 改名叫「模拟复制」，悬停的位置没动。
     // 所以 `note` 这一档量的是"屏上没有它"= 0；"悬停时它出现"由
     // `pair-card-one-per-position` 用真悬停量（量得到 Tooltip 弹层里那一句）。
     + ' note: txt.includes("只告诉你会动哪些") ? 1 : 0,'
@@ -1303,7 +1303,7 @@ const STEPS = [
       await click('我知道，搬走这', 'any'); await sleep(2600);
     } },
   { id: 'pair-summary', what: '任务行上的摘要 + 它是几点算的（跑一次盘点：点卡面那颗「看差异」）', run: async () => {
-      await click('配好的位置', 'any'); await sleep(1200);
+      await click('文件任务', 'any'); await sleep(1200);
       // 点名要**那一对小位置**（对齐那一对只有几个文件）：两万个文件的复制对，它的差异面
       // 本来就该挂翻页器 —— 不点名就会量错对象（第一遍：`single-page-no-pager` 报「差异 1」，
       // 红的是尺子换了靶子）。
@@ -1326,16 +1326,16 @@ const STEPS = [
       if (!/\.log/.test(txt)) throw new Error('日志面没说出是哪一个文件');
       await shot('rail-log-path.png');
     } },
-  { id: 'pair-gate-flips-rail', what: '卡上点「开始对账」之后右列翻到装它结果的那一段（报告以前掉在看不见的第二段里）', run: async () => {
-      await click('配好的位置', 'any'); await sleep(900);
-      await click('开始对账', 0, 0); await sleep(3000);
+  { id: 'pair-gate-flips-rail', what: '卡上点「检查目标缺少的文件名」之后右列翻到装它结果的那一段（报告以前掉在看不见的第二段里）', run: async () => {
+      await click('文件任务', 'any'); await sleep(900);
+      await click('检查目标缺少的文件名', 0, 0); await sleep(3000);
       const sel = await ev('[...document.querySelectorAll(".ant-segmented-item-selected")].filter((e) => !e.closest(".bar")).map((e) => e.textContent.trim()).join("|")');
       const timed = await ev('document.body.innerText.includes("查的") ? 1 : 0');
       const gateRows = await ev('document.querySelectorAll(".ant-table-tbody tr").length');
       const gatePagers = await pagerCount();
       log(`GATE_FLIP 选中段="${sel}" 报告带时刻=${timed} 表格行=${gateRows} 翻页器=${gatePagers}`);
-      // 段名 2026-10-09 从「检查」改成「对账」；下面那句「开始对账」是闸门卡上那颗按钮。
-      // 两者现在只差一个「开始」，所以这一格读的是**选中段**（右列那一枚），不是"屏上有没有这个词"。
+      // 段名 2026-10-09 从「检查」改成「对账」；下面那句「检查目标缺少的文件名」是闸门卡上那颗按钮。
+      // 两者现在只差一个「开始复制」，所以这一格读的是**选中段**（右列那一枚），不是"屏上有没有这个词"。
       if (!sel.includes('对账')) throw new Error('跑完对账没把右列翻到那一段：' + sel);
       // 对账面没有表时，翻页器断言是空断言（`single-page-no-pager` 曾经就是这种绿）。
       if (gateRows === 0) throw new Error('对账报告没有表格行，翻页器断言没有对象');
@@ -1351,7 +1351,7 @@ const STEPS = [
       // 教训与本文件里那一族判据同源：**尺子里抄的每一句界面话都会过期**，
       // 而过期的那一种偏偏长得像"界面退步了"。所以这句跟着源码走时，
       // 上面那句 `InventoryPanel.tsx:66` 就是它的出处。
-      const one = await ev('document.body.innerText.includes("这里只给你看，要删请走对齐任务。") ? 1 : 0');
+      const one = await ev('document.body.innerText.includes("这里只给你看，要删请走单向同步任务。") ? 1 : 0');
       const why = await ev('[...document.querySelectorAll(".ant-typography a")].filter((e) => e.textContent.trim() === "为什么？").length');
       const oldTitle = await ev('document.body.innerText.includes("本地和云端差在哪") ? 1 : 0');
       const restated = await ev('document.body.innerText.includes("还没上传的（") ? 1 : 0');
@@ -1366,7 +1366,7 @@ const STEPS = [
   { id: 'inventory-list-file-on-disk', what: '差异面露出的那份名单：路径在夹具里、盘上真有、内容只有两节名字', run: async () => {
       // 自己走一遍盘点，不靠上一步恰好选中哪张卡（上一版就是这么红的：那一步把选中换成了
       // 「封面对账」，右列站在一档从没算过的差异面上，读出来是"没露出"，红的是尺子）。
-      await click('配好的位置', 'any'); await sleep(1000);
+      await click('文件任务', 'any'); await sleep(1000);
       // 同上：这份名单落在**小那一对**上。判据（屏上说的路径=盘上真有=内容只有两节名字）
       // 与哪一对无关，但两万文件那一对会把十几万字节写进夹具，还会把下面那格翻页器的靶子搅浑。
       await click('看差异', 0, 0, PAIR_B); await sleep(2600);
@@ -1391,7 +1391,7 @@ const STEPS = [
       await shot('inventory-list-file-on-disk.png');
     } },
   { id: 'single-page-no-pager', what: '只有一两行的表不再挂着「‹ 1 ›」（差异面两张 + 浏览器两栏）', run: async () => {
-      await click('配好的位置', 'any'); await sleep(900);
+      await click('文件任务', 'any'); await sleep(900);
       // 走 `clickRailTab` 而不是 `click(段名)`：左列卡上就有「看差异」这颗，
       // 段名一撞名，`click` 按文档顺序取到的就是**卡上那颗**——而这一格量的翻页器数
       // 在"开着一张清单"与"停在右列那一段"下可能都是 0，绿着而量的不是那一件事。
@@ -1401,17 +1401,17 @@ const STEPS = [
       const browser = await pagerCount();
       log(`PAGER 差异面=${diff} 浏览器两栏=${browser}`);
       await shot('single-page-no-pager.png');
-      // 收尾翻回**配好的位置那一面**：下一步（并发那一条）要在左列点「开始」，
+      // 收尾翻回**文件任务那一面**：下一步（并发那一条）要在左列点「开始复制」，
       // 这一条量完还停在浏览器那一档的话，它就找不到自己的按钮（这么红过一次）。
-      await click('配好的位置', 'any'); await sleep(800);
+      await click('文件任务', 'any'); await sleep(800);
       if (diff !== 0 || browser !== 0)
         throw new Error(`只有一页的表还挂着翻页器：差异 ${diff}、浏览器 ${browser}`);
     } },
   { id: 'busy-while-transfer', what: '并发：一次传输正写着这棵树', run: async () => {
-      // 站到那对上、拨回「只补，不删」再点：卡列表撤了之后屏上只有当前那一格，
-      // 上一发把模式停在对齐那一档时这里本就没有「开始」可点。
-      await openCardSelect(PAIR_C, '只补，不删');
-      await click('开始', 0, 0); await sleep(600);
+      // 站到那对上、拨回「复制（保留目标多余文件）」再点：卡列表撤了之后屏上只有当前那一格，
+      // 上一发把模式停在对齐那一档时这里本就没有「开始复制」可点。
+      await openCardSelect(PAIR_C, '复制（保留目标多余文件）');
+      await click('开始复制', 0, 0); await sleep(600);
     } },
   { id: 'busy-refusal-in-layer', what: '浏览器发起删除被同一棵树挡住那句话', run: async () => {
       await click('浏览文件', 'any'); await sleep(700);
@@ -1536,7 +1536,7 @@ const STEPS = [
       if (Number(at) < 0) throw new Error('看不见「任务」那块卡片，这一张拍不到东西');
       await shot('settings-grouped-block.png', Number(at) - 8);
       // 同一份说法：这里的标题必须就是卡上位置下拉里的那几句（一份键、一个称呼）。
-      await click('配好的位置', 'any'); await sleep(1400);
+      await click('文件任务', 'any'); await sleep(1400);
       const opts = (await showPair(null)).split('|').map((o) => o.trim()).filter((o) => o !== '');
       const missing = pairHeads.filter((h) => !opts.some((o) => o.replace(/\s+/g, ' ').includes(h)));
       log('GROUP-LABELS 下拉=' + JSON.stringify(opts) + ' 对不上=' + missing.length);
@@ -1815,7 +1815,7 @@ const STEPS = [
       // 同一遍里回头再看一眼**没重开**的那一屏：卡上必须还是旧位置。
       // 这一条与最后那条 needsReopen 是一对：只量"重开之后是新值"的话，一个本来就热重载的
       // 实现也能过 —— 两头一起量，「不热重载」这句话才真有内容。
-      await click('配好的位置', 'any'); await sleep(1400);
+      await click('文件任务', 'any'); await sleep(1400);
       // 读的是**配对那一面的当前那一格**。三面一直挂着，按任务名在整张屏上找会先撞上设置面那一行
       // （那一面读的就是文件，改完当然是新值）—— 上一版它绿着，量的却是配对那一面的卡；
       // 卡撤了之后同一发抓到了设置面那一行，于是红成"热进来了"，红的是尺子抓错了脸。
@@ -1924,10 +1924,10 @@ const STEPS = [
       fs.mkdirSync(dir, { recursive: true });
       for (let i = 0; i < seed; i++) fs.writeFileSync(dir + '/seed-' + i + '.webp', 'y'.repeat(48));
       log('RUNNING 新塞进 local2 的文件=' + seed + '（保证点保存那一刻还在传输）');
-      await click('配好的位置', 'any'); await sleep(1000);
-      await openCardSelect(PAIR_C, '只补，不删');
+      await click('文件任务', 'any'); await sleep(1000);
+      await openCardSelect(PAIR_C, '复制（保留目标多余文件）');
       const t0 = Date.now();
-      await click('开始', 'any');
+      await click('开始复制', 'any');
       // 等到卡上真写着「正在跑」再往下走：以前是固定睡 1.5 秒就去切面、填两格、点保存，
       // 而这一台机器重启之后把 6000 个小文件几秒钟就传完了 —— 那句"有事在跑"根本没机会说出口，
       // 红的其实是驱动没等（与"整遍之前要等界面那道闸放开"同一条）。
@@ -1936,7 +1936,7 @@ const STEPS = [
         // 旧尺子等的「正在跑」已经不在卡面上了（设置面的拒绝仍用「现在有事正在跑」，见下面那一句）。
         const running = String(await ev('document.body.innerText.includes("正在写这棵目录树") ? 1 : 0'));
         if (running === '1') break;
-        if (Date.now() - t0 > 20000) throw new Error('点完「开始」等 20 秒，卡上也没写过"正在写这棵目录树"');
+        if (Date.now() - t0 > 20000) throw new Error('点完「开始复制」等 20 秒，卡上也没写过"正在写这棵目录树"');
         await sleep(300);
       }
       log('RUNNING 从按下到看见「正在跑」=' + (Date.now() - t0) + ' 毫秒');
@@ -1976,7 +1976,7 @@ const STEPS = [
     } },
   { id: 'settings-reopened-shows-new-src', needsReopen: true,
     what: '重开面板后卡上才是新位置（不热重载这件事唯一的真证据）', run: async () => {
-      await click('配好的位置', 'any'); await sleep(1400);
+      await click('文件任务', 'any'); await sleep(1400);
       await showPair(PAIR_B);   // 同上：重开那一遍量的必须是**配对那一面**的当前那一格
       const card = String(await ev('(() => { const r = document.querySelector(".pairs-cell"); return r ? r.innerText.replace(/\\s+/g," ") : ""; })()'));
       log('REOPEN 卡面=' + card.slice(0, 240));
@@ -1994,25 +1994,25 @@ const STEPS = [
       // 这一格量的"卡面注"就会被读成"没有"。先等界面自己那道闸放开（与 `settings-surface` 同一条）。
       const idle = await waitIdle();
       log('WAIT-IDLE 配对卡之前等到没有任务在跑=' + idle.ms + ' 毫秒');
-      await click('配好的位置', 'any'); await sleep(1400);
+      await click('文件任务', 'any'); await sleep(1400);
       // 一列卡换成了一枚位置下拉：数"有几对"就是数那枚下拉里有几项（项面写的就是短名）。
-      await openCardSelect(PAIR_C, '只补，不删');   // 那句注只跟着「只补，不删」那一档，先站到那一档上
+      await openCardSelect(PAIR_C, '复制（保留目标多余文件）');   // 那句注只跟着「复制（保留目标多余文件）」那一档，先站到那一档上
       const opts = (await showPair(null)).split('|').map((o) => o.trim()).filter((o) => o !== '');
       const cellText = String(await ev('(() => { const r=document.querySelector(".pairs-cell");'
         + 'return r ? r.innerText.replace(/\\s+/g," ") : ""; })()'));
-      // 2026-10-08：那句注**不再常驻在卡上**，挂在试跑那颗自己的**悬停**上（那颗 2026-10-09 改名叫「看看会动什么」，悬停的位置没动）。
+      // 2026-10-08：那句注**不再常驻在卡上**，挂在试跑那颗自己的**悬停**上（那颗 2026-10-09 改名叫「模拟复制」，悬停的位置没动）。
       // 改的是"什么时候说"，没改"说什么"：它说的是那两颗的区别（并排时最容易按错），
       // 不是这一格的状态；常驻那一行让"现在是什么状态"被两行解释压着。
       // 这一格因此量两件事：屏上**没有**它（平时不占地方），悬停时它**出现**。
       //
       // 认的是 `ADD_MODE_NOTE`（`src/components/JobListView.tsx:28`）里**最稳的那半截**。
       // 原先这里找的是「**会**告诉你会动哪些，不真传」，而屏上写的是「只告诉你会动哪些，
-      // 不真传；要把东西放上去，按「开始」。」—— 差一个"会"字。红出来的那一句是
+      // 不真传；要把东西放上去，按「开始复制」。」—— 差一个"会"字。红出来的那一句是
       // 「悬停那颗没有那句注」，读着像**悬停没生效**，实际是悬停好好地弹了、而尺子在找
       // 一句早就不在的话。同一族的教训在 `diff-face-one-line` 那一步又犯了一次。
-      const NOTE_FRAG = '只告诉你会动哪些，不真传';
-      const permanent = (cellText.match(/只告诉你会动哪些，不真传/g) || []).length;
-      await hover('看看会动什么', 0, 0, PAIR_C);
+      const NOTE_FRAG = '模拟会列出预计新增或覆盖的文件，不会改动文件';
+      const permanent = (cellText.match(/模拟会列出预计新增或覆盖的文件，不会改动文件/g) || []).length;
+      await hover('模拟复制', 0, 0, PAIR_C);
       const tip = String(await ev('(() => { const ts=[...document.querySelectorAll(".ant-tooltip")]'
         + '.filter((e)=>e.getClientRects().length && !String(e.className).includes("hidden"));'
         + 'const t=ts.map((e)=>e.innerText).join("|"); return t; })()'));
@@ -2027,17 +2027,17 @@ const STEPS = [
       // 没重开时它还在左列（`runner.jobs()` 是启动那一次读进来的，spec §2 决定 3 说的就是不热重载）。
       if (r.arrows !== 2) throw new Error('配对卡不是两张（一对位置一张）：' + JSON.stringify(r.titles));
       if (r.permanent !== 0) throw new Error('那句"不动数据"又常驻回卡面上了（' + r.permanent + ' 次 / 该 0 次）');
-      if (r.tip !== 1) throw new Error('悬停「看看会动什么」没有那句"不动数据"：' + tip.slice(0, 120));
+      if (r.tip !== 1) throw new Error('悬停「模拟复制」没有那句"不动数据"：' + tip.slice(0, 120));
       await shot('pair-card-one-per-position.png');
     } },
   { id: 'pair-card-direction-switch', what: '一格选项自己就是一句完整的话：换方向之后格与右列说的都是另一条任务', run: async () => {
-      await click('配好的位置', 'any'); await sleep(1000);
+      await click('文件任务', 'any'); await sleep(1000);
       // 卡按**那对位置**认（远端那一侧带 `:c` 的只有这一对在用）：按任务名认会在换过方向之后找不到自己
       // —— 卡上那一行名字跟着换，这正是这一格要量的事，不能反过来当锚点用。
       //
       // 2026-10-09 重写的理由：这一格原来量的是"方向那一枚框里有两项"，而模式与方向并进
       // 「要做什么」之后**那枚框已经不存在了**。方向不再是一枚要单独拨的框，而是**每一个选项
-      // 自带的后半句**（`只补，不删 —— 从本地补到云端`）。于是"换方向"在新形状里是
+      // 自带的后半句**（`复制（保留目标多余文件） —— 从本地复制到云端`）。于是"换方向"在新形状里是
       // "换到**另一个**那一档的选项"，而"换对方向"的判据从"框里有两项"变成了
       // **"那一句自己就说得完"** —— 档名 + 方向 + 会不会删，不用拼两枚框的话。
       // 这一格现在真正钉的是三条：① 一个选项说得全；② 不删的那两档话里不许出现"删"；
@@ -2045,15 +2045,15 @@ const STEPS = [
       const opts = await openCardSelect(PAIR_C, null);
       log('SELECT 「要做什么」那一枚=' + opts);
       const list = opts.split('|').map((s) => s.trim()).filter((s) => s !== '');
-      const adds = list.filter((s) => s.includes('只补，不删'));
-      const mirrors = list.filter((s) => s.includes('让两边对齐'));
+      const adds = list.filter((s) => s.includes('复制（保留目标多余文件）'));
+      const mirrors = list.filter((s) => s.includes('单向同步'));
       // 站在不删那一档才量换方向（有几档由下一格 `pair-card-mode-switch` 量）。
       if (adds.length === 0) throw new Error('这一对没有不删的那一档，换方向的量没有落点：' + opts);
       // 不删的那一档，**方向那半句**不许说"删"：这是操作员分不清"哪个合适"的另一半来源。
-      // 2026-10-09 踩过一次：这条原来判的是**整项**里有没有"删"，而新档名「只补，不删」
+      // 2026-10-09 踩过一次：这条原来判的是**整项**里有没有"删"，而新档名「复制（保留目标多余文件）」
       // 自己就带一个"删"字 —— 于是两档全被判成"说了删"，红的那一句读着像界面坏了。
       // 判据因此收窄到 `——` **之后**那半截（方向才是会说"删"的那一半），
-      // 而"档名不许带删"这件事由另一条判据管：整项必须以 `只补，不删` 开头（见下）。
+      // 而"档名不许带删"这件事由另一条判据管：整项必须以 `复制（保留目标多余文件）` 开头（见下）。
       const dirHalf = (s) => (s.includes('——') ? s.slice(s.indexOf('——') + 1) : s);
       const saysDelete = adds.filter((s) => dirHalf(s).includes('删'));
       if (saysDelete.length) throw new Error('不删的那几档，方向那半句里出现了"删"：' + JSON.stringify(saysDelete));
@@ -2061,14 +2061,14 @@ const STEPS = [
       // 兜住的，现在档名自带"不删"，兜不住了，得把它显式写下来。
       for (const s of adds) {
         const head = s.split('——')[0].trim();
-        if (head !== '只补，不删') throw new Error('不删的那一档档名不是「只补，不删」：' + s);
+        if (head !== '复制（保留目标多余文件）') throw new Error('不删的那一档档名不是「复制（保留目标多余文件）」：' + s);
       }
       // 这一对是**本地↔远端**，所以方向那半句必须说"本地/云端"。说成路径就是落进了"两侧同型"
       // 那一支 —— 真窗口第一遍抓到的正是这个：另一面的类型是拿 a 面取反推的。
-      const toCloud = adds.find((s) => s.includes('从本地补到云端')) || '';
-      const toLocal = adds.find((s) => s.includes('从云端补到本地')) || '';
-      if (!toCloud) throw new Error('本地↔远端那一档没说"从本地补到云端"（读出来是：' + JSON.stringify(adds) + '）');
-      if (!toLocal) throw new Error('没有"从云端补到本地"那一档：' + JSON.stringify(adds));
+      const toCloud = adds.find((s) => s.includes('从本地复制到云端')) || '';
+      const toLocal = adds.find((s) => s.includes('从云端复制到本地')) || '';
+      if (!toCloud) throw new Error('本地↔远端那一档没说"从本地复制到云端"（读出来是：' + JSON.stringify(adds) + '）');
+      if (!toLocal) throw new Error('没有"从云端复制到本地"那一档：' + JSON.stringify(adds));
       // 这一格原来还钉"方向框里恰好两项"。合并之后那一条的**形状**变了，但判据没变：
       // 那一对配了上传与下载两个方向，所以不删的档位应当恰好两项 —— 多了少了都说明
       // `intentOptions` 把某一格算错了（多出来的是没建任务的方向，少了的是方向读丢了）。
@@ -2083,7 +2083,7 @@ const STEPS = [
         }
       }
       // 两个方向各走一遍：只量"换过去之后是新值"的话，一次本来就停在 b 的跑法也能过（幂等）。
-      const both = [['从本地补到云端', toCloud, '图床批量上传'], ['从云端补到本地', toLocal, '图床批量下载']];
+      const both = [['从本地复制到云端', toCloud, '图床批量上传'], ['从云端复制到本地', toLocal, '图床批量下载']];
       for (const [name, opt, jobName] of both) {
         // 先拨到**另一头**再拨回来：值没变的那一发 Select 不会发 onChange（这是界面对的行为），
         // 于是"停在同一格上"的那一遍换不出右列跟着走，量到的只是上一格留下的选中。
@@ -2111,27 +2111,27 @@ const STEPS = [
       await shot('pair-card-direction-switch.png');
     } },
   { id: 'pair-card-mode-switch', what: '同一张卡换档：框里只剩那一档的选项、两颗按钮换成一颗、注跟着撤、颜色跟着走', run: async () => {
-      await click('配好的位置', 'any'); await sleep(1000);
+      await click('文件任务', 'any'); await sleep(1000);
       // 2026-10-09：原来这一格先读「模式」那一枚、再读「方向」那一枚，两枚各量一半。
       // 合并之后只有一枚，所以 `modes`/`dirs` 变成了 `opts`/`list` —— 每一项就是
       // **一个完整的意图**（档位 + 方向），"换模式"也就是换到**另一档的那一项**。
       const opts = await openCardSelect(PAIR_C, null);
       const list = opts.split('|').map((s) => s.trim()).filter((s) => s !== '');
-      const addOpt = list.find((s) => s.includes('只补，不删')) || '';
-      const mirrorOpt = list.find((s) => s.includes('让两边对齐')) || '';
+      const addOpt = list.find((s) => s.includes('复制（保留目标多余文件）')) || '';
+      const mirrorOpt = list.find((s) => s.includes('单向同步')) || '';
       const before = await cardShape(PAIR_C);
       log('MODE 「要做什么」那一枚=' + opts + ' 不删那格=' + JSON.stringify(before));
       if (before.err) throw new Error(String(before.err));
       // 这一对三种格子都有任务（上传、下载、以本地为主对齐），所以两档都必须在框里。
       if (!addOpt || !mirrorOpt) throw new Error('两档都有任务，「要做什么」那一枚却缺了一档：' + opts);
-      // 「只补，不删」那一格是**唯一**并排着两颗会动数据的按钮的地方（看看会动什么 / 开始），
-      // 所以那句"试跑不动数据"只属于它。2026-10-08 起它挂在「看看会动什么」的悬停上，
+      // 「复制（保留目标多余文件）」那一格是**唯一**并排着两颗会动数据的按钮的地方（模拟复制 / 开始），
+      // 所以那句"试跑不动数据"只属于它。2026-10-08 起它挂在「模拟复制」的悬停上，
       // 屏上不常驻 —— 底下那对「不常驻 / 悬停出现」由 `pair-card-one-per-position` 用真悬停量。
       // 这一格量的是"它没有被撤掉"：那两颗必须并排在，注才有意义。
       if (before.note !== 0) {
         throw new Error('那句"试跑不动数据"又常驻回卡面上了（' + before.note + '）：' + JSON.stringify(before));
       }
-      if (!(before.btns.includes('看看会动什么') && before.btns.includes('开始'))) {
+      if (!(before.btns.includes('模拟复制') && before.btns.includes('开始复制'))) {
         throw new Error('不删的那一格没有并排着那两颗（那句注就没有可解释的对象）：' + before.btns);
       }
       await openCardSelect(PAIR_C, mirrorOpt);
@@ -2160,14 +2160,14 @@ const STEPS = [
       // （不是判据错了，是它量到的形状没了）。接住"颜色跟着这一格走、不跟着 kind 走"的
       // 是下面那对 不删/会删 的色差本身。
       log('MODE 换到会删=' + JSON.stringify(mid));
-      if (mid.btns.includes('看看会动什么') || !mid.btns.includes('让两边对齐')) {
+      if (mid.btns.includes('模拟复制') || !mid.btns.includes('确认单向同步')) {
         throw new Error('换到会删的那一格，按钮没跟着换：' + mid.btns);
       }
       if (mid.note !== 0) throw new Error('那句"试跑不动数据"跟着换到了会删的那一格（这一格没有并排，就没有可错的地方）');
       // 换档之后框里**只应剩下那一档的选项**：这一对的对齐只配了一个方向。
       // 合并之后这件事比原来更好量 —— 方向是每个选项自带的后半句，不用再开第二枚框去数。
       const after = (await openCardSelect(PAIR_C, null)).split('|').map((s) => s.trim()).filter((s) => s !== '');
-      const nowMirrors = after.filter((s) => s.includes('让两边对齐'));
+      const nowMirrors = after.filter((s) => s.includes('单向同步'));
       if (nowMirrors.length !== 1 || !nowMirrors[0].includes('为主（删')) {
         throw new Error('换到会删那一档之后，框里没有且只有那一格（也没说出它删谁）：' + JSON.stringify(nowMirrors));
       }
@@ -2183,7 +2183,7 @@ const STEPS = [
       log('MODE 换回不删=' + JSON.stringify(back) + ' 框里显示=' + backOpt
         + ' 右列那条=' + (backJob ? backJob.kind + ' ' + backJob.name : '认不出'));
       if (back.note !== 0 || back.warm !== before.warm || backOpt !== addOpt
-        || !(back.btns.includes('看看会动什么') && back.btns.includes('开始'))) {
+        || !(back.btns.includes('模拟复制') && back.btns.includes('开始复制'))) {
         throw new Error('换回不删的那一格没回到原样（注=' + back.note + ' 框里=' + backOpt
           + ' 按钮=' + back.btns + ' 颜色=' + back.warm + '/' + before.warm + '）');
       }
@@ -2193,8 +2193,8 @@ const STEPS = [
       }
       await shot('pair-card-mode-switch.png');
     } },
-  { id: 'mirror-cell-single-button', what: '会删的那一格：只一颗「让两边对齐」、没有「看看会动什么」、没有那句注', run: async () => {
-      await click('配好的位置', 'any'); await sleep(1000);
+  { id: 'mirror-cell-single-button', what: '会删的那一格：只一颗「单向同步」、没有「模拟复制」、没有那句注', run: async () => {
+      await click('文件任务', 'any'); await sleep(1000);
       // 2026-10-09：这一对只配了对齐那一条，所以「要做什么」那一枚**只有一项**。
       // 原来"模式框只有一格 + 方向框那一格说了删谁"是分两枚框量的；合并之后
       // 一项就是全部 —— 而且那一项自己**说得完**（档名 + 方向 + 删谁），不用拼。
@@ -2209,45 +2209,45 @@ const STEPS = [
         + ' note: txt.includes("只告诉你会动哪些") ? 1 : 0 }); })()')));
       if (m.err) throw new Error(String(m.err));
       log('MIRROR-CELL 「要做什么」那一枚=' + opts + ' 按钮=' + m.btns + ' 注=' + m.note);
-      if (list.length !== 1 || !list[0].includes('让两边对齐')) {
+      if (list.length !== 1 || !list[0].includes('单向同步')) {
         throw new Error('这一对的「要做什么」不是"只有一项且是会删的那一档"（它没铺不删的那些）：' + opts);
       }
       if (!list[0].includes('为主（删')) throw new Error('会删的那一项没说出它删谁：' + opts);
-      if (m.btns.includes('看看会动什么')) throw new Error('会删的那一格上还有「看看会动什么」：那趟只给计数的重复列举没撤干净：' + m.btns);
-      if (!m.btns.includes('让两边对齐')) throw new Error('会删的那一格没有那颗入口：' + m.btns);
+      if (m.btns.includes('模拟复制')) throw new Error('会删的那一格上还有「模拟复制」：那趟只给计数的重复列举没撤干净：' + m.btns);
+      if (!m.btns.includes('确认单向同步')) throw new Error('会删的那一格没有那颗入口：' + m.btns);
       // 2026-10-08：**「看差异」从收纳口提到了卡面** —— 它是这一格唯一**只读**的动作，
       // 也是动手之前该先按的那一颗。收在「更多」里的那一次，格上那句
       // 「差异还没算过：点「看差异」算一次」指着一颗看不见的按钮，而同时看得见的那颗
       // 是会删东西的 —— 把只读的藏起来、把危险的那条摆出来，顺序是反的。
-      // 所以会删的那一格现在是 **3 颗**：让两边对齐（唯一那颗会动数据的）+ 看差异（只读） + 更多。
-      // 这一格真正要钉的仍然是"**没有**第二颗会动数据的按钮"：出现了「开始」才是回退。
-      // 注意这里判的是**那颗传输入口**「开始」，不是档位名「让两边对齐」——
-      // 两者现在都叫得出，而会删那一格上根本没有「开始」那颗。
-      if (m.btns.split('|').some((b) => b.trim() === '开始')) {
-        throw new Error('会删的那一格上出现了「开始」——那是不预览直接删的那条路：' + m.btns);
+      // 所以会删的那一格现在是 **3 颗**：单向同步（唯一那颗会动数据的）+ 看差异（只读） + 更多。
+      // 这一格真正要钉的仍然是"**没有**第二颗会动数据的按钮"：出现了「开始复制」才是回退。
+      // 注意这里判的是**那颗传输入口**「开始复制」，不是档位名「单向同步」——
+      // 两者现在都叫得出，而会删那一格上根本没有「开始复制」那颗。
+      if (m.btns.split('|').some((b) => b.trim() === '开始复制')) {
+        throw new Error('会删的那一格上出现了「开始复制」——那是不预览直接删的那条路：' + m.btns);
       }
       if (!m.btns.includes('看差异')) throw new Error('会删的那一格没有那颗只读的「看差异」：' + m.btns);
       // 「更多」只在**有东西可收**时才在屏上：会删这一格若没有 `openDir` 就没有收纳口，
       // 于是「看差异」上卡之后它是 **2 颗**而不是 3 颗。判据钉的是"**会动数据的只有一颗**"
-      // （上面那条「开始」不许出现）加上"只读的那颗在"，不是颗数本身 ——
+      // （上面那条「开始复制」不许出现）加上"只读的那颗在"，不是颗数本身 ——
       // 颗数是布局的副产物，而这一格真正的风险是"删的入口不止一个"。
       if (m.btns.split('|').length < 2) {
         throw new Error('会删的那一格只剩一颗按钮（收起了那一格唯一那颗会动数据的？）：' + m.btns);
       }
-      // 那句注 2026-10-08 之后挂在**「看看会动什么」那颗自己的悬停**上（会删这一格没有那颗，
+      // 那句注 2026-10-08 之后挂在**「模拟复制」那颗自己的悬停**上（会删这一格没有那颗，
       // 屏上更不该有它）。这一格量的是"看不见"：内文里一个字都不许有。
       if (m.note !== 0) throw new Error('那句"试跑不动数据"又跟着会删的那一格说了一遍：这一格只有一颗会动数据的按钮，没有可错的地方');
       await shot('mirror-cell-single-button.png');
     } },
   // 那一层以前只说"拿走"，没说这一趟同时会把缺的那批补上去 —— 读起来像"这一档只能删东西"，
   // 于是没人按红色的那颗。两句都要在层里看得见（前提那句按方向分叉，这一档是"本地是全集"）。
-  // ==== 「换一对位置」那九步（R93-R99 的真窗口证据）====
+  // ==== 「新建临时任务」那九步（R93-R99 的真窗口证据）====
   // 前八步在正常那一段里跑完；最后那一步 `needsReopen`，与设置面那一条重开格同一跑法
   //（单独一遍 --reopen=1）。为什么留一张卡不折掉：折掉的卡"重开之后不在"证明不了 R96 ——
   // 那已经是「删掉这张临时卡」做过的事，重开那一步就白跑了。
-  { id: 'draft-layer-opens', what: '「换一对位置」那一层：两行各有位置框与路径框，候选来自后台', run: async () => {
-      await click('配好的位置', 'any'); await sleep(1000);
-      await click('换一对位置', 'any'); await sleep(800);
+  { id: 'draft-layer-opens', what: '「新建临时任务」那一层：两行各有位置框与路径框，候选来自后台', run: async () => {
+      await click('文件任务', 'any'); await sleep(1000);
+      await click('新建临时任务', 'any'); await sleep(800);
       const shape = JSON.parse(String(await ev('(() => { const vis=[...document.querySelectorAll(".ant-modal")]'
         + '.filter((m)=>m.getBoundingClientRect().width); const m=vis[vis.length-1];'
         + 'if (!m) return JSON.stringify({err:"那一层没开"});'
@@ -2277,7 +2277,7 @@ const STEPS = [
       // 数"有几对"要点开位置那枚下拉，所以**开层之前**数一次、**关掉之后**再数一次：
       // 层还开着的时候顶部那枚点不动（挡住它的是 `ant-modal-wrap`，等 11 秒也站不定）。
       const before = await pairCount();
-      await click('换一对位置', 'any'); await sleep(800);
+      await click('新建临时任务', 'any'); await sleep(800);
       await setDraftField('这一侧', DRAFT_LOCAL);
       await setDraftField('那一侧', DRAFT_LOCAL);
       await click('就这么定', 'any'); await sleep(900);
@@ -2291,7 +2291,7 @@ const STEPS = [
       if (after !== before) throw new Error('被拒的那一次还是多出一张卡：' + before + '→' + after);
     } },
   { id: 'draft-card-created', what: '挑两处、就这么定：卡立起来，那一格带着临时标志（位置框里那句 + 那句"重开就没了"）', run: async () => {
-      await click('换一对位置', 'any'); await sleep(800);
+      await click('新建临时任务', 'any'); await sleep(800);
       // 这一侧从候选里**挑**（挑中之后的框里必须是后台那个 id 原样，不许被拼过），那一侧直接改写。
       // 挑的是远端根那一行：它的 id 以冒号结尾（`fxa:`），正是"顺手补一个斜杠 / 把冒号吃掉"最容易
       // 写坏的那种。本地目录名不适合当判据——设置面那几步会删掉对账那一条、把对齐的源换掉。
@@ -2325,8 +2325,8 @@ const STEPS = [
       const cellList = cells.split('|').map((s) => s.trim()).filter((s) => s !== '');
       log('DRAFT-CELLS 「要做什么」那一枚=' + cells);
       if (cellList.length !== 4) throw new Error('新卡那一枚没有列出四格（两档 × 两个方向）：' + cells);
-      const draftAdds = cellList.filter((s) => s.includes('只补，不删'));
-      const draftMirrors = cellList.filter((s) => s.includes('让两边对齐'));
+      const draftAdds = cellList.filter((s) => s.includes('复制（保留目标多余文件）'));
+      const draftMirrors = cellList.filter((s) => s.includes('单向同步'));
       if (draftAdds.length !== 2 || draftMirrors.length !== 2) {
         throw new Error('新卡那四格不是"两档各两个方向"：' + JSON.stringify(cellList));
       }
@@ -2340,7 +2340,7 @@ const STEPS = [
     } },
   { id: 'draft-transfer-runs', what: '临时格真跑一次传输：文件落在盘上，右列跟着讲这张卡', run: async () => {
       await waitIdle();
-      const hit = await locate('开始', 'any', 0, DRAFT_PAIR);
+      const hit = await locate('开始复制', 'any', 0, DRAFT_PAIR);
       if (hit.err) throw new Error(String(hit.err));
       await clickPoint(hit);
       const idle = await waitIdle();
@@ -2353,17 +2353,17 @@ const STEPS = [
       log('DRAFT-RUN 右列首行=' + rail);
       if (!rail.includes('临时（没存进配置）')) throw new Error('传输跑完了而右列还站在别的卡上（首行="' + rail + '"）');
     } },
-  { id: 'draft-mirror-needs-confirmation', what: '临时卡换到会删的那一档：只一颗「让两边对齐」，层里两半都说全，取消之后一个东西没动', run: async () => {
+  { id: 'draft-mirror-needs-confirmation', what: '临时卡换到会删的那一档：只一颗「单向同步」，层里两半都说全，取消之后一个东西没动', run: async () => {
       const modes = await openCardSelect(DRAFT_PAIR, null);
-      const addOpt = modes.split('|').find((x) => x.includes('只补，不删')) || '';
-      const mirrorOpt = modes.split('|').find((x) => x.includes('让两边对齐')) || '';
+      const addOpt = modes.split('|').find((x) => x.includes('复制（保留目标多余文件）')) || '';
+      const mirrorOpt = modes.split('|').find((x) => x.includes('单向同步')) || '';
       if (!mirrorOpt) throw new Error('临时卡那一枚里没有会删的那一档（操作员批准过的一格没建出来）：' + modes);
       await openCardSelect(DRAFT_PAIR, mirrorOpt);
       const s = await draftCardShape(DRAFT_PAIR);
       log('DRAFT-MIRROR 按钮=' + s.btns + ' 注=' + s.note);
-      if (s.btns.includes('看看会动什么') || !s.btns.includes('让两边对齐')) throw new Error('换到会删的那一档按钮没跟着换：' + s.btns);
+      if (s.btns.includes('模拟复制') || !s.btns.includes('确认单向同步')) throw new Error('换到会删的那一档按钮没跟着换：' + s.btns);
       if (s.note !== 0) throw new Error('那句"试跑不动数据"跟着换到了会删的那一档');
-      await click('让两边对齐', 'any', 0, DRAFT_PAIR); await sleep(1000);
+      await click('确认单向同步', 'any', 0, DRAFT_PAIR); await sleep(1000);
       const body = String(await visibleModalText(900));
       log('DRAFT-MIRROR-LAYER 正文=' + body.replace(/\s+/g, ' ').slice(0, 300));
       if (body === '') throw new Error('那一层没开（卡上写着：' + s.txt.slice(0, 80) + '）');
@@ -2409,7 +2409,7 @@ const STEPS = [
       await click('不要了', 'any'); await sleep(700);
     } },
   { id: 'draft-fold-away', what: '「删掉这张临时卡」在那张卡的收纳口里：收掉之后卡没了，写过的东西留在盘上', run: async () => {
-      await click('配好的位置', 'any'); await sleep(1400);
+      await click('文件任务', 'any'); await sleep(1400);
       const before = await draftCardShape(DRAFT_PAIR);
       if (before.err) throw new Error('那张卡不在（前一步没立住？）：' + String(before.err));
       const menu = String(await ev('(() => { const norm=(s)=>String(s).replace(/\\s+/g,"");'
@@ -2432,11 +2432,11 @@ const STEPS = [
       if (still.err) throw new Error('收一张临时卡把配置的卡也带走了：' + String(still.err));
     } },
   { id: 'draft-saved-into-config', what: '「存成常用」走到头：补编号与名字 → 那三条 → jobs.toml 上只多出那一块，屏上还是那张临时卡', run: async () => {
-      await click('配好的位置', 'any'); await sleep(1300);
+      await click('文件任务', 'any'); await sleep(1300);
       const idle = await waitIdle();
       log('WAIT-IDLE 存成常用之前等到没有任务在跑=' + idle.ms + ' 毫秒');
       // 立一张 `local ↔ fxa:e` 的临时卡（`:d` 那张已经被上一格收掉了）。
-      await click('换一对位置', 'any'); await sleep(900);
+      await click('新建临时任务', 'any'); await sleep(900);
       await setDraftField('这一侧', DRAFT_LOCAL);
       await setDraftField('那一侧', SAVE_PAIR);
       await click('就这么定', 'any'); await sleep(1400);
@@ -2509,7 +2509,7 @@ const STEPS = [
       // 加上的那几行必须**就是**这一条的那几行（哪一格存下去，落的就只有那一格）：
       // 多出一行 = 顺手写了没选的东西（open_dir、manifest 那一档就在这条判据的射程里）；
       // 少一行 = 那一格没存全，重开之后它回不来。
-      const kindWord = card.txt.includes('让两边对齐') ? 'sync' : 'copy';
+      const kindWord = card.txt.includes('单向同步') ? 'sync' : 'copy';
       const block = ['[[job]]', `id = "${SAVE_ID}"`, `name = "${SAVE_NAME}"`,
         `kind = "${kindWord}"`, `src = "${carried.from}"`, `dst = "${carried.to}"`];
       const got = added.map((l) => l.trim());
@@ -2534,7 +2534,7 @@ const STEPS = [
       if (!nowText.includes('# 这一条是批量上传用的')) throw new Error('块内那行理由注释被吃掉了');
       if (crlf(now) < crlf(before)) throw new Error('jobs.toml 的行尾被整文件换掉了');
       // 那句实话的另一半：存完了，**这一屏**跑的还是一张临时卡（面板不热重载）。
-      await click('配好的位置', 'any'); await sleep(1400);
+      await click('文件任务', 'any'); await sleep(1400);
       const still = await draftCardShape(SAVE_PAIR);
       log('DRAFT-SAVE2 没重开那一张=' + JSON.stringify(still).slice(0, 240));
       if (still.err) throw new Error('存完这一趟就把那张卡换掉了（面板不热重载那条是反的）：' + String(still.err));
@@ -2542,13 +2542,13 @@ const STEPS = [
       await shot('draft-saved-into-config.png');
     } },
   { id: 'draft-card-standby-for-restart', what: '再立同一对（这张留给重开那一遍量"它不在了"）', run: async () => {
-      // 自己先站到配好的位置那一面。这一格原来开头就直接点「换一对位置」，
+      // 自己先站到文件任务那一面。这一格原来开头就直接点「新建临时任务」，
       // 而那颗在**选择条**上 —— 上一格（`draft-saved-into-config`）做完停在设置那一面，
-      // 于是它报「找不到：换一对位置 候选=0」。读着像"那颗按钮不见了"，实际是
+      // 于是它报「找不到：新建临时任务 候选=0」。读着像"那颗按钮不见了"，实际是
       // **站在别的面上** —— 与 `settings-open-conf-folder` 那条开头那句
       // 「靠上一步恰好站在哪儿就不叫验收」是同一条纪律。
-      await click('配好的位置', 'any'); await sleep(1200);
-      await click('换一对位置', 'any'); await sleep(900);
+      await click('文件任务', 'any'); await sleep(1200);
+      await click('新建临时任务', 'any'); await sleep(900);
       await setDraftField('这一侧', DRAFT_LOCAL);
       await setDraftField('那一侧', DRAFT_PAIR);
       await click('就这么定', 'any'); await sleep(1400);
@@ -2576,7 +2576,7 @@ const STEPS = [
       // 与 `draft-gone-after-restart` 成对：那一条量的是**没存**的那张散了，这一条量的是**存了**的那条回来了。
       // 少任何一边，"存成常用"都可能是颗没落地的按钮（文件写了但界面上永远看不见），
       // 或者那张卡本来就常驻（散不掉）。
-      await click('配好的位置', 'any'); await sleep(1600);
+      await click('文件任务', 'any'); await sleep(1600);
       const s = await draftCardShape(SAVE_PAIR);
       log('DRAFT-RETURN 那一张=' + JSON.stringify(s).slice(0, 300));
       if (s.err) throw new Error('存进配置的那一条重开之后没成为一张卡：' + String(s.err));
@@ -2598,17 +2598,17 @@ const STEPS = [
       if (s.txt.includes('重开面板就没了')) throw new Error('那句"重开就没了"还在（后台还当它是临时格）：' + s.txt.slice(0, 160));
       if (String(s.btns).includes('存成常用')) throw new Error('那张卡还在提供「存成常用」——它已经是配置里的一条了：' + s.btns);
       // 存进去的是**一格**（那一对其余三格没写进文件），所以卡上摆出来的是那一档的颗：
-      // 「看看会动什么」那颗在 = 这一条走的是不删的那一档，且它现在是一条真任务，不是内存里的样子。
-      if (!String(s.btns).includes('看看会动什么')) throw new Error('卡上没有那颗试跑（回来的不像一条能跑的任务）：' + s.btns);
+      // 「模拟复制」那颗在 = 这一条走的是不删的那一档，且它现在是一条真任务，不是内存里的样子。
+      if (!String(s.btns).includes('模拟复制')) throw new Error('卡上没有那颗试跑（回来的不像一条能跑的任务）：' + s.btns);
       await shot('draft-saved-card-back-after-restart.png');
     } },  { id: 'mirror-layer-both-halves', what: '镜像那一层把两半说全：哪一侧是全集 + 这一趟也会把缺的那批补上去', run: async () => {
-      await click('配好的位置', 'any'); await sleep(1200);
+      await click('文件任务', 'any'); await sleep(1200);
       // 那一面只剩当前那一格：先站到"配了对齐那一档"的对上（夹具的 `fxa:c` 有 sync 那条），
-      // 再把「要做什么」换到会删的那一档。以前这一发是在列表里找写着「让两边对齐」的那一行点它 ——
+      // 再把「要做什么」换到会删的那一档。以前这一发是在列表里找写着「单向同步」的那一行点它 ——
       // 列表撤了之后没有可点的行，"站对位置 + 换档"才是这一格的入口。
-      await openCardSelect(PAIR_B, '让两边对齐');
+      await openCardSelect(PAIR_B, '单向同步');
       await sleep(500);
-      const free = await waitEnabled('让两边对齐', 300000, PAIR_B);
+      const free = await waitEnabled('确认单向同步', 300000, PAIR_B);
       log('MIRROR-WAIT 等到那颗亮起来=' + free.ms + ' 毫秒（灭的时候卡上写着：' + free.hint + '）');
       const hit = free.hit;
       // 点空了和点中了但没开层，是两件事：上一版只看到"正文为空"，猜不出是哪一件。
@@ -2666,11 +2666,11 @@ const STEPS = [
       // 开层**不再先列一遍**（操作员那句「不该让用户等结果」）。所以这一格第一件要量的事
       // 是"没名单那一颗当下就按得动"，而不是等一次列举才亮。
       if (firstOff !== false) throw new Error('没名单那一档那颗还是灭的（读到 disabled=' + firstOff + '）：' + seen.join(' → '));
-      if (!seen.some((x) => x.includes('照对齐跑'))) throw new Error('没名单那一档没说出它是"这一趟先核对一遍"：' + seen.join(' → '));
+      if (!seen.some((x) => x.includes('核对后开始同步'))) throw new Error('没名单那一档没说出它是"这一趟先核对一遍"：' + seen.join(' → '));
       log('MIRROR-NO-LIST 开层即能批=1 那颗依次=' + seen.join(' → '));
       if (body.includes('我知道')) throw new Error('那颗又要人复述一遍授权（只该问一次）：' + body.slice(0, 200));
       // 「重新预览」还在：想看逐条名字的人有一条现成的路，那两个数也是在那一条之后才说得出。
-      await click('重新预览', 'any');
+      await click('生成删除清单', 'any');
       let listed = '';
       for (let i = 0; i < 40 && !/删这 \d+ 个/.test(listed); i++) { await sleep(500); listed = String(await visibleModalText(400)); }
       if (!/删这 \d+ 个/.test(listed)) throw new Error('预览之后那颗还是没带删除数：' + listed.slice(0, 200));
@@ -2687,19 +2687,19 @@ const STEPS = [
       // 闸没开的时候按下去只会拿到一句「现在有事正在跑」，而那是闸门按设计工作 —— 红的是没等。
       const idle = await waitIdle();
       log('WAIT-IDLE 按下之前等到没有任务在跑=' + idle.ms + ' 毫秒');
-      await click('配好的位置', 'any'); await sleep(1200);
-      await openCardSelect(PAIR_B, '让两边对齐');
-      const free = await waitEnabled('让两边对齐', 300000, PAIR_B);
+      await click('文件任务', 'any'); await sleep(1200);
+      await openCardSelect(PAIR_B, '单向同步');
+      const free = await waitEnabled('确认单向同步', 300000, PAIR_B);
       if (free.hit.disabled) throw new Error('那颗还灭着，跑不了：' + free.hint);
       const before = walkFiles(PROC.fx + '/bucket/b').map((p) => path.basename(p)).sort();
-      await click('让两边对齐', 'any', 0, PAIR_B); await sleep(600);
+      await click('确认单向同步', 'any', 0, PAIR_B); await sleep(600);
       const go = JSON.parse(String(await ev('(() => { const m=[...document.querySelectorAll(".ant-modal")]'
         + '.filter((x)=>x.getBoundingClientRect().width)[0]; if (!m) return JSON.stringify({err:"层没开"});'
         + 'const b=[...m.querySelectorAll(".ant-modal-footer button")]; const g=b[b.length-1];'
         + 'return JSON.stringify({label:g.textContent.replace(/\\s+/g,"").trim(), off:!!g.disabled}); })()')));
       if (go.err) throw new Error(String(go.err));
       // 只判"按得动"：上一格为了量那两个数预览过这一对，缓存的清单还在（那是界面对的行为），
-      // 所以这一格那颗可能带着名单、也可能是"照对齐跑"那一档。"没名单那一档开层就能批"
+      // 所以这一格那颗可能带着名单、也可能是"核对后开始同步"那一档。"没名单那一档开层就能批"
       // 由上面那一格钉（MIRROR-NO-LIST），这一格钉的是**按下之后真的跑得完、真的删东西**。
       if (go.off) throw new Error('按下之后那颗还是灭的（这一格要的就是不用等一次列举）：' + JSON.stringify(go));
       log('MIRROR-RUN 那颗=' + go.label);
@@ -2793,14 +2793,14 @@ const STEPS = [
   // 量出来的根因不是弹层被挡：antd 默认 `popupMatchSelectWidth: true`，弹层宽 = 框宽，
   // 2026-10-06 当时最长的一句「只放上去（不删）」需要 108px 而 132 的框里只剩 100 —— 永远读不全。
   // 2026-10-09 模式与方向并成一枚之后，**最长的一句变得更长了**
-  // （`让两边对齐（会删） —— 以本地为主（删云端多余的）`），框数从三枚降到两枚：
+  // （`单向同步（删除目标多余文件） —— 以本地为主（删云端多余的）`），框数从三枚降到两枚：
   // 这一格要量的仍然是"展开那一列按内容宽"，而判据必须跟着新形状走 —— 按下标循环
   // `[0,1,2]` 会去点一枚**不存在**的第三枚，报出来的是"选择条上只有 2 枚"，与
   // "弹层宽度不够"长得不像同一件事。改成**按 aria-label 遍历当前真的有的那几枚**。
   // 而"没保存"是三件不同的事：填进框里的字活着、重开才静默没了（屏上没说）；
   // 面与段根本不记；模式/方向是**故意**不记。下面三格各钉一件。
   { id: 'select-list-shows-all-the-words', what: '每一枚下拉展开的那一列按内容宽：最长那句读得全（弹层不再等于框宽）', run: async () => {
-      await click('配好的位置', 'any'); await sleep(1200);
+      await click('文件任务', 'any'); await sleep(1200);
       const rows = [];
       for (const label of await pairBarLabels()) {
         const box = await topSelectBox(label);
@@ -2898,11 +2898,11 @@ const STEPS = [
   { id: 'remember-what-was-open', what: '写下"上次开在哪一面、右列哪一段"（重开那一格的前置；这一格不碰后台）', run: async () => {
       // 先站到对子那一面把右列翻到「日志」（那一段住在对子那一栏里，开在设置时它是隐藏的），
       // 再把这一面切到设置 —— 两件事各留一个"非默认"的值，重开之后才分得清是回来了还是碰巧。
-      await click('配好的位置', 'any'); await sleep(1200);
+      await click('文件任务', 'any'); await sleep(1200);
       await clickRailTab('日志');
       await click('设置', 'any'); await sleep(1600);
       const face = String(await ev('(() => { const it=[...document.querySelectorAll(".ant-segmented-item")]'
-        + '.find((e)=>/配好的位置|浏览文件|设置/.test(e.textContent||"") && e.className.includes("selected"));'
+        + '.find((e)=>/文件任务|浏览文件|设置/.test(e.textContent||"") && e.className.includes("selected"));'
         + 'return it?it.textContent.trim():"没有那一面被选中"; })()'));
       if (!face.includes('设置')) throw new Error('切不到设置那一面，下一格就没得量：' + face);
       log('REMEMBER-SET 写下的是 面="' + face + '"');
@@ -2912,7 +2912,7 @@ const STEPS = [
       // 顶栏那一条也有 Segmented（自动/浅色/深色），所以"哪一面"要按**这一面自己的三档**认，
       // 不能拿屏上第一个选中项 —— 那一拿就拿到主题（这一格第一遍就是这么红的）。
       const face = String(await ev('(() => { const it=[...document.querySelectorAll(".ant-segmented-item")]'
-        + '.find((e)=>/配好的位置|浏览文件|设置/.test(e.textContent||"") && e.className.includes("selected"));'
+        + '.find((e)=>/文件任务|浏览文件|设置/.test(e.textContent||"") && e.className.includes("selected"));'
         + 'return it?it.textContent.trim():"没有那一面被选中"; })()'));
       const tab = String(await ev('(() => { const c=document.querySelector(".ant-layout-content");'
         + 'const s=c?[...c.querySelectorAll(".ant-segmented-item")].find((e)=>e.className.includes("selected")):null;'
@@ -2937,7 +2937,7 @@ const STEPS = [
       log('REMEMBER 面="' + face + '" 段="' + tab + '" 模式="' + mode + '"');
       if (!face.includes('设置')) throw new Error('重开没回到上次那一面（开在="' + face + '"）');
       if (tab !== '日志') throw new Error('重开没回到右列上次那一段（停在="' + tab + '"）');
-      if (!mode.includes('只补，不删')) throw new Error('模式那格跨重开记住了（那条安全规则被顺手扩到偏好层）：' + mode);
+      if (!mode.includes('复制（保留目标多余文件）')) throw new Error('模式那格跨重开记住了（那条安全规则被顺手扩到偏好层）：' + mode);
       await shot('restart-keeps-face-and-tab.png');
     } },
 ];

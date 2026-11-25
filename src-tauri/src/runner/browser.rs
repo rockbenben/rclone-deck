@@ -411,7 +411,7 @@ impl Runner {
                 let how = if target.exists() { "这个本地位置不是目录" } else { "这个本地位置不存在" };
                 return Err(RunError::Invariant(format!(
                     "{how}：{}。它可能被移走或改名了；到「设置」里的「改这条」换成别的目录，\
-                     或在「配好的位置」上点「换一对位置」临时换一个。",
+                     或在「文件任务」上点「新建临时任务」临时换一个。",
                     target.display())));
             }
         }

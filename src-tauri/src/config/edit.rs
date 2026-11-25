@@ -894,10 +894,10 @@ pub fn suggested_job_name(src: &str, dst: &str) -> String {
     // 说的是"哪一侧是全集"，所以点名**远端那一边**（`r2:img` 这种拼法照抄，是代码不是文案）。
     let far = [src, dst].into_iter().find(|s| crate::endpoint::endpoint_of(s).is_remote());
     match far {
-        Some(fs) => format!("让两边对齐 {fs}：多余的那些会被删掉"),
+        Some(fs) => format!("单向同步到 {fs}：多余的那些会被删掉"),
         // 两侧都是本地：那种意图会被装载侧那句"恰好一侧是 remote"拒掉，
         // 这里仍要交得出一个名字，别让操作员读到"名字为空"这种误导性拒绝。
-        None => "让两边对齐：多余的那些会被删掉".to_string(),
+        None => "单向同步会删除目标端多余的文件".to_string(),
     }
 }
 
@@ -1173,7 +1173,7 @@ fn plan_jobs(intent: &Intent, path: &Path) -> Result<Prepared, EditError> {
                 }
             }
             if *job_kind == JobKindWire::Sync && !adding {
-                notes.push(ShortNote::plain("这一条会删东西。它跑起来之前要先点「让两边对齐」看清那一串，\
+                notes.push(ShortNote::plain("这一条会删东西。它跑起来之前要先点「确认单向同步」看清那一串，\
                                              确认之后还要重列一遍逐条比对。"));
             }
             pair

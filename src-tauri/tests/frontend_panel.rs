@@ -177,15 +177,17 @@ fn a_finished_transfer_says_so_without_moving_the_rail() {
     assert!(t.contains("if (r.ok) done?.(r.value)"), "完成提示没有区分成功/失败：{t}");
     assert_eq!(count_in(&t, "api.runJob("), 1, "实际按钮与选择条应复用同一个任务回调");
     assert!(t.contains("if (isDone(value) && value.dry_run === dryRun)")
-        && t.contains("notifyDone(label, dryRun)"), "完成提示必须匹配 Done 与实际运行模式");
+        && t.contains("notifyDone(id, label, value)"), "完成提示必须匹配 Done 与实际运行模式");
     for binding in ["onTrialRun={(id) => runTransfer(id, true)}", "onStart={(id) => runTransfer(id, false)}"] {
         assert_eq!(count_in(&t, binding), 2, "选择条和实际操作格没有共用回调");
     }
-    assert!(t.contains("if (r.ok && isDone(r.value)) notifyDone('对齐')"),
+    assert!(t.contains("if (r.ok && isDone(r.value)) notifyDone(id, '同步', r.value)"),
         "对齐完成提示没读 Done：{t}");
     assert!(t.contains("finished = await api.runMirror") && t.contains("return finished;"),
         "对齐把 runMirror 的终态丢了，`.then` 永远读不到 Done：{t}");
     // 口径不变：不许为了这条提示顺手把右列翻走。
-    assert_eq!(count_in(&t, "setRailTab('progress')"), 0,
-        "试跑/传输开始翻右列了（那条口径另有用例钉着，别在这里改）：{t}");
+    assert_eq!(count_in(&t, "setRailTab('progress')"), 1,
+        "只有主动查看文件明细才翻到运行结果：{t}");
+    assert!(t.contains("description: formatFileChanges(result)")
+        && t.contains("查看文件明细"), "完成提示须包含变更摘要和明细入口");
 }

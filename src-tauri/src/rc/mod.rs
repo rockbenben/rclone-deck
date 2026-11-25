@@ -318,6 +318,19 @@ impl RcClient {
             method: "core/stats".into(), message: format!("解析 core/stats 响应失败：{e}") })
     }
 
+    pub(crate) async fn core_transferred(&self, group: &str) -> Result<Vec<CompletedTransfer>, RcError> {
+        let method = "core/transferred";
+        #[derive(serde::Deserialize)]
+        struct Response {
+            transferred: Vec<CompletedTransfer>,
+        }
+
+        let response = self.call(method, &[("group", group.to_string())]).await?;
+        serde_json::from_value::<Response>(response)
+            .map(|response| response.transferred)
+            .map_err(|error| RcError::Rc { method: method.into(), message: error.to_string() })
+    }
+
     /// 列一个前缀，形状由 [`ListShape`] 定（`Tree` = 整棵树的文件；`Level` = 只这一层，
     /// 目录行与全字段都留着）。两种都是量出来的形状：
     /// `tools/rc-contract-probe.mjs` §4b 钉递归开关的拼法（单数 `opt`、键名 `recurse`、

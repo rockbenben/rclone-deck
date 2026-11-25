@@ -6,7 +6,7 @@ export type JobKind = 'copy' | 'sync' | 'gate';
  *  R58：`prune` 这一档没有了——清理降级成只读盘点，删除只走 sync。 */
 export const KIND_LABEL: Record<JobKind, string> = {
   copy: '复制',
-  sync: '让两边对齐（会删）',
+  sync: '单向同步（删除目标多余文件）',
   // 2026-10-09：`检查` → `对账`。这不是造新词，是**让孤立的归队**：`对账` 本来就是
   // 这一族在别处的说法（测试夹具那份清单的任务名 `ideahub 封面对账`、设置面「对账的那几条」、
   // 报错「闸门无从对账」——14 行代码都在用），只有这个词表和右列那一段写着「检查」。
@@ -69,7 +69,8 @@ export type TaskState =
   // `previewed` = 这次实删照着预览的那份清单有几个，由后台算好带出来，前端不许自己重算判定
   // （裁定 R66）。`null` 的意思是**这次不是走对齐确认进来的**（复制、或任何一次试跑），
   // 不是"预览了 0 个"——把 null 当 0 就是把"没人核对过"读成"核对过、没问题"。
-  | { state: 'done'; jobid: number; stats: StatsView; dry_run: boolean; previewed: number | null }
+  | { state: 'done'; jobid: number; stats: StatsView; dry_run: boolean; previewed: number | null;
+      copied_files?: string[]; deleted_files?: string[] }
   // 终态失败那一句由后台分成两段（人话 + 原文）：这一臂的两个生产者是 rclone 的原话与
   // 我们自己的不变量句，都不该原样端上界面（裁定同 `ShortNote` 那一段）。
   | { state: 'failed'; jobid: number; error: ShortNote }

@@ -17,7 +17,7 @@ export function GatePanel({
   lockHint: string | null;
   onRun: () => void;
   /** 右列这一格现在说的是哪条任务。对账任务与复制/对齐任务是**分开的两类**：
-   *  `run_gate` 只认 `kind = gate`，在一条复制任务上摆「开始对账」等于摆一颗必然被拒的按钮。 */
+   *  `run_gate` 只认 `kind = gate`，在一条复制任务上摆「检查目标缺少的文件名」等于摆一颗必然被拒的按钮。 */
   jobKind: JobKind;
 }) {
   // **这一格不是对账任务时不摆那颗按钮**（2026-10-24 用户实测：按下去只说「这是复制任务」）。
@@ -43,7 +43,7 @@ export function GatePanel({
       <Space>
         <LockHint title={lockHint}>
           <Button type="primary" loading={running} disabled={off}
-            style={off ? HIT_OFF : undefined} onClick={onRun}>开始对账</Button>
+            style={off ? HIT_OFF : undefined} onClick={onRun}>检查目标缺少的文件名</Button>
         </LockHint>
         {report && (
           <Typography.Text type="secondary">

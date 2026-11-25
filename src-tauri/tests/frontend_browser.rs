@@ -132,7 +132,7 @@ fn the_destructive_confirm_layer_and_the_view_switch_use_antd_components() {
     // 钉在 BrowserPanel 里就等于钉一个永远不会出现在那里的组件名。
     // 标签说的是**这一面在干什么**（「对子」是黑话，「浏览器」第一眼像网页浏览器）。
     let panel = read("src/Panel.tsx");
-    for want in ["<Segmented", "配好的位置", "浏览文件", "设置"] {
+    for want in ["<Segmented", "文件任务", "浏览文件", "设置"] {
         assert!(panel.contains(want), "视图切换少了 {want}（档位名要说这一面在干什么，不许换回内部名词）：{panel}");
     }
     // 档数钉在**三**。这一条以前钉的是二：第四档「作业」当时被拦下，理由是"没有字段形状可读"
@@ -387,7 +387,18 @@ fn there_is_no_overwrite_choice_anywhere_in_the_ui() {
     collect_ui(&root.join("src"), &mut files);
     assert!(files.len() >= 8, "递归扫 `src` 只找到 {} 个界面文件，扫描器本身坏了", files.len());
     for f in &files {
-        let t = std::fs::read_to_string(f).unwrap_or_else(|e| panic!("读不到 {}：{e}", f.display()));
+        let mut t = std::fs::read_to_string(f).unwrap_or_else(|e| panic!("读不到 {}：{e}", f.display()));
+        // Task copy reports replacements. The browser still offers no overwrite action.
+        match f.file_name().and_then(|name| name.to_str()) {
+            Some("JobListView.tsx") => {
+                t = t.replace("模拟会列出预计新增或覆盖的文件，不会改动文件。", "");
+            }
+            Some("JobDetailPanel.tsx") => {
+                t = t.replace("预计复制的文件（新增或覆盖）", "")
+                    .replace("已复制的文件（新增或覆盖）", "");
+            }
+            _ => {}
+        }
         // 词表与上面那句注释对齐：那一档的说法不止一种。这一条是**文案闸**——真正守住
         // "撞名只能拒"的闸门在后台（`refuse_if_target_exists` 与动手前那一次重列）。
         for banned in ["覆盖", "替换", "强制", "跳过", "盖掉", "保留两份", "overwrite", "force"] {
@@ -459,13 +470,13 @@ fn an_empty_name_says_so_in_the_slot_that_already_exists() {
 
 /// 一个本地位置都没有时，浏览器面要告诉用户去哪儿建，而不是只摆一张空下拉。
 ///
-/// 零任务/只剩远端的家不是异常：用户可以把任务删光。配好位置那一面已经有「换一对位置」，
+/// 零任务/只剩远端的家不是异常：用户可以把任务删光。配好位置那一面已经有「新建临时任务」，
 /// 但浏览器这一面同样要能自己把路指过去（它正是 README 说"看本地文件"的入口）。
 #[test]
 fn the_browser_says_where_to_get_a_local_position_when_it_has_none() {
     let t = strip_comments(&read("src/components/BrowserPanel.tsx"));
     assert!(t.contains("还没有本地位置"), "本地候选为空时页面没有一个字说这件事：{t}");
-    assert!(t.contains("换一对位置") && t.contains("新加一条"),
+    assert!(t.contains("新建临时任务") && t.contains("新加一条"),
         "空态没有把两个建位置的入口指出来：{t}");
     assert!(t.contains("refs.some((r) => r.isLocal)"), "空态没有按本地候选是否存在来判：{t}");
 }

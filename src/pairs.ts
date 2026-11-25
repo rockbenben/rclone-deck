@@ -178,22 +178,22 @@ export function directionLabel(g: PairGroup, slot: Slot, mode: Mode): string {
   const otherIsLocal = slot === 'a' ? g.bIsLocal : g.aIsLocal;
   if (winnerIsLocal === otherIsLocal) {
     return mode === 'add'
-      ? `从 ${winner} 拿到 ${other}`
+      ? `从 ${winner} 复制到 ${other}`
       : `以 ${winner} 为主（删 ${other} 多余的）`;
   }
   const w = winnerIsLocal ? '本地' : '云端';
   const o = winnerIsLocal ? '云端' : '本地';
-  return mode === 'add' ? `从${w}补到${o}` : `以${w}为主（删${o}多余的）`;
+  return mode === 'add' ? `从${w}复制到${o}` : `以${w}为主（删${o}多余的）`;
 }
 
 export function modeLabel(mode: Mode): string {
-  return mode === 'add' ? '只补，不删' : '让两边对齐（会删）';
+  return mode === 'add' ? '复制（保留目标多余文件）' : '单向同步（删除目标多余文件）';
 }
 
 /** 这一对位置上**实际存在**的那几格，每一格算成一句人话。
  *
  *  2026-10-09：选择条上原来是「模式」「方向」两枚框，而每一格的真名 = 模式 + 方向
- *  （`只补，不删` + `从本地补到云端`）。于是读者要**把两枚框的话拼起来**才知道这一格要干什么 ——
+ *  （`只补，不删` + `从本地复制到云端`）。于是读者要**把两枚框的话拼起来**才知道这一格要干什么 ——
  *  而拼错了拼出来的还是一句通顺的话，这是最难发现的一类错。改成一枚框之后，
  *  一个选项**自己就是一个完整的意图**，不给人拼的机会。
  *

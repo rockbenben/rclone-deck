@@ -188,7 +188,7 @@ async fn a_missing_local_directory_fails_instead_of_looking_empty() {
 
     let err = runner.browser_list(&id, "").await.unwrap_err().to_string();
     assert!(err.contains("不存在"), "移走的目录必须说它不在，而不是交出 0 条：{err}");
-    assert!(err.contains("改这条") && err.contains("换一对位置"),
+    assert!(err.contains("改这条") && err.contains("新建临时任务"),
         "只说坏了不够，还要说去哪儿改：{err}");
 }
 

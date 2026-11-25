@@ -1,10 +1,11 @@
-import { App as AntdApp, Layout, Segmented } from 'antd';
+import { App as AntdApp, Button, Layout, Segmented } from 'antd';
 import { CloudSyncOutlined, FolderOpenOutlined, SettingOutlined, SwapOutlined } from '@ant-design/icons';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 
 import * as api from './api';
 import { errNote, noteKey, plainNote } from './errors';
+import { formatFileChanges } from './format';
 import { BrowserPanel } from './components/BrowserPanel';
 import { JobContextPanel, TABS } from './components/JobContextPanel';
 import { JobListView, PairCell, usePairChoice } from './components/JobListView';
@@ -31,18 +32,7 @@ type View = 'pairs' | 'browser' | 'settings';
 /** 那三档的**名单只有一份**：Segmented 摆的是它，持久层校验存的也是它。
  *  两处各抄一份，下一档加进来就会有一处忘改 —— 那一处的症状是"存了却开不出来"。 */
 const FACES: { label: string; value: View; icon: ReactNode }[] = [
-  // 2026-10-09 三个档位名一起换过，理由三条：
-  //  * 「按配对同步」→「配好的位置」：「配对」是内部坐标系（`pairKey` / 配对卡），操作员从没
-  //    在界面上见过"配对"这个东西；而「同步」是刚从这一族里撤走的词（`copy` 那一档叫「复制」、
-  //    `sync` 那一档叫「让两边对齐」），这一档名再挂着一个"同步"就是同一族里第二个说法。
-  //  * 「自己指两个位置」→「浏览文件」：那一面**是双栏文件浏览器**（进入 / 删空目录 / 改名 /
-  //    上传到这里 / 清空这一层），"现指一对"只是它附带的一个功能。拿次要功能给主要功能命名，
-  //    进去的人第一眼看到的是两栏文件，不是两个输入框。
-  //  * 「改设置」→「设置」：前两档改完之后，三个都是**地方名**；原来那个动宾结构
-  //    （改设置）混在一排 segmented 里，读起来像三句不同的话。
-  //  `value` 三个 token 一律不动：那是持久层存的值，改它等于让已经记住"上次停在哪一面"的人
-  //  回到默认那一面。
-  { label: '配好的位置', value: 'pairs', icon: <SwapOutlined /> },
+  { label: '文件任务', value: 'pairs', icon: <SwapOutlined /> },
   { label: '浏览文件', value: 'browser', icon: <FolderOpenOutlined /> },
   { label: '设置', value: 'settings', icon: <SettingOutlined /> },
 ];
@@ -62,17 +52,6 @@ export function Panel() {
       message: `${label}失败`,
       description: note.detail === '' ? note.short : `${note.short}\n${note.detail}`,
       duration: 10,
-    });
-  }, [notification]);
-  /** 传输 / 试跑 / 对齐跑完之后的那一声。**不翻右列**（那三格自己的读数住在「进度」，
-   *  翻面会把正在看差异的人拽走），用一条会自己消失的提示说结果在哪一段。
-   *  没有这一声时，人从「看差异」按「开始」，屏幕上一个字都不变——做没做、做完没有，
-   *  只能靠自己再翻到「进度」那一段去找。 */
-  const notifyDone = useCallback((label: string, dry = false) => {
-    notification.success({
-      message: dry ? `${label}做完了 · 没有动文件` : `${label}做完了`,
-      description: '结果在右列「进度」里。',
-      duration: 4,
     });
   }, [notification]);
   const [status, setStatus] = useState<RcdStatus | null>(null);
@@ -102,7 +81,7 @@ export function Panel() {
   const [previewSpent, setPreviewSpent] = useState<Record<string, boolean>>({});
   const [previewFor, setPreviewFor] = useState<string | null>(null);
   const [previewError, setPreviewError] = useState<ShortNote | null>(null);
-  // 「换一对位置」那一层开不开，以及刚立起来的那张卡要指到哪（`pairKey`，后台算的那把尺子）。
+  // 「新建临时任务」那一层开不开，以及刚立起来的那张卡要指到哪（`pairKey`，后台算的那把尺子）。
   // 归这里管是因为右列读的是 `selectedId`：新卡立在看不见的那一列里、右列还讲上一张卡的事，
   // 操作员就会对着两张卡按下一颗按钮。挑哪一格仍然由卡面那层自己说（见 `JobListView` 的 `pick`）。
   const [draftOpen, setDraftOpen] = useState(false);
@@ -228,6 +207,23 @@ export function Panel() {
    *  左列里，实测被折成三行）。判定仍然只有一处 —— 抬的是"谁持有"，不是"判几次"。 */
   const choice = usePairChoice(jobs, focusPair, setSelectedId);
 
+  const notifyDone = useCallback((id: string, label: string, result: Extract<TaskState, { state: 'done' }>) => {
+    const job = jobs.find((item) => item.id === id);
+    notification.open({
+      key: `result-${id}`,
+      type: result.dry_run ? 'info' : 'success',
+      title: result.dry_run ? '模拟完成，文件未改动' : `${label}完成`,
+      description: formatFileChanges(result),
+      duration: 8,
+      actions: job && <Button size="small" onClick={() => {
+        setView('pairs');
+        choice.selectJob(job);
+        setRailTab('progress');
+        notification.destroy(`result-${id}`);
+      }}>查看文件明细</Button>,
+    });
+  }, [jobs, notification, setView, setRailTab, choice.selectJob]);
+
   /** 卡上任何一颗按钮都**先把那张卡立起来**，再发请求。
    *  右栏读的是 `selected`：不选中的话，"开始"就在看不见的地方发生了 ——
    *  操作员只看得见所有按钮一起变灰（`busy` 是全局的），而右栏还在讲上一张卡的事。
@@ -239,14 +235,15 @@ export function Panel() {
   }, [act]);
 
   const runTransfer = useCallback((id: string, dryRun: boolean) => {
-    const label = dryRun ? '试跑' : '传输';
+    const label = dryRun ? '模拟复制' : '复制';
+    notification.destroy(`result-${id}`);
     cardAct(id, label, async () => {
       const value = await api.runJob(id, dryRun);
       setStates((prev) => ({ ...prev, [id]: value }));
       return value;
     }, (value) => {
       if (isDone(value) && value.dry_run === dryRun) {
-        notifyDone(label, dryRun);
+        notifyDone(id, label, value);
       } else if (value.state === 'failed') {
         say(label, value.error);
       } else if (value.state === 'unknown') {
@@ -285,7 +282,7 @@ export function Panel() {
 
   // 预览这一步只列不删。它自己捕获错误并落进确认层——拒绝（空 src、占比守卫、
   // 清单变了、这一对目录正被别的任务占着）要是只飘一条 toast 就被人在弹窗里看不见，
-  // 那等于没有拒绝，而看不见的拒绝正是"以为没危险"的起点。所以「让两边对齐」不裸调它，
+  // 那等于没有拒绝，而看不见的拒绝正是"以为没危险"的起点。所以「确认单向同步」不裸调它，
   // 走下面 `openMirror` 那条开层的路：清单与拒绝都必须在层里呈现出来。
   const doPreview = useCallback(async (id: string) => {
     setBusy(true);
@@ -307,15 +304,15 @@ export function Panel() {
     }
   }, [refresh]);
 
-  // 卡上那颗「让两边对齐」走的就是这里：**只打开确认层**（开层不再顺手列一遍，见下面那三行）。
+  // 卡上那颗「确认单向同步」走的就是这里：**打开同步确认窗口**（开层不再顺手列一遍，见下面那三行）。
   // 它自己不删任何东西：层里没有 token 就没有可交出去的凭证。
   const openMirror = useCallback((id: string) => {
     setSelectedId(id);
     setPreviewFor(id);
     setPreviewError(null);
-    // 开层**不再顺手列一遍**。以前这里 `void doPreview(id)`，于是按下「让两边对齐」
+    // 开层**不再顺手列一遍**。以前这里 `void doPreview(id)`，于是按下「确认单向同步」
     // 先要等两侧各列举一次（真库上几十秒）才按得动红色那颗 —— 而那一趟不是担保，
-    // 动手前那一次重列与那两道拒绝才是。想看逐条名单，层里那颗「重新预览」就是它，一秒不少。
+    // 动手前那一次重列与那两道拒绝才是。想看逐条名单，层里那颗「生成删除清单」就是它，一秒不少。
   }, [doPreview]);
 
   /** 「存成常用」：把**当前这一格**的位置交进设置面那张已有的表单，并切到那一面（R97）。
@@ -361,7 +358,7 @@ export function Panel() {
       <main className="deck-workspace">
         {/* 切换时保留浏览位置。新建或收起草稿后更新可选位置。 */}
         <div style={{ display: view === 'pairs' ? undefined : 'none' }} className="pairs-layout">
-          <h1 className="workspace-title">传输与对账</h1>
+          <h1 className="workspace-title">文件任务</h1>
           {/* 「选哪一对位置」横跨整窗，下面才是当前那一格与它的上下文。
               以前这两件事挤在同一个 340px 的左列里，三枚框加三行标签一行也放不下，被折成三行 ——
               一眼看过去像一张竖排的表，而它问的其实是"我在哪"。 */}
@@ -446,7 +443,8 @@ export function Panel() {
           spent={previewJob ? previewSpent[previewJob.id] === true : false}
           onCancel={closeMirror}
           onPreview={doPreview}
-          onConfirm={(id, token) => void act('对齐', async () => {
+          onConfirm={(id, token) => void act('同步', async () => {
+            notification.destroy(`result-${id}`);
             let finished: TaskState;
             try {
               // 没名单那一档：凭证要现登记（发起点只有这一处，两处就有两处话术）。
@@ -457,7 +455,7 @@ export function Panel() {
               // toast 自己会消失，而人正对着同一屏的清单决定要不要再来一次。
               setPreviewError(errNote(e));
               // 但这一份凭证确实已经花掉了（后台先吃掉再判），所以那颗红的不再亮着：
-              // 再来一次的路只有「重新预览」。
+              // 再来一次的路只有「生成删除清单」。
               setPreviewSpent((p) => ({ ...p, [id]: true }));
               throw e;   // 仍然交给 act 报失败：那一条 toast 与 busy 的收尾是它管的。
             }
@@ -465,7 +463,7 @@ export function Panel() {
             if (!isDone(finished)) {
               setPreviewError(finished.state === 'failed' ? finished.error
                 : finished.state === 'unknown' ? plainNote('执行结果未知', finished.reason)
-                : plainNote('对齐未完成，请重新预览。'));
+                : plainNote('同步未完成，请重新生成删除清单。'));
               return finished;
             }
             closeMirror();
@@ -473,10 +471,10 @@ export function Panel() {
             setPreview((p) => { const n = { ...p }; delete n[id]; return n; });
             // 终态必须交回去给下面的 `.then` 判完成；丢了它，成功提示就永远读不到 Done。
             return finished;
-          }).then((r) => { if (r.ok && isDone(r.value)) notifyDone('对齐'); })}
+          }).then((r) => { if (r.ok && isDone(r.value)) notifyDone(id, '同步', r.value); })}
         />
       )}
-      {/* 「换一对位置」那一层。立卡那一次调用与它带回来的那句拒绝都住在层里（同一屏上看得见，
+      {/* 「新建临时任务」那一层。立卡那一次调用与它带回来的那句拒绝都住在层里（同一屏上看得见，
           人才知道要改哪一格）——这里只接两件事：关掉它，并把右列指到刚立起来的那张卡。
           立刻刷新一次，不等那一秒的轮询：spec §3 要的是"同一拍里卡就出现"。 */}
       <PairDraftLayer open={draftOpen} onClose={() => setDraftOpen(false)}

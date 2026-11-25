@@ -24,14 +24,14 @@ fn read_src(rel: &str) -> String {
 const MIRROR: &str = "镜像 R2：以本地为主（删云端多余的）";
 
 /// 话术里不许出现的东西：Rust 枚举名、内部命令名（R56 第 2 条：那是给操作员看的句子）。
-/// 「让两边对齐」**已经从这份名单里出去了**：那个按钮现在就挂在对齐行上，拒绝话术指着它
+/// 「确认单向同步」**已经从这份名单里出去了**：那个按钮现在就挂在对齐行上，拒绝话术指着它
 /// 才是说真话。指着界面上没有的入口——不管是还没有的还是已经改名的——都是一次没人接得住的拒绝。
 const BANNED: &[&str] = &[
     "Sync", "Copy", "Gate", "JobKind", "run_copy", "run_job", "run_mirror", "preview_mirror",
 ];
 
 /// 对齐真正存在的入口，拒绝话术必须指得出它。
-const MIRROR_ENTRY: &str = "让两边对齐";
+const MIRROR_ENTRY: &str = "确认单向同步";
 
 #[test]
 fn the_gate_lets_copy_and_the_trial_run_through_and_stops_a_real_mirror() {
@@ -88,7 +88,7 @@ fn the_mirror_refusals_never_leak_internal_names() {
     }
     // 每一句拒绝都得给出路（回到预览），而不是只说不。
     for err in &all[1..] {
-        assert!(err.contains("重新预览"), "那句拒绝没指出下一步：{err}");
+        assert!(err.contains("生成删除清单"), "那句拒绝没指出下一步：{err}");
     }
     assert!(all[1].contains("不作数"), "作废那句必须说得出作废：{}", all[1]);
     assert!(all[2].contains("清单变了"), "比对那句必须说得出清单变了：{}", all[2]);

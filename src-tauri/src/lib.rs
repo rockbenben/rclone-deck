@@ -21,9 +21,35 @@ use std::sync::Arc;
 use state::AppState;
 use tauri::Manager;
 
+#[cfg(windows)]
+fn set_taskbar_icon(app: &tauri::App) {
+    use std::ptr::null;
+    use tauri::utils::platform::WINDOWS_APP_ICON_RESOURCE_ID;
+    use windows_sys::Win32::{
+        System::LibraryLoader::GetModuleHandleW,
+        UI::WindowsAndMessaging::{LoadIconW, SendMessageW, ICON_BIG, WM_SETICON},
+    };
+
+    let Some(window) = app.get_webview_window("main") else { return };
+    let Ok(hwnd) = window.hwnd() else { return };
+    // Tauri sets the small title-bar icon. Give Windows the large icon from the
+    // same executable resource. LoadIconW returns a shared, process-owned icon.
+    unsafe {
+        let module = GetModuleHandleW(null());
+        if !module.is_null() {
+            let icon = LoadIconW(module, WINDOWS_APP_ICON_RESOURCE_ID as usize as *const u16);
+            if !icon.is_null() {
+                SendMessageW(hwnd.0, WM_SETICON, ICON_BIG as usize, icon as isize);
+            }
+        }
+    }
+}
+
 pub fn run() {
     tauri::Builder::default()
         .setup(|app| {
+            #[cfg(windows)]
+            set_taskbar_icon(app);
             let app_handle = app.handle().clone();
             let state = tauri::async_runtime::block_on(async move {
                 match state::bootstrap().await {

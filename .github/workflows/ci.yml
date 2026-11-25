@@ -106,6 +106,14 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      - uses: actions/setup-node@v7
+        if: github.ref_type == 'tag'
+        with: { node-version: 26 }
+      - name: Apply the release version
+        if: github.ref_type == 'tag'
+        shell: bash
+        run: APP_VERSION="${TAG#v}" node .github/scripts/release-version.mjs apply tauri
+
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
@@ -218,6 +226,9 @@ jobs:
         with:
           node-version: 26
           cache: npm
+      - name: Apply the release version
+        if: github.ref_type == 'tag'
+        run: APP_VERSION="${TAG#v}" node .github/scripts/release-version.mjs apply tauri
       - if: runner.os == 'Linux'
         run: |
           sudo apt-get update
@@ -251,6 +262,14 @@ jobs:
         with:
           name: cargo-audit-report
           path: audit.json
+
+      - uses: actions/setup-node@v7
+        with: { node-version: 26 }
+      - name: 测试发布资产校验器
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends minisign
+          node --test tools/verify-release-assets.test.mjs
 
   bundle:
     name: 打包：NSIS 安装包
@@ -428,7 +447,6 @@ jobs:
       - name: 校验六个目标的附件、更新清单与签名
         run: |
           set -euo pipefail
-          node --test tools/verify-release-assets.test.mjs
           gh api "repos/$REPO/releases/$RELEASE_ID" > "$RUNNER_TEMP/release.json"
           node tools/verify-release-assets.mjs dist "$RUNNER_TEMP/release.json" "$REPO" "$TAG" src-tauri/tauri.conf.json
       - name: 生成并上传 SHA256SUMS（LF）

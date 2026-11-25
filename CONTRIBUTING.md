@@ -172,7 +172,7 @@ node tools/ui-acceptance.mjs --home=A --from=0 --to=20 --out=docs/superpowers/ev
 | `frontend` | windows-latest | 每个 push / PR | Node 26 + `npm ci` |
 | `rust` | windows-latest | 每个 push / PR | Rust + **rclone**（五条测试目标要起真后台） |
 | `portable-rust` | macos-latest / ubuntu-22.04 | 每个 push / PR | 源码构建、原生配置和后台回归。Linux 另起真实 rclone |
-| `security` | ubuntu-latest | 每个 push / PR | `cargo-audit` |
+| `security` | ubuntu-latest | 每个 push / PR | `cargo-audit`、Node 26 和 `minisign`，审计 Rust 依赖并测试发布资产校验器 |
 | `bundle` | windows-latest | 推 main / 手动 | 出供检查的 NSIS 安装包，不用更新签名密钥 |
 | `release` | Windows、macOS、Linux 各 x64 / ARM64 | 正式版标签 `vX.Y.Z`，前端、Rust 和依赖审计通过后 | 串行上传六个目标到同一草稿 |
 | `publish` | ubuntu-latest | `release` 成功后 | 校验 feed/资产、LF `SHA256SUMS`、attestation；发布并匿名核验 |
@@ -189,7 +189,7 @@ Rust 编译缓存走 [Swatinem/rust-cache](https://github.com/Swatinem/rust-cach
 面板「设置」那面有一项**「版本与更新」**：默认**关着**，开了才会在每次打开时联网问一句有没有新版；
 也可以随时点「立即检查」。有新版时面板只说版本号——下载与安装要人自己按。
 
-维护者给通过本地验证的提交打稳定标签 `vX.Y.Z` 并推送。前端检查和打包 job 从同一提交检出，按 tag 注入 npm 和 Tauri 应用版本。Cargo crate 版本保持独立，用 Cargo.lock 锁定 Rust 依赖。
+维护者给通过本地验证的提交打稳定标签 `vX.Y.Z` 并推送。前端检查、Rust 测试和打包 job 从同一提交检出，按 tag 注入 npm 和 Tauri 应用版本。Cargo crate 版本保持独立，用 Cargo.lock 锁定 Rust 依赖。
 
 Windows 上传 NSIS。macOS 上传 DMG 和 `.app.tar.gz`。Linux 上传 AppImage、DEB 和 RPM。六个打包任务串行合并同一份 `latest.json`。发布 job 用仓库公钥验证所有更新签名，核对全部附件和 GitHub 摘要，然后上传 `SHA256SUMS` 与来源证明并公开。只有更高稳定版才提升 Latest，补发旧版可从其 tag 下载。
 

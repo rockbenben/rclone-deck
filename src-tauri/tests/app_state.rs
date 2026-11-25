@@ -301,17 +301,15 @@ fn the_served_basis_is_asked_from_the_runner_not_hard_coded() {
 ///
 /// 另一半补的是：起不来那一档**也要**把落点说出来。旧写法在这一档把日志目录
 /// 整项藏了（后台填空串、界面按"没有"处理），而那恰恰是最需要知道"面板跑在哪个家"的时候
-/// （规程 R68 就是靠这一格当场发现两次误启动的）。数渲染点：两处 —— 就绪那一档与起不来那一档。
+/// （规程 R68 就是靠这一格当场发现两次误启动的）。共享顶栏只要求有状态，涵盖就绪与起不来两档。
 #[test]
 fn the_top_bar_hides_the_log_dir_when_it_is_not_known() {
     let bar = include_str!("../../src/components/RcdStatusBar.tsx");
     assert!(bar.contains("status.logDir === ''"),
         "顶栏没有按\"有没有值\"决定显不显示：空路径会比不显示更像骗人");
     assert!(bar.contains("{status.logDir}"), "顶栏没把路径本身摆出来（只显示一个标签等于没说）");
-    let renders = bar.matches("<LogDir status={status} />").count();
-    assert_eq!(renders, 2,
-        "落点那一格必须在**就绪**与**起不来**两档都渲染（数到 {renders} 处）：\
-         起不来的时候把它藏了，就等于在最需要它的那一刻拆掉规程 R68 那道眼前证据");
+    assert!(bar.contains("{status !== null && <LogDir status={status} />}"),
+        "只要拿到后台状态，顶栏就必须尝试显示日志目录，包括后台没能启动时");
 }
 
 // ---- 裁定（Task 7-9 之后补的口径）：同一份 Defaults 必须同时喂给 rcd 与 runner ----
